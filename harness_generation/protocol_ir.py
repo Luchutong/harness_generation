@@ -21,8 +21,8 @@ Provenance vocabulary (:data:`SOURCES`):
     emit an evidence-free field, so an element with this source is backed by a
     concrete line of code.
 ``llm_inference``
-    Voted out of several LLM samples.  Confidence is the agreement ratio, not a
-    calibrated probability.
+    Voted out of several LLM samples.  Confidence is sample validity times mean
+    field agreement -- how stable the vote was -- not a calibrated probability.
 ``engineering_choice``
     A default this IR supplied because nothing measured it (for example a
     fallback command-loop bound).  It is a decision, not a finding.
@@ -47,6 +47,7 @@ Typical use::
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field as dataclass_field
 from typing import Any, Iterable, Mapping
 
@@ -599,20 +600,65 @@ def _max_payload_symbol(facts: ProtocolFacts) -> str:
     return ""
 
 
-def _llm_confidence(conventions: ProtocolConventions) -> float:
-    """Agreement ratio across the LLM samples that produced the C block.
+def _llm_confidence(conventions: ProtocolConventions | None) -> float:
+    """How stable the C-block inference was: sample validity x field agreement.
 
-    This is the share of *requested* samples that parsed and voted, which is a
-    real signal about how stable the inference was.  It is not a probability
-    that the statement is true.
+    Two things have to hold before an inferred convention can be relied on, and
+    the number has to move when either one fails.  The samples must have parsed
+    (``sample_validity``), and they must have *said the same thing*
+    (``mean_field_agreement``).  Three samples that all parse but give three
+    different answers are a coin flip, and they must not score the way three
+    samples that agreed do; the old ratio of parsed samples could not tell those
+    two apart.
+
+    This is still not a probability that the statement is true.  It is a
+    statement about the inference: a field the samples agreed on unanimously can
+    still be unanimously wrong.
+
+    The value is *read* from the vote summary, never recomputed here:
+    :mod:`protocol_conventions` owns the arithmetic, and a second implementation
+    could disagree with the summary a reader audits.  Artifacts written before
+    the summary existed, and hand-built :class:`ProtocolConventions` in tests,
+    carry no ``vote_summary``; those fall back to the parsed-sample ratio they
+    were scored with, and then to :data:`DEFAULT_LLM_CONFIDENCE`.
     """
 
+    if conventions is None:
+        return DEFAULT_LLM_CONFIDENCE
     metadata = conventions.metadata or {}
+    recorded = _recorded_confidence(metadata)
+    if recorded is not None:
+        return recorded
     requested = metadata.get("samples_requested")
     valid = metadata.get("valid_samples")
     if isinstance(requested, int) and isinstance(valid, int) and requested > 0:
         return round(min(max(valid / requested, 0.0), 1.0), 4)
     return DEFAULT_LLM_CONFIDENCE
+
+
+def _recorded_confidence(metadata: Mapping[str, Any]) -> float | None:
+    """The confidence the vote recorded, or ``None`` when it did not record one.
+
+    Defensive on purpose: this reads a number out of a document an LLM-adjacent
+    pipeline wrote and a human may have edited, and a bad value must fall through
+    to the older fallback rather than propagate.  Non-numeric, ``NaN``, infinite,
+    negative and greater-than-one values are all rejected -- and a ``bool`` with
+    them, because ``True`` is an ``int`` in Python and would otherwise sail
+    through as 1.0.
+    """
+
+    summary = metadata.get("vote_summary")
+    if not isinstance(summary, Mapping):
+        return None
+    confidence = summary.get("confidence")
+    if not isinstance(confidence, Mapping):
+        return None
+    value = confidence.get("value")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        return None
+    return round(float(value), 4)
 
 
 def _context_block(context: ContextModel) -> dict[str, Any]:

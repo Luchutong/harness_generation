@@ -38,6 +38,7 @@ from harness_generation.protocol_ir import (
     ProtocolEvidence,
     ProtocolIR,
     ProtocolIRError,
+    _llm_confidence,
 )
 from harness_generation.protocol_miner import (
     ROLE_MAGIC,
@@ -290,8 +291,15 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual(payload.confidence, 1.0)
         self.assertLess(self.ir.llm_confidence, 1.0)
 
-    def test_llm_confidence_is_the_observed_sample_agreement(self):
-        # 3 of 4 requested samples parsed and voted.
+    def test_llm_confidence_falls_back_to_the_parsed_sample_ratio(self):
+        """These conventions are hand-built, so there is no vote summary to read.
+
+        ``_conventions()`` writes the sample-level metadata directly and never
+        ran a vote, so the recorded agreement does not exist.  The number is then
+        the fallback it was scored with before the summary existed: 3 of the 4
+        requested samples parsed and voted, so 0.75.
+        """
+
         self.assertEqual(self.ir.llm_confidence, 0.75)
 
     def test_evidence_index_covers_both_halves(self):
@@ -454,7 +462,13 @@ class EndToEndInferenceTests(unittest.TestCase):
         ir = ProtocolIR.from_facts_and_conventions(facts, result.conventions)
 
         self.assertEqual(ir.entry_function, "parse_frame")
-        self.assertEqual(ir.llm_confidence, 1.0)  # 3 of 3 parsed
+        # 3 of 3 parsed *and* all eight fields unanimous: 1.0 x 1.0.  Validity
+        # alone is not enough to reach 1.0 -- three samples that contradicted
+        # each other would parse just as well and score lower.
+        self.assertEqual(ir.llm_confidence, 1.0)
+        self.assertEqual(
+            ir.metadata["vote_summary"]["confidence"]["mean_field_agreement"], 1.0
+        )
         self.assertEqual(ir.metadata["valid_samples"], 3)
         self.assertTrue(ir.stateful_operations)
         self.assertEqual(ir.sequence.max_steps["value"], 32)
@@ -472,8 +486,368 @@ class EndToEndInferenceTests(unittest.TestCase):
             facts, "int parse_frame(...)", MockLLM(samples), samples=4
         )
         ir = ProtocolIR.from_facts_and_conventions(facts, result.conventions)
+        # 1 of 4 requested samples parsed (0.25); the one that did had nothing to
+        # disagree with, so it agreed with itself on every field (1.0) and the
+        # product stays at the validity.  The failure here is validity, not
+        # agreement -- see ConfidenceTracksDisagreementTests for the other half.
         self.assertEqual(ir.llm_confidence, 0.25)
         self.assertGreater(ir.llm_confidence, 0.0)
+        self.assertEqual(
+            ir.metadata["vote_summary"]["confidence"]["mean_field_agreement"], 1.0
+        )
+
+
+class ConfidenceTracksDisagreementTests(unittest.TestCase):
+    """Samples that parse but contradict each other must not score like agreement.
+
+    This is the defect the vote summary exists to close.  Under the old
+    confidence -- the share of requested samples that parsed -- every run in this
+    class scored 1.0, because every sample in every run parsed.  Measured on
+    these fixtures, with eight fields voted on:
+
+    ==========================================  =======
+    three samples, byte-identical              1.0
+    three samples, one field answered 3 ways   0.9167
+    three samples, four fields answered 3 ways 0.6666
+    ==========================================  =======
+
+    So one contested semantic field costs 0.0833 out of 1.0.  The product form
+    is deliberately conservative about trusting a stable inference; it is *not*
+    sensitive enough to make a coin flip look alarming on its own, which is why
+    the per-field evidence is persisted alongside it.
+    """
+
+    SOURCE = MergeContractTests.SOURCE
+
+    def _confidence(self, responses):
+        from tests.test_protocol_conventions import _sample  # noqa: F401
+
+        facts = mine_protocol_facts(self.SOURCE, "parse_frame", filename="f.c")
+        result = infer_protocol_conventions(
+            facts,
+            "int parse_frame(...)",
+            MockLLM(responses),
+            samples=len(responses),
+        )
+        ir = ProtocolIR.from_facts_and_conventions(facts, result.conventions)
+        return ir, result.conventions.metadata["vote_summary"]
+
+    def test_contradicting_samples_score_below_unanimous_ones(self):
+        """The headline repro: same samples, one field answered three ways."""
+
+        from tests.test_protocol_conventions import _sample, _variant
+
+        unanimous, unanimous_summary = self._confidence([_sample()] * 3)
+        contradictory, summary = self._confidence([
+            _variant(lifetime="one per fuzz iteration"),
+            _variant(lifetime="process lifetime"),
+            _variant(lifetime="unknown"),
+        ])
+
+        self.assertEqual(unanimous.llm_confidence, 1.0)
+        self.assertEqual(
+            unanimous_summary["confidence"]["mean_field_agreement"], 1.0
+        )
+        # Strictly greater: a contradiction must cost something.
+        self.assertGreater(unanimous.llm_confidence, contradictory.llm_confidence)
+        self.assertEqual(contradictory.llm_confidence, 0.9167)
+        self.assertEqual(summary["confidence"]["sample_validity"], 1.0)
+        self.assertEqual(summary["confidence"]["mean_field_agreement"], 0.9167)
+        self.assertEqual(len(summary["confidence"]["fields_counted"]), 8)
+
+    def test_the_contested_field_is_visible_in_the_summary(self):
+        """A reader has to be able to see *which* field cost the confidence."""
+
+        from tests.test_protocol_conventions import _variant
+
+        _, summary = self._confidence([
+            _variant(lifetime="one per fuzz iteration"),
+            _variant(lifetime="process lifetime"),
+            _variant(lifetime="unknown"),
+        ])
+        entry = summary["fields"]["context.lifetime"]
+
+        self.assertEqual(entry["selected"], "one per fuzz iteration")
+        self.assertEqual(entry["votes"], 1)
+        self.assertEqual(entry["valid_samples"], 3)
+        self.assertEqual(entry["agreement"], 0.3333)
+        self.assertEqual(
+            entry["alternatives"],
+            {"one per fuzz iteration": 1, "process lifetime": 1, "unknown": 1},
+        )
+        # Every other field agreed, so the low mean is explained by this one.
+        others = {
+            key: value["agreement"]
+            for key, value in summary["fields"].items()
+            if key != "context.lifetime"
+        }
+        self.assertEqual(set(others.values()), {1.0})
+
+    def test_a_run_that_lost_a_sample_scores_lower_than_a_unanimous_one(self):
+        """Validity and agreement are two halves of the same number."""
+
+        from tests.test_protocol_conventions import _sample
+
+        unanimous, _ = self._confidence([_sample()] * 3)
+        degraded, summary = self._confidence([_sample(), _sample(), "not json"])
+
+        self.assertEqual(summary["confidence"]["sample_validity"], 0.6667)
+        self.assertEqual(summary["confidence"]["mean_field_agreement"], 1.0)
+        self.assertEqual(summary["confidence"]["value"], 0.6667)
+        self.assertLess(degraded.llm_confidence, unanimous.llm_confidence)
+        self.assertEqual(degraded.llm_confidence, 0.6667)
+
+    def test_a_unanimous_vote_records_all_eight_fields(self):
+        from tests.test_protocol_conventions import _sample
+
+        ir, summary = self._confidence([_sample()] * 3)
+        confidence = summary["confidence"]
+
+        self.assertEqual(ir.llm_confidence, 1.0)
+        self.assertEqual(confidence["sample_validity"], 1.0)
+        self.assertEqual(confidence["mean_field_agreement"], 1.0)
+        self.assertEqual(confidence["fields_counted"], sorted(summary["fields"]))
+        self.assertEqual(
+            confidence["fields_counted"],
+            [
+                "context.destroy",
+                "context.init",
+                "context.lifetime",
+                "context.type",
+                "sequence_model.max_steps.source",
+                "sequence_model.max_steps.value",
+                "sequence_model.multi_frame",
+                "stateful_operations",
+            ],
+        )
+
+
+class ConfidenceFallbackTests(unittest.TestCase):
+    """The read must degrade to the old behaviour, never crash on a bad document.
+
+    Old artifacts carry no ``vote_summary`` and hand-built conventions in tests
+    never had one, so the fallback order has to keep scoring those exactly as
+    they were scored before.
+    """
+
+    SOURCE = MergeContractTests.SOURCE
+
+    def _conventions(self, metadata):
+        return ProtocolConventions(
+            entry_function="parse_frame",
+            sequence_model=SequenceModel(multi_frame=True),
+            context=ContextModel(type="parser_ctx"),
+            metadata=metadata,
+        )
+
+    def _confidence(self, conventions):
+        return _llm_confidence(conventions)
+
+    def test_absent_conventions_keep_the_default(self):
+        self.assertEqual(_llm_confidence(None), DEFAULT_LLM_CONFIDENCE)
+
+    def test_a_conventions_block_without_a_summary_keeps_the_sample_ratio(self):
+        conventions = self._conventions({"samples_requested": 4, "valid_samples": 3})
+        self.assertEqual(self._confidence(conventions), 0.75)
+
+    def test_empty_or_missing_metadata_keeps_the_default(self):
+        self.assertEqual(self._confidence(self._conventions({})), DEFAULT_LLM_CONFIDENCE)
+        self.assertEqual(self._confidence(self._conventions(None)), DEFAULT_LLM_CONFIDENCE)
+
+    def test_a_malformed_recorded_value_falls_through_to_the_ratio(self):
+        """A bad number must be ignored, not propagated into the IR.
+
+        These documents are written by a pipeline and can be edited by hand, so
+        the read rejects anything that is not a finite float in ``[0, 1]`` --
+        ``True`` included, since a bool is an int in Python and would otherwise
+        read as 1.0.
+        """
+
+        for value in ("high", float("nan"), float("inf"), -0.5, 1.5, True, None, [0.5]):
+            with self.subTest(value=value):
+                conventions = self._conventions({
+                    "samples_requested": 4,
+                    "valid_samples": 3,
+                    "vote_summary": {"confidence": {"value": value}},
+                })
+                self.assertEqual(self._confidence(conventions), 0.75)
+
+    def test_a_malformed_summary_shape_falls_through_to_the_ratio(self):
+        for summary in ("a string", [], {"confidence": None}, {"confidence": "0.5"}, {}):
+            with self.subTest(summary=summary):
+                conventions = self._conventions({
+                    "samples_requested": 4,
+                    "valid_samples": 3,
+                    "vote_summary": summary,
+                })
+                self.assertEqual(self._confidence(conventions), 0.75)
+
+    def test_a_recorded_value_wins_over_the_sample_ratio(self):
+        conventions = self._conventions({
+            "samples_requested": 4,
+            "valid_samples": 4,
+            "vote_summary": {"confidence": {"value": 0.4}},
+        })
+        self.assertEqual(self._confidence(conventions), 0.4)
+
+    def test_the_boundary_values_are_accepted(self):
+        for value in (0.0, 1.0, 0, 1):
+            with self.subTest(value=value):
+                conventions = self._conventions({
+                    "samples_requested": 4,
+                    "valid_samples": 4,
+                    "vote_summary": {"confidence": {"value": value}},
+                })
+                self.assertEqual(self._confidence(conventions), float(value))
+
+    def test_the_ir_reads_the_recorded_value_rather_than_recomputing_it(self):
+        """A summary that contradicts the sample counts still wins.
+
+        The recorded value is authoritative by design: it is the number the vote
+        computed, and a fallback that quietly disagreed with the persisted
+        ``vote_summary`` would be worse than either number alone.
+        """
+
+        facts = mine_protocol_facts(self.SOURCE, "parse_frame", filename="f.c")
+        conventions = self._conventions({
+            "samples_requested": 4,
+            "valid_samples": 4,
+            "vote_summary": {"confidence": {"value": 0.3}},
+        })
+        ir = ProtocolIR.from_facts_and_conventions(facts, conventions)
+        self.assertEqual(ir.llm_confidence, 0.3)
+
+
+class ContractStaysCleanTests(unittest.TestCase):
+    """The contract is what the LLM sees; inference metadata must not reach it."""
+
+    SOURCE = MergeContractTests.SOURCE
+
+    # The contract this same input produced *before* the vote summary existed,
+    # captured from the pre-change tree.  The vote records a lot more now, and
+    # none of it may move the contract: the summary is for reading, not for
+    # conditioning on.
+    CONTRACT_BEFORE_VOTE_SUMMARY = """\
+{
+    "contract": {
+        "command_loop": {
+            "max_steps": 32,
+            "preferred": true,
+            "reason": "stateful opcodes need multiple frames sharing one context"
+        },
+        "context": {
+            "destroy": "parser_destroy",
+            "init": "parser_init",
+            "lifetime": "one per fuzz iteration",
+            "type": "parser_ctx"
+        },
+        "frame": {
+            "fields": [
+                {
+                    "name": "opcode",
+                    "offset": 3,
+                    "value": "dispatch selector over 2 cases, values 1..2",
+                    "width": 1
+                },
+                {
+                    "endianness": "little_endian",
+                    "name": "payload_length",
+                    "offset": 4,
+                    "value": "read_u16le() load",
+                    "width": 2
+                },
+                {
+                    "endianness": "little_endian",
+                    "name": "checksum",
+                    "offset": 6,
+                    "value": "read_u16le() load",
+                    "width": 2
+                },
+                {
+                    "name": "payload",
+                    "offset": 8,
+                    "value": "fuzzer-controlled bytes",
+                    "width": "payload_length"
+                }
+            ],
+            "header_size": 8,
+            "max_payload": "MAX_BODY",
+            "payload_offset": 8
+        },
+        "input_model": "stateful opcodes need multiple frames sharing one context",
+        "stateful_operations": [
+            {
+                "opcode": "OP_RELEASE",
+                "reason": "clears saved parser state"
+            },
+            {
+                "opcode": "OP_STORE",
+                "reason": "stores payload pointer and length in parser_ctx"
+            },
+            {
+                "opcode": "OP_USE",
+                "reason": "reads previously stored parser_ctx state"
+            }
+        ]
+    },
+    "entry_function": "parse_frame",
+    "limitations": [
+        "no little/big-endian load helper was recognised; multi-byte field widths and endianness remain unknown",
+        "field_8 has a variable width; it must be tied to the length field by a later stage",
+        "convention block (command loop, context lifetime, requirements, notes) is out of scope for static mining: it is not present in the parser body"
+    ],
+    "notes": [
+        "keep one parser_ctx alive across generated frames"
+    ],
+    "requirements": [
+        "preserve payload bytes as fuzzer-controlled data",
+        "repair magic/length/checksum envelope fields before parse_frame"
+    ],
+    "schema_version": 1
+}
+"""
+
+    def _inferred(self):
+        from tests.test_protocol_conventions import _sample
+
+        facts = mine_protocol_facts(self.SOURCE, "parse_frame", filename="f.c")
+        result = infer_protocol_conventions(
+            facts,
+            "int parse_frame(...)",
+            MockLLM([_sample(include_release=True)] * 3),
+            samples=3,
+        )
+        return facts, result
+
+    def test_the_convention_block_carries_no_metadata_at_all(self):
+        _, result = self._inferred()
+        block = result.conventions.to_contract_block()
+
+        self.assertNotIn("vote_summary", json.dumps(block))
+        self.assertNotIn("metadata", block)
+        # And it is not merely renamed: the block is the C block, key for key.
+        self.assertEqual(
+            sorted(block),
+            [
+                "context",
+                "notes",
+                "requirements",
+                "sequence_model",
+                "stateful_operations",
+            ],
+        )
+
+    def test_the_contract_is_unchanged_by_the_vote_summary(self):
+        facts, result = self._inferred()
+        self.assertIn("vote_summary", result.conventions.metadata)
+
+        ir = ProtocolIR.from_facts_and_conventions(facts, result.conventions)
+
+        self.assertEqual(
+            json.dumps(ir.to_protocol_contract(), indent=4, sort_keys=True),
+            self.CONTRACT_BEFORE_VOTE_SUMMARY.strip(),
+        )
+        self.assertNotIn("vote_summary", json.dumps(ir.to_protocol_contract()))
 
 
 class SerialisationShapeTests(unittest.TestCase):

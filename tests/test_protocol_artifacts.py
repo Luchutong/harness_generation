@@ -86,6 +86,14 @@ def _sample(max_steps=32):
     })
 
 
+def _contested_sample(lifetime: str) -> str:
+    """``_sample()`` with one field answered differently, nothing else touched."""
+
+    document = json.loads(_sample())
+    document["context"]["lifetime"] = lifetime
+    return json.dumps(document)
+
+
 def _artifact_copy(parent: Path, name: str = "simple") -> Path:
     """A writable copy of the checked-in fixture, in a temporary directory."""
 
@@ -233,8 +241,12 @@ class ProtocolArtifactPersistenceTests(unittest.TestCase):
             self.assertEqual(
                 document["conventions"]["sequence_model"]["max_steps"]["value"], 32
             )
-            # What the vote keeps is sample-level only: no per-element tally is
-            # recorded, and this writer must not invent one.
+            # ``vote_summary`` is what the vote tallied field by field: the value
+            # it selected, the count that value reached, how many samples
+            # answered, and the losing candidates when there were any.  It is
+            # written by the vote itself, in the same pass that selected the
+            # value, so a reader can trust it as a description of this run rather
+            # than a count taken afterwards by the writer.
             self.assertEqual(
                 sorted(metadata),
                 [
@@ -244,9 +256,11 @@ class ProtocolArtifactPersistenceTests(unittest.TestCase):
                     "rejected_samples",
                     "samples_requested",
                     "valid_samples",
+                    "vote_summary",
                     "vote_threshold",
                 ],
             )
+            self.assertIn("vote_summary", document["conventions"]["metadata"])
 
     def test_ir_round_trip_matches_to_json(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -260,12 +274,87 @@ class ProtocolArtifactPersistenceTests(unittest.TestCase):
             )
             self.assertEqual(document, expected.to_json())
             self.assertEqual(document["schema_version"], PROTOCOL_IR_SCHEMA_VERSION)
+            # 2 of 3 requested samples parsed (0.6667) and the two that parsed
+            # were byte-identical, so every field agreed (1.0) and the product
+            # stays at the validity.  The number is unchanged from the old
+            # parsed-sample ratio because this run has nothing to disagree about;
+            # `test_the_persisted_vote_explains_a_low_confidence` is the case
+            # where the two forms part company.
             self.assertEqual(document["confidence"], 0.6667)
+            self.assertEqual(
+                document["metadata"]["vote_summary"]["confidence"],
+                {
+                    "sample_validity": 0.6667,
+                    "mean_field_agreement": 1.0,
+                    "fields_counted": sorted(
+                        document["metadata"]["vote_summary"]["fields"]
+                    ),
+                    "value": 0.6667,
+                },
+            )
             self.assertEqual(document["context"]["type"], "mp_context")
             self.assertEqual(
                 [item["opcode"] for item in document["stateful_operations"]],
                 ["MP_STORE", "MP_USE"],
             )
+
+    def test_the_persisted_vote_explains_a_low_confidence(self):
+        """The repro, read off the two files the way a consumer reads them.
+
+        Three samples that all parse but give three different context lifetimes
+        used to produce the same ``confidence`` as three identical ones.  A
+        reader must now be able to see *why* this run's number is lower without
+        re-running the vote: the IR's confidence is the vote's own value, and the
+        field that cost it names the answers that lost.
+        """
+
+        with tempfile.TemporaryDirectory() as temporary:
+            store = self._store(temporary)
+            store.write_protocol(self.facts, self._infer([
+                _contested_sample("one context per fuzz iteration"),
+                _contested_sample("one context for the whole process"),
+                _contested_sample("unknown"),
+            ]))
+
+            conventions = json.loads(
+                store.protocol_conventions.read_text(encoding="utf-8")
+            )
+            ir = json.loads(store.protocol_ir.read_text(encoding="utf-8"))
+            metadata = conventions["conventions"]["metadata"]
+            summary = metadata["vote_summary"]
+            entry = summary["fields"]["context.lifetime"]
+
+            # The three answers are all there, each with a single vote, and the
+            # one that won is the value the C block carries.
+            self.assertEqual(
+                entry["alternatives"],
+                {
+                    "one context per fuzz iteration": 1,
+                    "one context for the whole process": 1,
+                    "unknown": 1,
+                },
+            )
+            # A three-way tie is broken by the candidate's string form, which is
+            # how the vote has always broken ties; on a tie the C block gets the
+            # first answer alphabetically rather than the first one returned.
+            self.assertEqual(entry["selected"], "one context for the whole process")
+            self.assertEqual(entry["votes"], 1)
+            self.assertEqual(entry["valid_samples"], 3)
+            self.assertEqual(entry["agreement"], 0.3333)
+            self.assertEqual(
+                conventions["conventions"]["context"]["lifetime"],
+                entry["selected"],
+            )
+            # The lost vote is what the confidence is made of: eight fields, one
+            # of them at 1/3, gives 0.9167 -- and 0.0833 is the whole difference
+            # between a stable inference and this one.
+            self.assertEqual(summary["confidence"]["sample_validity"], 1.0)
+            self.assertEqual(summary["confidence"]["mean_field_agreement"], 0.9167)
+            self.assertEqual(summary["confidence"]["value"], 0.9167)
+            self.assertIn("context.lifetime", summary["confidence"]["fields_counted"])
+            # The IR makes the same claim as the file it was built from; the two
+            # are not two computations of one number.
+            self.assertEqual(ir["confidence"], summary["confidence"]["value"])
 
     def test_default_max_steps_fills_a_bound_the_vote_left_open(self):
         with tempfile.TemporaryDirectory() as temporary:

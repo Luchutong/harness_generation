@@ -212,14 +212,13 @@ class ArtifactStore:
 
         The vote leaves behind sample-level metadata (``prompt_version``,
         ``model``, ``provider``, ``samples_requested``, ``valid_samples``,
-        ``rejected_samples``) and the accepted/rejected sample bodies, and that
-        is all this file can record.  There are **no per-element tallies**:
-        ``_vote_conventions`` reduces each element to a mode and drops the
-        counts, and the IR derives its LLM confidence from the sample-level
-        ratio rather than from per-field agreement.  Recomputing a threshold
-        here would duplicate the vote and could silently disagree with the
-        result it is meant to describe, so the gap is recorded rather than
-        filled; real tallies are a change that belongs to ``protocol_conventions``.
+        ``rejected_samples``), the accepted/rejected sample bodies, and in
+        ``vote_summary`` the per-element tally that produced each selected value
+        together with the confidence the IR reads from it.  This writer records
+        all of that verbatim and computes none of it: the counts are taken in the
+        same pass that selects, inside ``_vote_conventions``, because a tally
+        recomputed here would be a second chance to disagree with the very value
+        it claims to describe.
 
         ``conventions=None`` writes that the block was never inferred, so a
         reader cannot mistake "not asked" for "the vote produced nothing" (the
