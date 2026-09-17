@@ -197,7 +197,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             attempt_metadata["prompt_version"], "stage4-harness-transform-v6"
         )
         self.assertEqual(
-            attempt_metadata["plan_prompt_version"], "stage4-harness-plan-v4"
+            attempt_metadata["plan_prompt_version"], "stage4-harness-plan-v6"
         )
         self.assertIn("timestamp", attempt_metadata)
         self.assertIsNone(attempt_metadata["rollback_source"])

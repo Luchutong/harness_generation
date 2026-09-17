@@ -15,6 +15,7 @@ from .generation_context import (bounded_validation_feedback,
                                  project_type_context)
 from .llm import LLMClient, LLMGeneration
 from .prompts import stage4_harness_plan, stage4_harness_transform
+from .protocol_ir import ProtocolIR, ProtocolIRError
 from .sfg_adapter import is_null_node
 from .source_paths import SUPPORTED_FUNCTIONS_SCHEMA_VERSIONS
 from .triplet import FunctionTriplet
@@ -143,6 +144,8 @@ class Stage4Generator:
             triplet_id=triplet.id,
             unique_isf_function_id=str(isf_metadata.get("id", "")),
         )
+        protocol = load_protocol_contract(artifacts)
+        protocol_contract = None if protocol is None else protocol[0]
         plan_prompt = stage4_harness_plan(
             triplet_id=triplet.id,
             rough_code=rough_source,
@@ -162,6 +165,7 @@ class Stage4Generator:
                 semantic.to_dict() for semantic in triplet.bypass_semantics
             ],
             project_context=project_context,
+            protocol_contract=protocol_contract,
             validation_feedback=validation_feedback,
         )
         layout = ArtifactStore(Path(artifacts)).for_triplet(triplet.id)
@@ -175,9 +179,16 @@ class Stage4Generator:
                 triplet=triplet,
                 isf_metadata=isf_metadata,
             )
+            plan_metadata = _generation_metadata(plan_generation)
+            if protocol is not None:
+                # Record where the contract came from, so a plan.json can be
+                # traced back to the protocol_ir.json that conditioned it.
+                # Absent when there is no IR: the fallback run's plan.json must
+                # stay byte-for-byte what it was before this path existed.
+                plan_metadata["protocol_ir"] = protocol[1]
             harness_plan = replace(
                 harness_plan,
-                generation_metadata=_generation_metadata(plan_generation),
+                generation_metadata=plan_metadata,
             )
         except Exception as error:
             response = (
@@ -219,6 +230,7 @@ class Stage4Generator:
                 for function in triplet.functions
             ],
             project_context=project_context,
+            protocol_contract=protocol_contract,
             validation_feedback=validation_feedback,
         )
         layout.write_text(attempt_directory / "prompt.txt", prompt.content)
@@ -305,6 +317,52 @@ def generate_stage4_harness(
         artifacts=artifacts,
         publish=publish,
     )
+
+
+def load_protocol_contract(
+    artifacts: str | Path,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """The mined protocol contract at ``<artifacts>/protocol_ir.json``, if any.
+
+    Returns ``(contract, provenance)``, or ``None`` when the file is not there.
+    The contract is :meth:`~protocol_ir.ProtocolIR.to_protocol_contract`, the
+    same ``protocol.json`` shaped document ``load_protocol_spec`` accepts, so
+    the prompt sees one projection of the IR and not a second one invented here.
+    ``provenance`` is what gets recorded next to the plan: the file the contract
+    came from, the entry function it describes, and how stable the C-block
+    inference behind it was.
+
+    This is the *only* discovery location: the root ``protocol-mine --output``
+    wrote, which is the root Stage 4 was already handed.  There is deliberately
+    no second one and no flag -- a stage that can silently look elsewhere is a
+    stage whose input cannot be read off the command line.
+
+    A file that is present but unreadable or invalid is a hard
+    :class:`Stage4Error`, never a fallback to the contract-free prompt.  The
+    fallback would produce a harness that looks like it was built from the
+    protocol while having been told nothing about it, which is a much worse
+    failure than stopping: the run would *pass* and the resulting harness would
+    be quietly wrong about frame layout, length repair and context lifetime.
+    """
+
+    path = ArtifactStore(Path(artifacts)).protocol_ir
+    if not path.is_file():
+        return None
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise Stage4Error(
+            f"cannot read protocol IR {path}: {type(error).__name__}: {error}"
+        ) from error
+    try:
+        ir = ProtocolIR.from_json(document)
+    except ProtocolIRError as error:
+        raise Stage4Error(f"invalid protocol IR {path}: {error}") from error
+    return ir.to_protocol_contract(), {
+        "path": str(path),
+        "entry_function": ir.entry_function,
+        "llm_confidence": ir.llm_confidence,
+    }
 
 
 def _load_rough_code(value: str | Path) -> str:

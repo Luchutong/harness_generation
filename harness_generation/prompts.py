@@ -218,7 +218,7 @@ Previous validation feedback (empty on the first attempt):
 
 STAGE4_HARNESS_PLAN = PromptTemplate(
     name="stage4_harness_plan",
-    version="stage4-harness-plan-v4",
+    version="stage4-harness-plan-v6",
     template="""Create a structured HarnessPlan before any final C harness is
 written. Use the rough program, Function Triplet, and exact project declarations
 to decide state objects, fuzzer-input decoding, call order, data/size binding,
@@ -250,12 +250,28 @@ fuzzer size when the signature has a byte stream and length parameter. If a
 function is both PRF and HPF, keep it in call_sequence and mention cleanup
 responsibility in purpose or notes. Cleanup must happen after downstream
 processing.
-If a protocol contract is supplied, the plan must explicitly preserve its input
-model. For framed command protocols, use a bounded multi-frame command loop,
-set input_strategy.bounded_steps to a positive cap, keep state_objects alive
-across commands, and include exact protocol fields such as magic, version,
-opcode, length endianness, checksum, and payload offset in constraints or call
-arguments.
+If a protocol contract is supplied, the plan must explicitly preserve its
+structured input model. For framed command protocols, address these six
+concerns:
+1. bounded multi-frame command loop: use a bounded multi-frame command loop and
+   set input_strategy.bounded_steps to a positive cap.
+2. context lifetime across frames: name the context object, its init and destroy
+   calls, and keep it alive across commands within one libFuzzer iteration.
+3. exact frame fields: for every header field (magic, version, opcode, length,
+   checksum) state its exact offset, width and endianness, and how the harness
+   computes that value in C.
+4. length/checksum repair: the length and checksum fields must be filled in by
+   the harness while it assembles a frame, never left to whatever the fuzz input
+   happens to contain.
+5. payload remains fuzzer-controlled: the payload region, from
+   frame.payload_offset up to frame.max_payload, must be driven by fuzz bytes
+   and must not be filled with constants.
+6. stateful opcodes and cleanup: trigger opcodes whose behavior depends on state
+   left by an earlier command in order, after the command that establishes that
+   state, and clean up within the iteration.
+If no protocol contract is supplied, fall back to FT-only harness planning: use
+the unique ISF, required PRF/HPF calls, available function metadata, and
+validation feedback. Do not invent a framed protocol.
 
 Rough program:
 {rough_code}

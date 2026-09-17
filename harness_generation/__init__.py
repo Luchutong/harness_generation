@@ -69,7 +69,8 @@ from .stage3 import (Stage2Snippet, Stage3Assembler, Stage3Error,
                      Stage3Metadata, Stage3Result, assemble_stage3,
                      load_stage2_snippets)
 from .stage4 import (HarnessPlan, Stage4Error, Stage4Generator, Stage4Result,
-                     generate_stage4_harness, parse_harness_plan)
+                     generate_stage4_harness, load_protocol_contract,
+                     parse_harness_plan)
 from .target_build import (TargetBuildAdapter, TargetBuildConfig,
                            TargetBuildResult)
 from .target_coverage import (TargetCoverageCollector, TargetCoverageConfig,
@@ -230,6 +231,7 @@ __all__ = [
     "generate_stage4_harness",
     "is_null_node",
     "load_sfg_artifacts",
+    "load_protocol_contract",
     "load_protocol_spec",
     "load_stage2_snippets",
     "load_triplets_json",

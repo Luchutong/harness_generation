@@ -87,7 +87,7 @@ class GenerationPromptTests(unittest.TestCase):
                 "stage2-structure-snippet-v2",
                 "stage3-rough-assembly-v2",
                 "protocol-convention-refinement-v1",
-                "stage4-harness-plan-v4",
+                "stage4-harness-plan-v6",
                 "stage4-harness-transform-v6",
             ],
         )
@@ -143,7 +143,7 @@ class GenerationPromptTests(unittest.TestCase):
         self.assertEqual(template.version, "stage4-harness-transform-v6")
         self.assertEqual(
             get_prompt_template("stage4_harness_plan").version,
-            "stage4-harness-plan-v4",
+            "stage4-harness-plan-v6",
         )
         self.assertEqual(
             get_prompt_template("protocol_convention_refinement").version,

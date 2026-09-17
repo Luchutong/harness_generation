@@ -43,6 +43,7 @@ Typical use::
 
     ir = ProtocolIR.from_facts_and_conventions(facts, conventions)
     document = ir.to_protocol_contract()   # protocol.json shaped
+    restored = ProtocolIR.from_json(ir.to_json())   # the same IR again
 """
 
 from __future__ import annotations
@@ -155,6 +156,22 @@ class ProtocolEvidence:
                 document[key] = value
         return document
 
+    @classmethod
+    def from_json(cls, document: Mapping[str, Any],
+                  owner: str = "evidence") -> ProtocolEvidence:
+        """Rebuild one justification from the document :meth:`to_json` wrote."""
+
+        document = _document_object(document, owner)
+        return cls(
+            source=_required_string(document, "source", owner),
+            detail=_required_string(document, "detail", owner),
+            kind=_optional_string(document, "kind", owner),
+            location=_optional_string(document, "location", owner),
+            line=_optional_integer(document, "line", owner),
+            column=_optional_integer(document, "column", owner),
+            snippet=_optional_string(document, "snippet", owner),
+        )
+
 
 @dataclass(frozen=True)
 class FrameField:
@@ -214,6 +231,38 @@ class FrameField:
             document["endianness"] = self.endianness
         return document
 
+    @classmethod
+    def from_json(cls, document: Mapping[str, Any],
+                  owner: str = "frame field") -> FrameField:
+        """Rebuild one field from the document :meth:`to_json` wrote.
+
+        ``source`` is required rather than defaulted to the dataclass default:
+        a field whose document never says where the fact came from must not be
+        loaded as :data:`SOURCE_STATIC`, because that is exactly the "measured"
+        claim this module exists to keep honest.
+        """
+
+        document = _document_object(document, owner)
+        width = _required(document, "width", owner)
+        if isinstance(width, bool) or not isinstance(width, (int, str)):
+            raise ProtocolIRError(f"{owner}.width must be an integer or a string")
+        source = _required_string(document, "source", owner)
+        if source not in SOURCES:
+            raise ProtocolIRError(
+                f"{owner}.source must be one of {', '.join(SOURCES)}"
+            )
+        return cls(
+            name=_required_string(document, "name", owner),
+            offset=_required_integer(document, "offset", owner),
+            width=width,
+            role=_required_string(document, "role", owner),
+            value=_required_string(document, "value", owner),
+            endianness=_optional_string(document, "endianness", owner, default=None),
+            evidence=_evidence_tuple(_required(document, "evidence", owner), owner),
+            source=source,
+            confidence=_required_number(document, "confidence", owner),
+        )
+
 
 @dataclass(frozen=True)
 class FrameModel:
@@ -263,6 +312,27 @@ class FrameModel:
             "max_payload": self.max_payload_symbol or self.max_payload,
             "fields": [item.to_contract_block() for item in self.fields],
         }
+
+    @classmethod
+    def from_json(cls, document: Mapping[str, Any],
+                  owner: str = "frame") -> FrameModel:
+        """Rebuild the A/B block from the document :meth:`to_json` wrote."""
+
+        document = _document_object(document, owner)
+        fields = _required(document, "fields", owner)
+        if not isinstance(fields, list):
+            raise ProtocolIRError(f"{owner}.fields must be an array")
+        return cls(
+            fields=tuple(
+                FrameField.from_json(item, f"{owner}.fields[{index}]")
+                for index, item in enumerate(fields)
+            ),
+            header_size=_optional_integer(document, "header_size", owner),
+            payload_offset=_optional_integer(document, "payload_offset", owner),
+            max_payload=_optional_integer(document, "max_payload", owner),
+            max_payload_symbol=_required_string(document, "max_payload_symbol", owner),
+            evidence=_evidence_tuple(_required(document, "evidence", owner), owner),
+        )
 
 
 @dataclass(frozen=True)
@@ -349,6 +419,66 @@ class ProtocolIR:
             source_name=facts.filename,
             llm_confidence=confidence,
             metadata=dict(conventions.metadata),
+        )
+
+    @classmethod
+    def from_json(cls, document: Mapping[str, Any]) -> ProtocolIR:
+        """Rebuild the IR from the document :meth:`to_json` produced.
+
+        This is the inverse of :meth:`to_json` and it is deliberately not a
+        lenient reader.  Every key ``to_json`` always writes is required here,
+        so a truncated, hand-mangled or half-written ``protocol_ir.json`` raises
+        :class:`ProtocolIRError` instead of loading as an IR that is silently
+        missing facts -- a consumer told "the frame has no length field" cannot
+        tell that from "the length field was lost on the way back in", and the
+        harness that follows would be built on the difference.
+
+        Two shapes need care on the way in:
+
+        * The C block keys are re-read from their own documents, and the
+          ``source``/``confidence`` keys :meth:`to_json` *injects* into them are
+          ignored: they are projections of the IR-level ``confidence``, which is
+          where this loader reads them from.  ``max_steps`` is preserved exactly
+          as written rather than normalised into the three keys the vote usually
+          fills, so an empty block stays empty instead of coming back as a
+          different statement.
+        * ``header_size``, ``payload_offset`` and ``max_payload`` are nullable
+          in the document, so an explicit ``null`` and an absent key both load as
+          ``None``.
+        """
+
+        document = _document_object(document, "protocol IR")
+        version = document.get("schema_version")
+        if version != PROTOCOL_IR_SCHEMA_VERSION:
+            raise ProtocolIRError(
+                f"protocol IR.schema_version must be {PROTOCOL_IR_SCHEMA_VERSION}"
+            )
+
+        sequence = document.get("sequence_model")
+        if sequence is not None:
+            sequence = _sequence_model_from_document(sequence)
+        context = document.get("context")
+        if context is not None:
+            context = _context_model_from_document(context)
+        operations = _required(document, "stateful_operations", "protocol IR")
+        if not isinstance(operations, list):
+            raise ProtocolIRError("protocol IR.stateful_operations must be an array")
+
+        return cls(
+            entry_function=_required_string(document, "entry_function", "protocol IR"),
+            frame=FrameModel.from_json(_required(document, "frame", "protocol IR")),
+            sequence=sequence,
+            context=context,
+            stateful_operations=tuple(
+                _stateful_operation_from_document(item, f"stateful_operations[{index}]")
+                for index, item in enumerate(operations)
+            ),
+            requirements=_string_list(document, "requirements", "protocol IR"),
+            notes=_string_list(document, "notes", "protocol IR"),
+            limitations=_string_list(document, "limitations", "protocol IR"),
+            source_name=_required_string(document, "source", "protocol IR"),
+            llm_confidence=_confidence(document, "protocol IR"),
+            metadata=_metadata_from_document(_required(document, "metadata", "protocol IR")),
         )
 
     # -- views -------------------------------------------------------------
@@ -670,6 +800,172 @@ def _context_block(context: ContextModel) -> dict[str, Any]:
         "destroy": context.destroy,
         "lifetime": context.lifetime,
     }
+
+
+# --------------------------------------------------------------------------
+# deserialisation
+# --------------------------------------------------------------------------
+#
+# One rule decides what :meth:`ProtocolIR.from_json` requires: a key whose value
+# ``to_json`` always writes is required here, and a key it writes conditionally
+# falls back to its dataclass default.  A missing required key therefore means
+# the document was not written by ``to_json``, which is a fact worth failing on.
+#
+# The C-block loaders live here rather than as ``from_json`` classmethods on
+# :mod:`protocol_conventions` because they are the inverse of how the *IR*
+# serialises those objects -- with the ``source``/``confidence`` keys the IR
+# injects -- and because every failure in this module is a
+# :class:`ProtocolIRError`, which is defined here and which
+# ``protocol_conventions`` cannot import without a cycle.
+
+
+def _document_object(value: Any, owner: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ProtocolIRError(f"{owner} must be a JSON object")
+    return value
+
+
+def _required(document: Mapping[str, Any], key: str, owner: str) -> Any:
+    if key not in document:
+        raise ProtocolIRError(f"{owner} is missing {key!r}")
+    return document[key]
+
+
+def _string(value: Any, owner: str, key: str) -> str:
+    if not isinstance(value, str):
+        raise ProtocolIRError(f"{owner}.{key} must be a string")
+    return value
+
+
+def _required_string(document: Mapping[str, Any], key: str, owner: str) -> str:
+    return _string(_required(document, key, owner), owner, key)
+
+
+def _optional_string(document: Mapping[str, Any], key: str, owner: str,
+                     default: str | None = "") -> str | None:
+    value = document.get(key, default)
+    if value is None:
+        return default
+    return _string(value, owner, key)
+
+
+def _integer(value: Any, owner: str, key: str) -> int:
+    # ``True`` is an ``int`` in Python, so a boolean has to be rejected before
+    # the numeric check rather than by it.
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ProtocolIRError(f"{owner}.{key} must be an integer")
+    return value
+
+
+def _required_integer(document: Mapping[str, Any], key: str, owner: str) -> int:
+    return _integer(_required(document, key, owner), owner, key)
+
+
+def _optional_integer(document: Mapping[str, Any], key: str,
+                      owner: str) -> int | None:
+    value = document.get(key)
+    return None if value is None else _integer(value, owner, key)
+
+
+def _required_number(document: Mapping[str, Any], key: str, owner: str) -> float:
+    value = _required(document, key, owner)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ProtocolIRError(f"{owner}.{key} must be a number")
+    return float(value)
+
+
+def _required_boolean(document: Mapping[str, Any], key: str, owner: str) -> bool:
+    value = _required(document, key, owner)
+    if not isinstance(value, bool):
+        raise ProtocolIRError(f"{owner}.{key} must be a boolean")
+    return value
+
+
+def _string_list(document: Mapping[str, Any], key: str, owner: str) -> tuple[str, ...]:
+    value = _required(document, key, owner)
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise ProtocolIRError(f"{owner}.{key} must be an array of strings")
+    return tuple(value)
+
+
+def _evidence_tuple(value: Any, owner: str) -> tuple[ProtocolEvidence, ...]:
+    if not isinstance(value, list):
+        raise ProtocolIRError(f"{owner}.evidence must be an array")
+    return tuple(
+        ProtocolEvidence.from_json(item, f"{owner}.evidence[{index}]")
+        for index, item in enumerate(value)
+    )
+
+
+def _confidence(document: Mapping[str, Any], owner: str) -> float:
+    value = _required_number(document, "confidence", owner)
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise ProtocolIRError(f"{owner}.confidence must be between 0 and 1")
+    return value
+
+
+def _metadata_from_document(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ProtocolIRError("protocol IR.metadata must be a JSON object")
+    return dict(value)
+
+
+def _max_steps_from_document(value: Any, owner: str) -> dict[str, Any]:
+    """The command-loop bound, checked and otherwise kept as written.
+
+    The three keys the vote fills (``value``, ``source``, ``evidence``) are
+    type-checked when they are present, but the mapping is not normalised into
+    them: ``SequenceModel`` defaults ``max_steps`` to ``{}`` and normalising
+    would make that empty block load back as an explicit ``value: null``, which
+    is a different statement about the loop bound than an absent one.
+    """
+
+    block = _document_object(_required(value, "max_steps", owner), f"{owner}.max_steps")
+    if block.get("value") is not None:
+        _integer(block.get("value"), f"{owner}.max_steps", "value")
+    if block.get("source") is not None:
+        _string(block.get("source"), f"{owner}.max_steps", "source")
+    evidence = block.get("evidence")
+    if evidence is not None and (
+        not isinstance(evidence, list)
+        or any(not isinstance(item, str) for item in evidence)
+    ):
+        raise ProtocolIRError(f"{owner}.max_steps.evidence must be an array of strings")
+    return dict(block)
+
+
+def _sequence_model_from_document(document: Any,
+                                  owner: str = "sequence_model") -> SequenceModel:
+    document = _document_object(document, owner)
+    return SequenceModel(
+        multi_frame=_required_boolean(document, "multi_frame", owner),
+        reason=_required_string(document, "reason", owner),
+        evidence=_string_list(document, "evidence", owner),
+        max_steps=_max_steps_from_document(document, owner),
+    )
+
+
+def _context_model_from_document(document: Any,
+                                 owner: str = "context") -> ContextModel:
+    document = _document_object(document, owner)
+    return ContextModel(
+        type=_required_string(document, "type", owner),
+        init=_required_string(document, "init", owner),
+        destroy=_required_string(document, "destroy", owner),
+        lifetime=_required_string(document, "lifetime", owner),
+        evidence=_string_list(document, "evidence", owner),
+    )
+
+
+def _stateful_operation_from_document(
+    document: Any, owner: str = "stateful operation",
+) -> StatefulOperation:
+    document = _document_object(document, owner)
+    return StatefulOperation(
+        opcode=_required_string(document, "opcode", owner),
+        reason=_required_string(document, "reason", owner),
+        evidence=_string_list(document, "evidence", owner),
+    )
 
 
 __all__ = [
