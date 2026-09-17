@@ -6,8 +6,14 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
+from .protocol_conventions import (
+    PROTOCOL_CONVENTION_SCHEMA_VERSION,
+    ConventionInferenceResult,
+)
+from .protocol_ir import ProtocolIR
+from .protocol_miner import ProtocolFacts
 from .records import write_json
 from .triplet import FunctionTriplet, triplets_document
 
@@ -16,6 +22,21 @@ VALIDATION_KINDS = ("intermediate", "compiler", "linker", "runtime")
 VALIDATION_STATUSES = frozenset({
     "passed", "failed", "skipped", "unavailable", "passed_with_limitations",
 })
+
+#: Key set in ``protocol_conventions.json`` only when no inference was run at
+#: all, alongside the human-readable :data:`PROTOCOL_CONVENTIONS_NOT_INFERRED`.
+#: Spelled in the negative so that its absence means the C block *is* there:
+#: ``document.get(PROTOCOL_CONVENTIONS_NOT_INFERRED_KEY)`` then fails safe.
+PROTOCOL_CONVENTIONS_NOT_INFERRED_KEY = "not_inferred"
+
+#: Recorded in ``protocol_conventions.json`` when no inference was run at all.
+#: The C block is then *unknown*, which is a different statement from "the vote
+#: produced nothing": ``infer_protocol_conventions`` raises rather than returning
+#: an empty result, so only the first can actually be persisted.
+PROTOCOL_CONVENTIONS_NOT_INFERRED = (
+    "convention block was not inferred: no LLM samples were requested, so the "
+    "command loop, context lifetime and stateful opcodes are unknown"
+)
 
 
 @dataclass(frozen=True)
@@ -46,6 +67,24 @@ class ArtifactStore:
     @property
     def triplets(self) -> Path:
         return self.root / "triplets.json"
+
+    @property
+    def protocol_candidates(self) -> Path:
+        """The statically mined A/B facts, evidence included."""
+
+        return self.root / "protocol_candidates.json"
+
+    @property
+    def protocol_conventions(self) -> Path:
+        """The voted C block, with the samples and metadata behind the vote."""
+
+        return self.root / "protocol_conventions.json"
+
+    @property
+    def protocol_ir(self) -> Path:
+        """The canonical A/B + C model every later stage reads."""
+
+        return self.root / "protocol_ir.json"
 
     @property
     def triplets_directory(self) -> Path:
@@ -110,6 +149,120 @@ class ArtifactStore:
                     allow_nan=False,
                 )
         return self.triplets
+
+    def write_protocol(
+        self,
+        facts: ProtocolFacts | Mapping[str, Any],
+        conventions: ConventionInferenceResult | Mapping[str, Any] | None = None,
+        ir: ProtocolIR | Mapping[str, Any] | None = None,
+        *,
+        default_max_steps: int | None = None,
+    ) -> tuple[Path, Path, Path]:
+        """Persist the three protocol artifacts and return their paths.
+
+        The result is ``(candidates, conventions, ir)``.  ``facts`` and
+        ``conventions`` may be either the dataclasses or the documents their
+        ``to_json()`` already produced; whichever is passed is written as it is,
+        so no second schema version gets layered on top.
+
+        When ``ir`` is omitted the two halves are merged through
+        :meth:`ProtocolIR.from_facts_and_conventions`.  That merge needs the
+        dataclasses -- a serialised conventions document cannot be voted back
+        into a :class:`~protocol_conventions.ProtocolConventions` -- so mixing a
+        document with an implicit merge raises rather than writing an IR that
+        claims the C block was never inferred.  ``default_max_steps`` applies to
+        that merge only.
+
+        What the conventions document is able to say about the vote, and what it
+        cannot, is documented on :meth:`write_protocol_conventions`.
+        """
+
+        document = ir if ir is not None else _merged_protocol_ir(
+            facts, conventions, default_max_steps=default_max_steps
+        )
+        # Merge before writing anything: a rejected merge leaves the root exactly
+        # as it was, instead of a candidates file with no IR to match it.
+        return (
+            self.write_protocol_candidates(facts),
+            self.write_protocol_conventions(
+                conventions, entry_function=_facts_entry_function(facts)
+            ),
+            self.write_protocol_ir(document),
+        )
+
+    def write_protocol_candidates(
+        self, facts: ProtocolFacts | Mapping[str, Any],
+    ) -> Path:
+        """Persist the statically mined A/B facts document."""
+
+        if not isinstance(facts, (ProtocolFacts, Mapping)):
+            raise ValueError(
+                "protocol candidates must be ProtocolFacts or its JSON document"
+            )
+        document = facts.to_json() if isinstance(facts, ProtocolFacts) else dict(facts)
+        return self._write_protocol_json(self.protocol_candidates, document)
+
+    def write_protocol_conventions(
+        self,
+        conventions: ConventionInferenceResult | Mapping[str, Any] | None = None,
+        *,
+        entry_function: str = "",
+    ) -> Path:
+        """Persist the C block, marked explicitly when none was inferred.
+
+        The vote leaves behind sample-level metadata (``prompt_version``,
+        ``model``, ``provider``, ``samples_requested``, ``valid_samples``,
+        ``rejected_samples``) and the accepted/rejected sample bodies, and that
+        is all this file can record.  There are **no per-element tallies**:
+        ``_vote_conventions`` reduces each element to a mode and drops the
+        counts, and the IR derives its LLM confidence from the sample-level
+        ratio rather than from per-field agreement.  Recomputing a threshold
+        here would duplicate the vote and could silently disagree with the
+        result it is meant to describe, so the gap is recorded rather than
+        filled; real tallies are a change that belongs to ``protocol_conventions``.
+
+        ``conventions=None`` writes that the block was never inferred, so a
+        reader cannot mistake "not asked" for "the vote produced nothing" (the
+        latter cannot be persisted at all: :func:`infer_protocol_conventions`
+        raises when no sample is valid).
+
+        The marker is :data:`PROTOCOL_CONVENTIONS_NOT_INFERRED_KEY`, spelled in
+        the negative and present *only* when nothing was inferred.  A positive
+        ``inferred`` key would have to be absent from the inferred document --
+        that document is written verbatim as ``ConventionInferenceResult.to_json()``
+        produces it -- and an absent key reads as false to ``document.get``,
+        so the obvious check would report a successful inference as a missing C
+        block.  In the negative form the same check fails safe: a missing key
+        means the block is there.  ``conventions is None`` remains the direct
+        signal for consumers that would rather test the payload than the flag.
+        """
+
+        document = _conventions_document(conventions, entry_function)
+        return self._write_protocol_json(self.protocol_conventions, document)
+
+    def write_protocol_ir(self, ir: ProtocolIR | Mapping[str, Any]) -> Path:
+        """Persist the canonical merged A/B + C document."""
+
+        if not isinstance(ir, (ProtocolIR, Mapping)):
+            raise ValueError("protocol IR must be ProtocolIR or its JSON document")
+        document = ir.to_json() if isinstance(ir, ProtocolIR) else dict(ir)
+        return self._write_protocol_json(self.protocol_ir, document)
+
+    def _write_protocol_json(self, path: Path, document: dict[str, Any]) -> Path:
+        """Canonically serialise one protocol document at the store root.
+
+        The three protocol files are written the way ``write_triplets`` writes
+        its catalog: sorted keys and no non-finite numbers, so two runs over the
+        same target diff cleanly.  No other catalog directory is created --
+        these files live at the root, and a stage that only mines protocols
+        should not conjure up ``generation/`` or ``fuzz/``.
+        """
+
+        if not isinstance(document, Mapping):
+            raise ValueError("protocol artifact must be a JSON object")
+        self.root.mkdir(parents=True, exist_ok=True)
+        write_json(path, dict(document), sort_keys=True, allow_nan=False)
+        return path
 
 
 @dataclass(frozen=True)
@@ -480,6 +633,67 @@ class TripletArtifacts:
             "stage3_attempts": self.stage3_attempts,
             "stage4_attempts": self.stage4_attempts,
         }
+
+
+def _merged_protocol_ir(
+    facts: ProtocolFacts | Mapping[str, Any],
+    conventions: ConventionInferenceResult | Mapping[str, Any] | None,
+    *,
+    default_max_steps: int | None,
+) -> ProtocolIR:
+    """Merge the two halves when the caller did not hand over an IR."""
+
+    if not isinstance(facts, ProtocolFacts):
+        raise ValueError(
+            "merging a protocol IR needs ProtocolFacts; pass ir explicitly when "
+            "the A/B facts are already a document"
+        )
+    if conventions is None:
+        return ProtocolIR.from_facts_and_conventions(
+            facts, default_max_steps=default_max_steps
+        )
+    if not isinstance(conventions, ConventionInferenceResult):
+        raise ValueError(
+            "merging a protocol IR needs a ConventionInferenceResult; pass ir "
+            "explicitly when the C block is already a document"
+        )
+    return ProtocolIR.from_facts_and_conventions(
+        facts, conventions.conventions, default_max_steps=default_max_steps
+    )
+
+
+def _conventions_document(
+    conventions: ConventionInferenceResult | Mapping[str, Any] | None,
+    entry_function: str,
+) -> dict[str, Any]:
+    """The C block document, or the marker that says it was never inferred."""
+
+    if isinstance(conventions, ConventionInferenceResult):
+        return conventions.to_json()
+    if isinstance(conventions, Mapping):
+        return dict(conventions)
+    if conventions is not None:
+        raise ValueError(
+            "protocol conventions must be a ConventionInferenceResult or its "
+            "JSON document"
+        )
+    return {
+        "schema_version": PROTOCOL_CONVENTION_SCHEMA_VERSION,
+        "entry_function": entry_function,
+        PROTOCOL_CONVENTIONS_NOT_INFERRED_KEY: True,
+        "conventions": None,
+        "generations": [],
+        "accepted_samples": [],
+        "rejected_samples": [],
+        "reason": PROTOCOL_CONVENTIONS_NOT_INFERRED,
+    }
+
+
+def _facts_entry_function(facts: ProtocolFacts | Mapping[str, Any]) -> str:
+    if isinstance(facts, ProtocolFacts):
+        return facts.entry_function
+    value = facts.get("entry_function") if isinstance(facts, Mapping) else None
+    return value if isinstance(value, str) else ""
 
 
 def _validate_ft_id(ft_id: str) -> None:
