@@ -10,9 +10,9 @@ import unittest
 from unittest.mock import patch
 
 from harness_generation.cli import main
-from harness_generation.llm import MockLLM
+from harness_generation.llm import LLMConfig, MockLLM
 from harness_generation.llm import OpenAICompatibleLLM
-from harness_generation.generation_cli import _resolve_llm
+from harness_generation.llm_config import resolve_llm
 from harness_generation.pipeline_validation import PipelineValidationConfig
 from harness_generation.triplet import load_triplets_json
 from tests.toolchain_probe import LIBFUZZER_AVAILABLE, LIBFUZZER_SKIP_REASON
@@ -460,7 +460,7 @@ class GenerationCLITests(unittest.TestCase):
         ).exists())
 
     def test_real_provider_is_constructed_from_environment_without_network(self):
-        client = _resolve_llm(
+        client = resolve_llm(
             None,
             provider="openai-compatible",
             model=None,
@@ -481,9 +481,66 @@ class GenerationCLITests(unittest.TestCase):
         self.assertEqual(client.config.thinking, "disabled")
         self.assertNotIn("unit-test-only", json.dumps(client.config.to_dict()))
 
+    def test_real_provider_accepts_a_requested_timeout(self):
+        client = resolve_llm(
+            None,
+            provider="openai-compatible",
+            model=None,
+            mock_responses=None,
+            recorded_responses=None,
+            timeout=2.5,
+            environ={
+                "LLM_BASE_URL": "https://llm.example.test/v1",
+                "LLM_API_KEY": "unit-test-only",
+                "LLM_MODEL": "configured-model",
+            },
+        )
+
+        self.assertIsInstance(client, OpenAICompatibleLLM)
+        self.assertEqual(client.config.timeout, 2.5)
+
+    def test_real_provider_without_a_timeout_keeps_the_config_default(self):
+        environment = {
+            "LLM_BASE_URL": "https://llm.example.test/v1",
+            "LLM_API_KEY": "unit-test-only",
+            "LLM_MODEL": "configured-model",
+        }
+        client = resolve_llm(
+            None,
+            provider="openai-compatible",
+            model=None,
+            mock_responses=None,
+            recorded_responses=None,
+            environ=environment,
+        )
+
+        # "No override" has to mean exactly that, or this caller's behaviour
+        # would drift from llm.py the moment that default changed.  The
+        # expectation is read from LLMConfig rather than written out here so
+        # the test cannot become the second copy it is guarding against.
+        declared = LLMConfig(
+            model="configured-model",
+            base_url="https://llm.example.test/v1",
+            api_key_env_name="LLM_API_KEY",
+        ).timeout
+        self.assertEqual(client.config.timeout, declared)
+
+    def test_injected_llm_refuses_a_timeout_it_cannot_apply(self):
+        # An injected client already carries its own timeout, so applying the
+        # flag is impossible and ignoring it would be a silent no-op.
+        with self.assertRaisesRegex(ValueError, "--llm-timeout"):
+            resolve_llm(
+                MockLLM([]),
+                provider=None,
+                model=None,
+                mock_responses=None,
+                recorded_responses=None,
+                timeout=5.0,
+            )
+
     def test_real_provider_rejects_invalid_thinking_mode(self):
         with self.assertRaisesRegex(ValueError, "LLM_THINKING"):
-            _resolve_llm(
+            resolve_llm(
                 None,
                 provider="openai-compatible",
                 model=None,

@@ -5,14 +5,13 @@ from __future__ import annotations
 import argparse
 from dataclasses import replace
 import json
-import os
 from pathlib import Path
 import sys
-from typing import Any, Mapping
+from typing import Any
 
 from .artifacts import ArtifactStore
-from .llm import (LLMClient, LLMConfig, LLMError, MockLLM,
-                  OpenAICompatibleLLM, RecordedResponseLLM)
+from .llm import LLMClient, LLMError
+from .llm_config import resolve_llm
 from .fuzz_smoke import LibFuzzerSmokeConfig
 from .orchestrator import (
     PIPELINE_STAGES,
@@ -150,7 +149,7 @@ def main(
             if all_triplets
             else (_select_triplet(triplets, args.triplet_id),)
         )
-        client = _resolve_llm(
+        client = resolve_llm(
             llm,
             provider=(
                 "openai-compatible"
@@ -501,79 +500,6 @@ def _artifact_checkpoints(
             )
         checkpoints[stage] = paths[stage]
     return checkpoints
-
-
-def _resolve_llm(
-    injected: LLMClient | None,
-    *,
-    provider: str | None,
-    model: str | None,
-    mock_responses: Path | None,
-    recorded_responses: Path | None,
-    environ: Mapping[str, str] | None = None,
-) -> LLMClient:
-    environment = os.environ if environ is None else environ
-    if injected is not None:
-        if (
-            provider is not None
-            or model is not None
-            or mock_responses is not None
-            or recorded_responses is not None
-        ):
-            raise ValueError("cannot combine an injected LLM with provider options")
-        return injected
-    if mock_responses is not None:
-        if model is not None:
-            raise ValueError("--model is only valid for a real LLM provider")
-        return MockLLM(_load_mock_responses(mock_responses))
-    if recorded_responses is not None:
-        if model is not None:
-            raise ValueError("--model is only valid for a real LLM provider")
-        return RecordedResponseLLM.from_file(recorded_responses)
-    selected_provider = provider or "openai-compatible"
-    if selected_provider != "openai-compatible":
-        raise ValueError(f"unsupported LLM provider: {selected_provider}")
-    base_url = environment.get("LLM_BASE_URL", "").strip()
-    api_key = environment.get("LLM_API_KEY", "").strip()
-    selected_model = (model or environment.get("LLM_MODEL", "")).strip()
-    thinking = environment.get("LLM_THINKING", "").strip().lower() or None
-    missing = []
-    if not base_url:
-        missing.append("LLM_BASE_URL")
-    if not api_key:
-        missing.append("LLM_API_KEY")
-    if not selected_model:
-        missing.append("LLM_MODEL")
-    if missing:
-        raise ValueError(
-            "missing LLM configuration: " + ", ".join(missing)
-        )
-    if thinking not in {None, "enabled", "disabled"}:
-        raise ValueError("LLM_THINKING must be enabled or disabled")
-    return OpenAICompatibleLLM(
-        LLMConfig(
-            model=selected_model,
-            base_url=base_url,
-            api_key_env_name="LLM_API_KEY",
-            thinking=thinking,
-        ),
-        environ=environment,
-    )
-
-
-def _load_mock_responses(path: Path) -> tuple[str, ...]:
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise ValueError(
-            f"cannot load mock responses: {type(error).__name__}"
-        ) from error
-    responses = document.get("responses") if isinstance(document, dict) else document
-    if not isinstance(responses, list) or any(
-        not isinstance(response, str) for response in responses
-    ):
-        raise ValueError("mock responses must be an array of strings")
-    return tuple(responses)
 
 
 def _select_triplet(

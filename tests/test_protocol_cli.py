@@ -11,14 +11,17 @@ Every test writes into a temporary directory.  Nothing here touches the
 checked-in ``artifacts/`` fixtures, which other tests read.
 """
 
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import io
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -27,7 +30,7 @@ from harness_generation.artifacts import (
     PROTOCOL_CONVENTIONS_NOT_INFERRED_KEY,
 )
 from harness_generation.cli import main
-from harness_generation.llm import MockLLM
+from harness_generation.llm import LLMConfig, LLMError, MockLLM, OpenAICompatibleLLM
 from harness_generation.protocol_cli import _print_limitations
 from harness_generation.protocol_conventions import (
     ContextModel,
@@ -46,6 +49,59 @@ ARTIFACTS = (
     "protocol_conventions.json",
     "protocol_ir.json",
 )
+
+
+def _provider_environment(base_url="https://llm.example.test/v1"):
+    """A complete LLM_* configuration pointing nowhere a test can reach."""
+
+    return {
+        "LLM_BASE_URL": base_url,
+        "LLM_API_KEY": "unit-test-only",
+        "LLM_MODEL": "configured-model",
+    }
+
+
+def _chat_completions_response(content):
+    return {
+        "id": "chatcmpl-unit-test",
+        "model": "configured-model",
+        "choices": [{"finish_reason": "stop", "message": {"content": content}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+    }
+
+
+@contextmanager
+def _silent_endpoint():
+    """A local TCP port that accepts connections and then never answers.
+
+    This is the failure the timeout flag exists to bound.  It is deliberately a
+    localhost socket rather than a mock: a mock cannot be slow, and being able
+    to be slow is the entire property under test.  Nothing here leaves the
+    machine.
+    """
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(4)
+    accepted = []
+
+    def accept_forever():
+        while True:
+            try:
+                connection, _ = server.accept()
+            except OSError:
+                return
+            # Accepted and then deliberately ignored: the client blocks reading
+            # the response until its own timeout expires.
+            accepted.append(connection)
+
+    threading.Thread(target=accept_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{server.getsockname()[1]}/v1"
+    finally:
+        server.close()
+        for connection in accepted:
+            connection.close()
 
 
 def _sample(*, max_steps=32, stateful=True):
@@ -302,6 +358,179 @@ class ProtocolMineCLITests(unittest.TestCase):
         self.assertIn("Protocol mining failed", stderr)
         self.assertFalse(self.output.exists())
 
+    # -- bounding the wait -------------------------------------------------
+
+    def test_llm_timeout_bounds_the_wait_against_a_silent_endpoint(self):
+        # The behavioural proof for --llm-timeout.  Three samples against a
+        # reachable but silent endpoint, with per-sample timeouts that add up
+        # because the sample loop asks for them one after another.  With the
+        # 120s LLMConfig default this exact invocation is allowed up to
+        # 3 x 120 = 360s; the flag has to turn that into a wait a person would
+        # sit through, which is why this test must pass a short timeout rather
+        # than accept the default.
+        with _silent_endpoint() as base_url:
+            started = time.monotonic()
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with patch.dict(
+                os.environ, _provider_environment(base_url), clear=True
+            ), redirect_stdout(stdout), redirect_stderr(stderr):
+                code = main([
+                    "protocol-mine",
+                    "--source", str(SOURCE),
+                    "--function", FUNCTION,
+                    "--output", str(self.output),
+                    "--with-llm",
+                    "--samples", "3",
+                    "--llm-timeout", "1",
+                ])
+            elapsed = time.monotonic() - started
+
+        self.assertEqual(code, 1, stderr.getvalue())
+        # Deliberately generous: the claim under test is that the wait is
+        # bounded, not that it is bounded to the millisecond.
+        self.assertLess(elapsed, 20.0)
+        # And a floor, so a run that gave up early for an unrelated reason --
+        # a refused connection, a rejected argument -- cannot pass this test.
+        self.assertGreater(elapsed, 1.0)
+        self.assertIn("Protocol mining failed", stderr.getvalue())
+        # The wait expired before any sample was usable, so nothing was mined
+        # and no artifact root was created.
+        self.assertFalse(self.output.exists())
+
+    def test_a_silent_endpoint_reads_as_a_timeout_not_as_a_bad_response(self):
+        # A timeout is a statement about the clock.  Reporting it as an invalid
+        # response sends the reader hunting for a malformed body that does not
+        # exist, which is the misdiagnosis a short --llm-timeout is most likely
+        # to produce, so the wording is pinned here.
+        with _silent_endpoint() as base_url:
+            client = OpenAICompatibleLLM(
+                LLMConfig(
+                    model="configured-model",
+                    base_url=base_url,
+                    api_key_env_name="LLM_API_KEY",
+                    timeout=1.0,
+                ),
+                environ={"LLM_API_KEY": "unit-test-only"},
+            )
+            with self.assertRaises(LLMError) as caught:
+                client.generate("unit-test prompt", prompt_version="unit-test-v1")
+
+        message = str(caught.exception)
+        self.assertIn("timed out", message)
+        self.assertNotIn("invalid OpenAI-compatible response", message)
+        # What actually arrives at the error handler is builtins.TimeoutError,
+        # not a bespoke socket class: socket.timeout is an alias of it on this
+        # Python, and http.client raises it out of the blocking read.  Pinning
+        # the class keeps the handler catching the exception that really occurs
+        # rather than one that merely looks like it should.
+        self.assertIs(socket.timeout, TimeoutError)
+        self.assertIsInstance(caught.exception.__cause__, TimeoutError)
+
+    def test_the_requested_timeout_reaches_the_provider(self):
+        captured = {}
+        responses = [_sample() for _ in range(3)]
+
+        def fake_provider(config, **_kwargs):
+            captured["config"] = config
+            return MockLLM(responses)
+
+        with patch(
+            "harness_generation.llm_config.OpenAICompatibleLLM",
+            new=fake_provider,
+        ), patch.dict(
+            os.environ, _provider_environment(), clear=True
+        ):
+            code, _, stderr = self._run(
+                "--with-llm", "--samples", "3", "--llm-timeout", "1.5"
+            )
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(captured["config"].timeout, 1.5)
+
+    def test_an_absent_timeout_leaves_the_provider_default_in_place(self):
+        captured = {}
+        responses = [_sample() for _ in range(3)]
+
+        def fake_provider(config, **_kwargs):
+            captured["config"] = config
+            return MockLLM(responses)
+
+        with patch(
+            "harness_generation.llm_config.OpenAICompatibleLLM",
+            new=fake_provider,
+        ), patch.dict(
+            os.environ, _provider_environment(), clear=True
+        ):
+            code, _, stderr = self._run("--with-llm", "--samples", "3")
+
+        self.assertEqual(code, 0, stderr)
+        # Read from LLMConfig rather than written out, so this test cannot
+        # become a second copy of the number it is checking is not duplicated.
+        declared = LLMConfig(
+            model="configured-model",
+            base_url="https://llm.example.test/v1",
+            api_key_env_name="LLM_API_KEY",
+        ).timeout
+        self.assertEqual(captured["config"].timeout, declared)
+
+    def test_the_summary_states_the_worst_case_for_the_real_provider(self):
+        # The transport is replaced, not the client, so the summary still reads
+        # the effective timeout off a real provider object and no request is
+        # made.
+        with patch.dict(
+            os.environ, _provider_environment(), clear=True
+        ), patch(
+            "harness_generation.llm._post_json",
+            lambda *_args: _chat_completions_response(_sample()),
+        ):
+            code, stdout, stderr = self._run(
+                "--with-llm", "--samples", "3", "--llm-timeout", "1"
+            )
+
+        self.assertEqual(code, 0, stderr)
+        # 3 samples x 1s, added rather than guessed: the loop is sequential.
+        self.assertIn("samples=3 timeout=1s worst_case=3s", stdout)
+
+    def test_the_summary_reports_no_timeout_for_a_mock(self):
+        mock_path = self.temporary / "mock.json"
+        mock_path.write_text(
+            json.dumps({"responses": [_sample() for _ in range(3)]}),
+            encoding="utf-8",
+        )
+        code, stdout, stderr = self._run(
+            "--with-llm", "--samples", "3", "--llm-timeout", "7",
+            "--mock-responses", str(mock_path),
+        )
+
+        self.assertEqual(code, 0, stderr)
+        # A mock does not wait, so it has no wall-clock bound to quote: naming
+        # one would be a number with no referent.
+        self.assertIn("timeout=n/a worst_case=n/a", stdout)
+        self.assertNotIn("timeout=7s", stdout)
+
+    def test_the_summary_says_nothing_about_time_without_an_llm(self):
+        code, stdout, stderr = self._run()
+
+        self.assertEqual(code, 0, stderr)
+        # No samples are requested and no provider is resolved in this mode, so
+        # there is no exposure to report and no line pretending otherwise.
+        self.assertNotIn("worst_case", stdout)
+        self.assertNotIn("samples=", stdout)
+
+    def test_injected_llm_with_a_timeout_is_refused_loudly(self):
+        # The injected client was built by the caller, timeout included.  Doing
+        # nothing with the flag would leave a user who asked for a 10-second
+        # bound with no bound and no notice, so the run fails instead.
+        code, stdout, stderr = self._run(
+            "--with-llm", "--llm-timeout", "5", llm=MockLLM([_sample()])
+        )
+
+        self.assertEqual(code, 1)
+        self.assertIn("cannot combine an injected LLM with provider options", stderr)
+        self.assertIn("--llm-timeout", stderr)
+        self.assertFalse(self.output.exists())
+        self.assertNotIn("Protocol mining:", stdout)
+
     # -- usage errors ------------------------------------------------------
 
     def test_usage_errors_are_rejected_by_the_parser(self):
@@ -322,6 +551,24 @@ class ProtocolMineCLITests(unittest.TestCase):
         self.assertIn(
             "--model, --mock-responses and --recorded-responses require --with-llm",
             self._usage_error("--mock-responses", str(self.temporary / "mock.json")),
+        )
+
+    def test_llm_timeout_usage_errors_are_rejected_by_the_parser(self):
+        self.assertIn(
+            "--llm-timeout requires --with-llm",
+            self._usage_error("--llm-timeout", "1"),
+        )
+        # inf and nan both parse as floats, so each has to be rejected on its
+        # own: `inf > 0` is True, and `nan` compares False against everything.
+        for value in ("0", "-1", "inf", "nan"):
+            with self.subTest(value=value):
+                self.assertIn(
+                    "--llm-timeout must be a positive number of seconds",
+                    self._usage_error("--with-llm", "--llm-timeout", value),
+                )
+        self.assertIn(
+            "invalid float value",
+            self._usage_error("--with-llm", "--llm-timeout", "soon"),
         )
 
     # -- re-running --------------------------------------------------------

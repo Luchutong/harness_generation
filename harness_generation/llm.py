@@ -298,6 +298,17 @@ class OpenAICompatibleLLM:
             usage = response.get("usage", {})
         except LLMError:
             raise
+        except TimeoutError as error:
+            # A timeout says something about the clock, not about the payload.
+            # Reporting it as an invalid response would send a reader looking
+            # for a malformed body that does not exist, which is exactly the
+            # misdiagnosis a short --llm-timeout is most likely to run into.
+            # socket.timeout is an alias of TimeoutError on every supported
+            # Python, so this one clause catches both spellings.
+            raise LLMError(
+                "OpenAI-compatible request timed out after "
+                f"{self.config.timeout:g}s"
+            ) from error
         except Exception as error:
             raise LLMError(f"invalid OpenAI-compatible response: {type(error).__name__}") from error
 
@@ -376,6 +387,14 @@ def _post_json(url: str, payload: Mapping[str, Any], headers: Mapping[str, str],
         return decoded
     except LLMError:
         raise
+    except TimeoutError as error:
+        # This is where a silent endpoint actually surfaces: the default
+        # transport wraps every failure below, so TimeoutError never reaches
+        # OpenAICompatibleLLM.generate as itself.  Naming the timeout here is
+        # what makes a short --llm-timeout legible in the error text.
+        raise LLMError(
+            f"OpenAI-compatible request timed out after {timeout:g}s"
+        ) from error
     except Exception as error:
         raise LLMError(f"OpenAI-compatible request failed: {type(error).__name__}") from error
     finally:

@@ -11,7 +11,7 @@ command keeps their failure modes apart:
   substitute for it that would not be a fabrication, so ``--with-llm`` without a
   usable provider configuration is a hard error -- never a mock, an empty C
   block, or a ``not_inferred`` marker.  The key lookup is
-  :func:`~generation_cli._resolve_llm`, shared with ``generate`` rather than
+  :func:`~llm_config.resolve_llm`, shared with ``generate`` rather than
   reimplemented: a second, subtly different lookup is exactly how a silent
   fallback reappears.
 
@@ -30,13 +30,14 @@ Typical use::
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 import re
 import sys
 
 from .artifacts import ArtifactStore
-from .generation_cli import _resolve_llm
 from .llm import LLMClient, LLMError
+from .llm_config import resolve_llm
 from .protocol_conventions import (
     ConventionInferenceResult,
     infer_protocol_conventions,
@@ -68,9 +69,20 @@ def main(argv: list[str] | None = None, *, llm: LLMClient | None = None) -> int:
         parser.error("--samples requires --with-llm")
     if (args.model or args.mock_responses or args.recorded_responses) and not args.with_llm:
         parser.error("--model, --mock-responses and --recorded-responses require --with-llm")
+    if args.llm_timeout is not None and not args.with_llm:
+        parser.error("--llm-timeout requires --with-llm")
     samples = DEFAULT_SAMPLES if args.samples is None else args.samples
     if samples < 1:
         parser.error("--samples must be positive")
+    if args.llm_timeout is not None:
+        # float("inf") and float("nan") both parse as floats, so the bound has
+        # to be checked rather than assumed: `inf > 0` is True and would sail
+        # through a positivity test, while every comparison against `nan` is
+        # False, so `nan <= 0` would not reject it either.  isfinite is the
+        # check that actually rules both out, and rejecting them here keeps the
+        # failure a usage error instead of a traceback out of LLMConfig.
+        if not math.isfinite(args.llm_timeout) or args.llm_timeout <= 0:
+            parser.error("--llm-timeout must be a positive number of seconds")
 
     try:
         original = args.source.read_bytes()
@@ -80,12 +92,15 @@ def main(argv: list[str] | None = None, *, llm: LLMClient | None = None) -> int:
         # has to fail leaving no artifact behind, so the output root must not be
         # touched on this path.
         client = (
-            _resolve_llm(
+            resolve_llm(
                 llm,
                 provider=None,
                 model=args.model,
                 mock_responses=args.mock_responses,
                 recorded_responses=args.recorded_responses,
+                # None means "leave LLMConfig's default alone"; the timeout is
+                # not re-defaulted here, so llm.py stays its only owner.
+                timeout=args.llm_timeout,
             )
             if args.with_llm
             else None
@@ -110,7 +125,7 @@ def main(argv: list[str] | None = None, *, llm: LLMClient | None = None) -> int:
         print(f"Protocol mining failed: {exc}", file=sys.stderr)
         return 1
 
-    _print_summary(facts, ir, conventions, written)
+    _print_summary(facts, ir, conventions, written, client=client, samples=samples)
     return 0
 
 
@@ -153,6 +168,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Replay a versioned recorded-response JSON artifact",
     )
     parser.add_argument("--model", help="Override LLM_MODEL for the real provider")
+    # The default is None, not the number, so this flag never becomes a second
+    # source of truth for the timeout: `None` means "do not override LLMConfig",
+    # and the value that ends up in force is the one llm.py declares.
+    parser.add_argument(
+        "--llm-timeout",
+        type=float,
+        default=None,
+        help=(
+            "Per-sample LLM request timeout in seconds; requires --with-llm "
+            "(default: the value LLMConfig declares)"
+        ),
+    )
     return parser
 
 
@@ -161,6 +188,9 @@ def _print_summary(
     ir: ProtocolIR,
     conventions: ConventionInferenceResult | None,
     written: tuple[Path, Path, Path],
+    *,
+    client: LLMClient | None = None,
+    samples: int = DEFAULT_SAMPLES,
 ) -> None:
     """Human-readable account of what was mined, inferred and written."""
 
@@ -170,12 +200,41 @@ def _print_summary(
     # Opcodes are a B-block fact and live only in the facts; the IR keeps the
     # *stateful* opcodes, which are a C-block inference.
     print(f"Opcodes: {len(facts.opcodes)}")
+    # Nothing was asked of any provider in the default mode -- there are no
+    # samples and no timeout -- so the exposure line is absent rather than zero.
+    if client is not None:
+        print(_exposure_line(client, samples))
     print(_context_line(ir, conventions))
     print(_stateful_line(ir, conventions))
     _print_limitations(facts, ir)
     print(f"Candidates: {written[0]}")
     print(f"Conventions: {written[1]}")
     print(f"IR: {written[2]}")
+
+
+def _exposure_line(client: LLMClient, samples: int) -> str:
+    """Report how long ``--with-llm`` can hold the process, before it does.
+
+    ``worst_case`` is the sequential sum rather than a guess: the sample loop in
+    :func:`~protocol_conventions.infer_protocol_conventions` calls
+    ``llm.generate`` once per sample, one after another, so the samples'
+    timeouts add up.  That multiplication is only an upper bound while the loop
+    stays sequential -- if it ever becomes concurrent, this line stops being
+    true and this comment is what should catch it.
+    """
+
+    # Read from the client that will actually be used, so the number printed is
+    # the number in force.  A re-hardcoded 120 here would be the second source
+    # of truth that --llm-timeout's None default exists to prevent.
+    timeout = getattr(getattr(client, "config", None), "timeout", None)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        # A mock or recorded-response client does not wait on anything, so it
+        # has no wall-clock bound to report.  Printing the default for it would
+        # quote a number with no referent: nothing in that client uses it, and
+        # reading "120s" there would suggest a delay that cannot happen.
+        return f"samples={samples} timeout=n/a worst_case=n/a"
+    # ":g" renders seconds the way a person writes them -- "120", not "120.0".
+    return f"samples={samples} timeout={timeout:g}s worst_case={samples * timeout:g}s"
 
 
 def _context_line(
