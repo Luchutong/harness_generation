@@ -36,6 +36,9 @@ def main(
         )
     if arguments[:1] == ["measure-target"]:
         return _measure_target_main(arguments[1:])
+    if arguments[:1] == ["protocol-mine"]:
+        from .protocol_cli import main as protocol_main
+        return protocol_main(arguments[1:], llm=llm)
 
     parser = argparse.ArgumentParser(description="Generate N independent C libFuzzer harness candidates.")
     parser.add_argument("--source", required=True, type=Path, help="Self-contained UTF-8 C source without main")
