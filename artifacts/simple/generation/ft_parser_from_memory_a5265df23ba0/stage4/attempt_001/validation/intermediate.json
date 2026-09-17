@@ -1,0 +1,68 @@
+{
+  "errors": [],
+  "metadata": {
+    "allowed_functions": [
+      "abort",
+      "assert",
+      "calloc",
+      "free",
+      "malloc",
+      "memcmp",
+      "memcpy",
+      "memmove",
+      "memset",
+      "realloc",
+      "strchr",
+      "strcmp",
+      "strlen",
+      "strncmp",
+      "strnlen",
+      "strrchr"
+    ],
+    "cpp_evidence": [],
+    "duplicate_function_definitions": {},
+    "expected_functions": [
+      "node_process",
+      "parser_free",
+      "parser_from_memory",
+      "parser_next"
+    ],
+    "forbidden_io_calls": [],
+    "forbidden_logging_calls": [],
+    "function_call_counts": {
+      "node_process": 1,
+      "parser_free": 1,
+      "parser_from_memory": 1,
+      "parser_next": 1
+    },
+    "function_definitions": [
+      "LLVMFuzzerTestOneInput"
+    ],
+    "indirect_function_calls": [],
+    "missing_expected_functions": [],
+    "observed_function_calls": [
+      "node_process",
+      "parser_free",
+      "parser_from_memory",
+      "parser_next"
+    ],
+    "parser": "tree-sitter-c",
+    "redefined_target_functions": [],
+    "schema_version": 1,
+    "stage": "stage4_harness",
+    "syntax_error_count": 0,
+    "target_functions": [
+      "node_process",
+      "parser_free",
+      "parser_from_memory",
+      "parser_next"
+    ],
+    "unexpected_function_calls": [],
+    "unknown_target_api_calls": [],
+    "validator": "intermediate"
+  },
+  "status": "passed",
+  "success": true,
+  "validator": "intermediate",
+  "warnings": []
+}

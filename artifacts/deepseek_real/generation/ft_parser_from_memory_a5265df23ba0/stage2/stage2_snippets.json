@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "stage": "stage2_structure_snippet",
+  "triplet_id": "ft_parser_from_memory_a5265df23ba0",
+  "units": [
+    {
+      "dependencies": [],
+      "functions": [
+        "parser_from_memory"
+      ],
+      "generated_code": "Parser parser;\nconst unsigned char data[] = {0x01};\nint rc = parser_from_memory(&parser, data, sizeof(data));\nif (rc != 0) {\n    return;\n}",
+      "id": "unit_0001",
+      "input_structure": "(null)",
+      "metadata": {
+        "attempt": 1,
+        "failed_stage": null,
+        "failure_type": null,
+        "finish_reason": "stop",
+        "model": "deepseek-flash",
+        "prompt_version": "stage2-structure-snippet-v2",
+        "provider": "openai-compatible",
+        "response_id": "ac693b0d-6be1-4cdd-8af4-86b915066983",
+        "retry_reason": null,
+        "rollback_source": null,
+        "rollback_target": null,
+        "usage": {
+          "completion_tokens": 45,
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 519,
+          "prompt_tokens": 519,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 564
+        }
+      },
+      "output_structure": "Parser"
+    },
+    {
+      "dependencies": [
+        "unit_0004"
+      ],
+      "functions": [
+        "node_process"
+      ],
+      "generated_code": "node_process(node);",
+      "id": "unit_0002",
+      "input_structure": "Node",
+      "metadata": {
+        "attempt": 1,
+        "failed_stage": null,
+        "failure_type": null,
+        "finish_reason": "stop",
+        "model": "deepseek-flash",
+        "prompt_version": "stage2-structure-snippet-v2",
+        "provider": "openai-compatible",
+        "response_id": "ac22f55a-83d6-49a9-9e8a-46204414383e",
+        "retry_reason": null,
+        "rollback_source": null,
+        "rollback_target": null,
+        "usage": {
+          "completion_tokens": 8,
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 396,
+          "prompt_tokens": 396,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 404
+        }
+      },
+      "output_structure": "(null)"
+    },
+    {
+      "dependencies": [
+        "unit_0001",
+        "unit_0004"
+      ],
+      "functions": [
+        "parser_free"
+      ],
+      "generated_code": "parser_free(parser);",
+      "id": "unit_0003",
+      "input_structure": "Parser",
+      "metadata": {
+        "attempt": 1,
+        "failed_stage": null,
+        "failure_type": null,
+        "finish_reason": "stop",
+        "model": "deepseek-flash",
+        "prompt_version": "stage2-structure-snippet-v2",
+        "provider": "openai-compatible",
+        "response_id": "72a790f5-2862-4fa5-8f02-d0fdf7d71273",
+        "retry_reason": null,
+        "rollback_source": null,
+        "rollback_target": null,
+        "usage": {
+          "completion_tokens": 9,
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 554,
+          "prompt_tokens": 554,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 563
+        }
+      },
+      "output_structure": "(null)"
+    },
+    {
+      "dependencies": [
+        "unit_0001"
+      ],
+      "functions": [
+        "parser_next"
+      ],
+      "generated_code": "Node node = parser_next(parser);",
+      "id": "unit_0004",
+      "input_structure": "Parser",
+      "metadata": {
+        "attempt": 1,
+        "failed_stage": null,
+        "failure_type": null,
+        "finish_reason": "stop",
+        "model": "deepseek-flash",
+        "prompt_version": "stage2-structure-snippet-v2",
+        "provider": "openai-compatible",
+        "response_id": "a7f47d2a-5c34-401e-bdbb-9e0e2a95b144",
+        "retry_reason": null,
+        "rollback_source": null,
+        "rollback_target": null,
+        "usage": {
+          "completion_tokens": 12,
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 462,
+          "prompt_tokens": 462,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 474
+        }
+      },
+      "output_structure": "Node"
+    }
+  ]
+}

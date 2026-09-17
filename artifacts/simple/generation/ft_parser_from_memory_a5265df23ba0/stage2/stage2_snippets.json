@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "stage": "stage2_structure_snippet",
+  "triplet_id": "ft_parser_from_memory_a5265df23ba0",
+  "units": [
+    {
+      "dependencies": [],
+      "functions": [
+        "parser_from_memory"
+      ],
+      "generated_code": "parser_from_memory(parser, data, size);",
+      "id": "unit_0001",
+      "input_structure": "(null)",
+      "metadata": {
+        "attempt": 1,
+        "failed_stage": null,
+        "failure_type": null,
+        "model": "mock-model",
+        "prompt_version": "stage2-structure-snippet-v1",
+        "provider": "mock",
+        "retry_reason": null,
+        "rollback_source": null,
+        "rollback_target": null,
+        "usage": {}
+      },
+      "output_structure": "Parser"
+    },
+    {
+      "dependencies": [
+        "unit_0004"
+      ],
+      "functions": [
+        "node_process"
+      ],
+      "generated_code": "node_process(&node);",
+      "id": "unit_0002",
+      "input_structure": "Node",
+      "metadata": {
+        "attempt": 1,
+        "failed_stage": null,
+        "failure_type": null,
+        "model": "mock-model",
+        "prompt_version": "stage2-structure-snippet-v1",
+        "provider": "mock",
+        "retry_reason": null,
+        "rollback_source": null,
+        "rollback_target": null,
+        "usage": {}
+      },
+      "output_structure": "(null)"
+    },
+    {
+      "dependencies": [
+        "unit_0001",
+        "unit_0004"
+      ],
+      "functions": [
+        "parser_free"
+      ],
+      "generated_code": "parser_free(parser);",
+      "id": "unit_0003",
+      "input_structure": "Parser",
+      "metadata": {
+        "attempt": 1,
+        "failed_stage": null,
+        "failure_type": null,
+        "model": "mock-model",
+        "prompt_version": "stage2-structure-snippet-v1",
+        "provider": "mock",
+        "retry_reason": null,
+        "rollback_source": null,
+        "rollback_target": null,
+        "usage": {}
+      },
+      "output_structure": "(null)"
+    },
+    {
+      "dependencies": [
+        "unit_0001"
+      ],
+      "functions": [
+        "parser_next"
+      ],
+      "generated_code": "Node node = parser_next(parser);",
+      "id": "unit_0004",
+      "input_structure": "Parser",
+      "metadata": {
+        "attempt": 1,
+        "failed_stage": null,
+        "failure_type": null,
+        "model": "mock-model",
+        "prompt_version": "stage2-structure-snippet-v1",
+        "provider": "mock",
+        "retry_reason": null,
+        "rollback_source": null,
+        "rollback_target": null,
+        "usage": {}
+      },
+      "output_structure": "Node"
+    }
+  ]
+}

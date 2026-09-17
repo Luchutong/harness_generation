@@ -1,0 +1,192 @@
+{
+  "schema_version": 2,
+  "triplets": [
+    {
+      "edges": [
+        {
+          "dst": "Parser",
+          "file": "src/parser.c",
+          "function": "parser_from_memory",
+          "function_id": "src/parser.c:3:parser_from_memory",
+          "inference_reason": null,
+          "inferred": false,
+          "line": 3,
+          "roles": [
+            "ISF",
+            "HPF"
+          ],
+          "src": "(null)"
+        },
+        {
+          "dst": "(null)",
+          "file": "src/parser.c",
+          "function": "node_process",
+          "function_id": "src/parser.c:20:node_process",
+          "inference_reason": null,
+          "inferred": false,
+          "line": 20,
+          "roles": [
+            "PRF"
+          ],
+          "src": "Node"
+        },
+        {
+          "dst": "(null)",
+          "file": "src/parser.c",
+          "function": "parser_free",
+          "function_id": "src/parser.c:25:parser_free",
+          "inference_reason": null,
+          "inferred": false,
+          "line": 25,
+          "roles": [
+            "HPF"
+          ],
+          "src": "Parser"
+        },
+        {
+          "dst": "Node",
+          "file": "src/parser.c",
+          "function": "parser_next",
+          "function_id": "src/parser.c:13:parser_next",
+          "inference_reason": null,
+          "inferred": false,
+          "line": 13,
+          "roles": [
+            "PRF"
+          ],
+          "src": "Parser"
+        }
+      ],
+      "functions": [
+        {
+          "file": "src/parser.c",
+          "function": "parser_from_memory",
+          "function_id": "src/parser.c:3:parser_from_memory",
+          "line": 3,
+          "roles": [
+            "ISF",
+            "HPF"
+          ]
+        },
+        {
+          "file": "src/parser.c",
+          "function": "parser_next",
+          "function_id": "src/parser.c:13:parser_next",
+          "line": 13,
+          "roles": [
+            "PRF"
+          ]
+        },
+        {
+          "file": "src/parser.c",
+          "function": "node_process",
+          "function_id": "src/parser.c:20:node_process",
+          "line": 20,
+          "roles": [
+            "PRF"
+          ]
+        },
+        {
+          "file": "src/parser.c",
+          "function": "parser_free",
+          "function_id": "src/parser.c:25:parser_free",
+          "line": 25,
+          "roles": [
+            "HPF"
+          ]
+        }
+      ],
+      "hpfs": [
+        {
+          "file": "src/parser.c",
+          "function": "parser_from_memory",
+          "function_id": "src/parser.c:3:parser_from_memory",
+          "line": 3,
+          "roles": [
+            "ISF",
+            "HPF"
+          ]
+        },
+        {
+          "file": "src/parser.c",
+          "function": "parser_free",
+          "function_id": "src/parser.c:25:parser_free",
+          "line": 25,
+          "roles": [
+            "HPF"
+          ]
+        }
+      ],
+      "id": "ft_parser_from_memory_a5265df23ba0",
+      "isf": {
+        "file": "src/parser.c",
+        "function": "parser_from_memory",
+        "function_id": "src/parser.c:3:parser_from_memory",
+        "line": 3,
+        "roles": [
+          "ISF",
+          "HPF"
+        ]
+      },
+      "metadata": {
+        "algorithm": "synapseflow-function-triplet-v2",
+        "anchor_function_id": "src/parser.c:3:parser_from_memory",
+        "data_chain": {
+          "entry": "fuzz_input",
+          "isf": "parser_from_memory",
+          "structures": [
+            "Parser",
+            "Node"
+          ]
+        },
+        "in_nodes": [
+          "(null)"
+        ],
+        "input_structs": [
+          "(null)"
+        ],
+        "other_isfs": [],
+        "out_nodes": [
+          "(null)",
+          "Node",
+          "Parser"
+        ],
+        "output_structs": [
+          "Parser"
+        ],
+        "removed_isfs": [],
+        "role_masked_isfs": [],
+        "source_schema_versions": {
+          "annotations": 1,
+          "flows": 1,
+          "functions": 2,
+          "sfg": 1
+        }
+      },
+      "prfs": [
+        {
+          "file": "src/parser.c",
+          "function": "parser_next",
+          "function_id": "src/parser.c:13:parser_next",
+          "line": 13,
+          "roles": [
+            "PRF"
+          ]
+        },
+        {
+          "file": "src/parser.c",
+          "function": "node_process",
+          "function_id": "src/parser.c:20:node_process",
+          "line": 20,
+          "roles": [
+            "PRF"
+          ]
+        }
+      ],
+      "structures": [
+        "Node",
+        "Parser"
+      ]
+    }
+  ]
+}

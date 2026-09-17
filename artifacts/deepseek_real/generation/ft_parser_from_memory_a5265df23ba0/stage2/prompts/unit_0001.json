@@ -1,0 +1,39 @@
+{
+  "content": "Produce a focused C snippet for one structural-flow step.\nExplicitly call every supplied function, preserve dependencies, and use only the\nprovided functions. Do not reimplement target functions, invent APIs, or add a\nfinal LLVMFuzzerTestOneInput wrapper. Output C only, never C++.\nDependency identifiers describe ordering only; never call them as functions.\n\nInput structure:\n(null)\n\nOutput structure:\nParser\n\nFunctions:\n[\n  \"parser_from_memory\"\n]\n\nDependencies:\n[]\n\nFunction documentation:\n[\n  {\n    \"application_scenario\": \"Used to initialize a Parser object from a memory buffer before subsequent parsing operations such as parser_next.\",\n    \"example_code\": \"Parser parser;\\nconst unsigned char buf[] = {0x01, 0x02, 0x03};\\nint rc = parser_from_memory(&parser, buf, sizeof(buf));\\nif (rc != 0) {\\n    /* handle error */\\n}\",\n    \"function\": \"parser_from_memory\",\n    \"function_id\": \"src/parser.c:3:parser_from_memory\",\n    \"functionality\": \"Initializes a Parser from an in-memory buffer. If size is zero, returns -1 without modifying the parser. Otherwise, sets parser->state to the first byte of data and returns 0.\",\n    \"notes\": [\n      \"Only the first byte of data is used to initialize parser->state.\",\n      \"The Parser struct is expected to have a state field.\",\n      \"Related functions include parser_next, node_process, and parser_free.\"\n    ],\n    \"parameter_notes\": [\n      \"parser: non-const pointer to a Parser struct; written to via parser->state.\",\n      \"data: const pointer to the input byte buffer; only data[0] is read when size > 0.\",\n      \"size: number of bytes in data; must be > 0 for successful initialization.\"\n    ],\n    \"resource_lifecycle_notes\": [\n      \"Does not allocate or free memory.\",\n      \"Caller is responsible for the lifetime of the Parser and data buffer.\",\n      \"Parser should be released via parser_free when no longer needed.\"\n    ],\n    \"return_semantics\": \"Returns 0 on success (size > 0), -1 if size == 0.\",\n    \"signature\": \"int parser_from_memory( Parser *parser, const unsigned char *data, unsigned long size);\"\n  }\n]",
+  "name": "stage2_structure_snippet",
+  "parameters": {
+    "dependencies": [],
+    "documentation": [
+      {
+        "application_scenario": "Used to initialize a Parser object from a memory buffer before subsequent parsing operations such as parser_next.",
+        "example_code": "Parser parser;\nconst unsigned char buf[] = {0x01, 0x02, 0x03};\nint rc = parser_from_memory(&parser, buf, sizeof(buf));\nif (rc != 0) {\n    /* handle error */\n}",
+        "function": "parser_from_memory",
+        "function_id": "src/parser.c:3:parser_from_memory",
+        "functionality": "Initializes a Parser from an in-memory buffer. If size is zero, returns -1 without modifying the parser. Otherwise, sets parser->state to the first byte of data and returns 0.",
+        "notes": [
+          "Only the first byte of data is used to initialize parser->state.",
+          "The Parser struct is expected to have a state field.",
+          "Related functions include parser_next, node_process, and parser_free."
+        ],
+        "parameter_notes": [
+          "parser: non-const pointer to a Parser struct; written to via parser->state.",
+          "data: const pointer to the input byte buffer; only data[0] is read when size > 0.",
+          "size: number of bytes in data; must be > 0 for successful initialization."
+        ],
+        "resource_lifecycle_notes": [
+          "Does not allocate or free memory.",
+          "Caller is responsible for the lifetime of the Parser and data buffer.",
+          "Parser should be released via parser_free when no longer needed."
+        ],
+        "return_semantics": "Returns 0 on success (size > 0), -1 if size == 0.",
+        "signature": "int parser_from_memory( Parser *parser, const unsigned char *data, unsigned long size);"
+      }
+    ],
+    "functions": [
+      "parser_from_memory"
+    ],
+    "input_structure": "(null)",
+    "output_structure": "Parser"
+  },
+  "prompt_version": "stage2-structure-snippet-v2"
+}

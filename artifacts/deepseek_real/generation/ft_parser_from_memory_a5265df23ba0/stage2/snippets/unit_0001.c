@@ -1,0 +1,6 @@
+Parser parser;
+const unsigned char data[] = {0x01};
+int rc = parser_from_memory(&parser, data, sizeof(data));
+if (rc != 0) {
+    return;
+}

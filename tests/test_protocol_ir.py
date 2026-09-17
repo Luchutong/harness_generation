@@ -1,0 +1,519 @@
+"""The IR must merge both halves without losing where anything came from.
+
+Two tests carry most of the weight here:
+
+``test_frame_block_matches_the_hand_written_contract``
+    differentially compares the IR's A/B output against the human-authored
+    ``protocol.json``, so the merge is measured against ground truth rather than
+    against itself.
+
+``test_every_element_can_be_traced_back_to_its_half``
+    checks that every element the IR exposes declares a provenance from the
+    agreed vocabulary, and that the static half really points at source lines.
+"""
+
+import json
+from pathlib import Path
+import unittest
+
+from harness_generation.llm import MockLLM
+from harness_generation.protocol_conventions import (
+    ContextModel,
+    ProtocolConventions,
+    SequenceModel,
+    StatefulOperation,
+    infer_protocol_conventions,
+)
+from harness_generation.protocol_ir import (
+    DEFAULT_LLM_CONFIDENCE,
+    PROTOCOL_IR_SCHEMA_VERSION,
+    SOURCES,
+    SOURCE_ENGINEERING,
+    SOURCE_LLM,
+    SOURCE_STATIC,
+    SOURCE_UNKNOWN,
+    VARIABLE_WIDTH,
+    FrameField,
+    FrameModel,
+    ProtocolEvidence,
+    ProtocolIR,
+    ProtocolIRError,
+)
+from harness_generation.protocol_miner import (
+    ROLE_MAGIC,
+    Evidence,
+    FieldFact,
+    ProtocolFacts,
+    mine_protocol_facts,
+)
+from harness_generation.protocol_spec import load_protocol_spec
+
+
+ROOT = Path(__file__).resolve().parents[1]
+MINI_PARSER = ROOT / "benchmarks" / "mini_parser"
+
+
+def _conventions(entry_function="mp_parse", **metadata):
+    return ProtocolConventions(
+        entry_function=entry_function,
+        sequence_model=SequenceModel(
+            multi_frame=True,
+            reason="decode the byte stream as zero or more command frames",
+            evidence=("mp_parse is called per frame inside a loop",),
+            max_steps={"value": 32, "source": "llm_inference", "evidence": []},
+        ),
+        context=ContextModel(
+            type="mp_context",
+            init="mp_init(&ctx)",
+            destroy="mp_destroy(&ctx)",
+            lifetime="one context per iteration",
+            evidence=("mp_context outlives a single frame",),
+        ),
+        stateful_operations=(
+            StatefulOperation(
+                opcode="MP_STORE",
+                reason="stores the payload pointer in the context",
+                evidence=("case MP_STORE writes ctx",),
+            ),
+        ),
+        requirements=("Use a bounded multi-frame command loop.",),
+        notes=("Stateful opcodes need a context across frames.",),
+        metadata={
+            "prompt_version": "v1",
+            "model": "mock-model",
+            "provider": "mock",
+            "samples_requested": 4,
+            "valid_samples": 3,
+            "vote_threshold": 2,
+            **metadata,
+        },
+    )
+
+
+class MiniParserIRTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source_text = (MINI_PARSER / "target.c").read_text(encoding="utf-8")
+        cls.facts = mine_protocol_facts(
+            (MINI_PARSER / "target.c").read_bytes(), "mp_parse", filename="target.c"
+        )
+        cls.ir = ProtocolIR.from_facts_and_conventions(cls.facts, _conventions())
+        cls.declared = json.loads(
+            (MINI_PARSER / "protocol.json").read_text(encoding="utf-8")
+        )
+
+    # -- the differential oracle ------------------------------------------
+
+    def test_frame_block_matches_the_hand_written_contract(self):
+        declared = self.declared["contract"]["frame"]
+        mined = self.ir.to_protocol_contract()["contract"]["frame"]
+
+        self.assertEqual(mined["header_size"], declared["header_size"])
+        self.assertEqual(mined["payload_offset"], declared["payload_offset"])
+        self.assertEqual(mined["max_payload"], declared["max_payload"])
+
+        by_name = {item["name"]: item for item in mined["fields"]}
+        self.assertEqual(set(by_name), {item["name"] for item in declared["fields"]})
+        for field in declared["fields"]:
+            with self.subTest(field=field["name"]):
+                recovered = by_name[field["name"]]
+                self.assertEqual(recovered["offset"], field["offset"])
+                self.assertEqual(recovered["width"], field["width"])
+                if "endianness" in field:
+                    self.assertEqual(recovered["endianness"], field["endianness"])
+
+    def test_variable_width_field_is_tied_to_the_length_field(self):
+        payload = self.ir.field_by_name("payload")
+        self.assertTrue(payload.is_variable_width)
+        self.assertEqual(payload.width, "payload_length")
+        self.assertEqual(
+            payload.width, self.ir.field_by_name("payload_length").name
+        )
+
+    def test_max_payload_keeps_both_the_symbol_and_the_resolved_value(self):
+        declared = self.declared["contract"]["frame"]["max_payload"]
+        self.assertEqual(self.ir.frame.max_payload_symbol, declared)  # "MP_MAX_PAYLOAD"
+        self.assertEqual(self.ir.frame.max_payload, 64)
+        self.assertEqual(self.ir.frame.to_contract_block()["max_payload"], declared)
+
+    def test_contract_round_trips_through_the_loader(self):
+        document = self.ir.to_protocol_contract()
+        self.assertEqual(document["schema_version"], 1)
+        path = ROOT / "tests" / "_tmp_protocol_ir_contract.json"
+        try:
+            path.write_text(json.dumps(document), encoding="utf-8")
+            loaded = load_protocol_spec(path, function="mp_parse")
+        finally:
+            path.unlink(missing_ok=True)
+        self.assertEqual(loaded["entry_function"], "mp_parse")
+        self.assertEqual(
+            loaded["contract"]["frame"]["header_size"],
+            self.declared["contract"]["frame"]["header_size"],
+        )
+        self.assertEqual(loaded["requirements"], list(self.ir.requirements))
+
+
+class PayloadOffsetPassthroughTests(unittest.TestCase):
+    """The IR must carry the measured payload base, not re-derive it.
+
+    Before the miner exposed ``payload_offset`` the IR set it equal to the
+    header size, which is only correct for the header+payload layout that
+    `mini_parser` happens to use.
+    """
+
+    WIDE = b"""
+static unsigned short le16(const unsigned char *p) {
+    return (unsigned short)((unsigned short)p[0] | ((unsigned short)p[1] << 8));
+}
+
+static unsigned short chk(const unsigned char *p, size_t n) {
+    (void)p;
+    return (unsigned short)n;
+}
+
+int parse_wide(const unsigned char *data, size_t size) {
+    if (size < 8) return -1;
+    size_t len = le16(data + 4);
+    if (len != size - 12) return -2;
+    if (chk(data + 12, len) != le16(data + 10)) return -3;
+    return 0;
+}
+"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.facts = mine_protocol_facts(cls.WIDE, "parse_wide", filename="wide.c")
+        cls.ir = ProtocolIR.from_facts_and_conventions(cls.facts, None)
+
+    def test_ir_carries_the_measured_payload_offset(self):
+        self.assertEqual(self.ir.frame.header_size, 8)
+        self.assertEqual(self.ir.frame.payload_offset, 12)
+
+    def test_contract_block_keeps_header_and_payload_distinct(self):
+        frame = self.ir.to_protocol_contract()["contract"]["frame"]
+        self.assertEqual(frame["header_size"], 8)
+        self.assertEqual(frame["payload_offset"], 12)
+
+    def test_ir_json_reports_the_payload_offset(self):
+        self.assertEqual(self.ir.to_json()["frame"]["payload_offset"], 12)
+
+    def test_old_facts_without_a_payload_offset_fall_back_to_the_header(self):
+        facts = ProtocolFacts(entry_function="f", filename="x.c", header_size=8)
+        ir = ProtocolIR.from_facts_and_conventions(facts, None)
+        self.assertEqual(ir.frame.payload_offset, 8)
+
+    def test_a_payload_base_inside_the_header_is_resolved_and_reported(self):
+        """The miner can see only header loads; the IR must not publish a
+        payload base that overlaps the header."""
+
+        facts = ProtocolFacts(
+            entry_function="f", filename="x.c", header_size=8, payload_offset=6
+        )
+        ir = ProtocolIR.from_facts_and_conventions(facts, None)
+        self.assertEqual(ir.frame.payload_offset, 8)
+        self.assertTrue(
+            any("falls inside the 8-byte header" in item for item in ir.limitations)
+        )
+
+    def test_conflicting_facts_do_not_make_the_ir_raise(self):
+        """Real miner output must merge, even when it is self-contradictory."""
+
+        facts = mine_protocol_facts(
+            b"""
+static unsigned short le16(const unsigned char *p) {
+    return (unsigned short)((unsigned short)p[0] | ((unsigned short)p[1] << 8));
+}
+int parse_conflict(const unsigned char *data, size_t size) {
+    if (size < 8) return -1;
+    size_t len = le16(data + 4);
+    if (len != size - 8) return -2;
+    if (le16(data + 6) != 0) return -3;
+    return 0;
+}
+""",
+            "parse_conflict",
+            filename="conflict.c",
+        )
+        ir = ProtocolIR.from_facts_and_conventions(facts, None)
+        offsets = [item.offset for item in ir.frame.fields]
+        self.assertEqual(sorted(offsets), sorted(set(offsets)))
+
+
+class ProvenanceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source_text = (MINI_PARSER / "target.c").read_text(encoding="utf-8")
+        cls.facts = mine_protocol_facts(
+            (MINI_PARSER / "target.c").read_bytes(), "mp_parse", filename="target.c"
+        )
+        cls.ir = ProtocolIR.from_facts_and_conventions(cls.facts, _conventions())
+
+    def test_every_element_can_be_traced_back_to_its_half(self):
+        document = self.ir.to_json()
+
+        for field in document["frame"]["fields"]:
+            with self.subTest(field=field["name"]):
+                self.assertIn(field["source"], SOURCES)
+                self.assertIsInstance(field["confidence"], float)
+                self.assertTrue(field["evidence"], "static field lost its evidence")
+                for item in field["evidence"]:
+                    self.assertEqual(item["source"], SOURCE_STATIC)
+
+        for key in ("sequence_model", "context"):
+            with self.subTest(section=key):
+                self.assertEqual(document[key]["source"], SOURCE_LLM)
+                self.assertEqual(
+                    document[key]["confidence"], document["confidence"]
+                )
+        for operation in document["stateful_operations"]:
+            self.assertEqual(operation["source"], SOURCE_LLM)
+
+    def test_static_evidence_still_points_at_real_source_lines(self):
+        lines = self.source_text.splitlines()
+        for field in self.ir.to_json()["frame"]["fields"]:
+            for item in field["evidence"]:
+                with self.subTest(field=field["name"], kind=item.get("kind")):
+                    path, line, column = item["location"].rsplit(":", 2)
+                    self.assertEqual(path, "target.c")
+                    line = int(line)
+                    self.assertTrue(1 <= line <= len(lines))
+                    self.assertGreaterEqual(int(column), 1)
+                    snippet = item["snippet"]
+                    if snippet.endswith(" ..."):
+                        snippet = snippet[: -len(" ...")]
+                    if snippet:
+                        self.assertIn(snippet, lines[line - 1])
+
+    def test_static_and_inferred_facts_carry_different_confidence(self):
+        payload = self.ir.field_by_name("payload_length")
+        self.assertEqual(payload.source, SOURCE_STATIC)
+        self.assertEqual(payload.confidence, 1.0)
+        self.assertLess(self.ir.llm_confidence, 1.0)
+
+    def test_llm_confidence_is_the_observed_sample_agreement(self):
+        # 3 of 4 requested samples parsed and voted.
+        self.assertEqual(self.ir.llm_confidence, 0.75)
+
+    def test_evidence_index_covers_both_halves(self):
+        index = self.ir.evidence_index()
+        sources = {item.source for item in index}
+        self.assertIn(SOURCE_STATIC, sources)
+        self.assertIn(SOURCE_LLM, sources)
+        self.assertTrue(any(item.line for item in index if item.source == SOURCE_STATIC))
+
+    def test_missing_evidence_degrades_to_unknown_rather_than_static(self):
+        """A field the miner could not justify must not look measured.
+
+        The miner's strict mode refuses such fields, but ``strict=False`` is a
+        supported inspection path, so the IR has to downgrade them instead of
+        handing the prompt a fact with nothing behind it.
+        """
+
+        facts = ProtocolFacts(entry_function="f", filename="bare.c")
+        facts.fields.append(FieldFact(
+            name="field_0", offset=0, width=1, role=ROLE_MAGIC, value="'M'",
+        ))
+        self.assertEqual(facts.fields_without_evidence(), ["field_0"])
+
+        ir = ProtocolIR.from_facts_and_conventions(facts, None)
+        field = ir.frame.fields[0]
+        self.assertEqual(field.source, SOURCE_UNKNOWN)
+        self.assertEqual(field.confidence, 0.0)
+        self.assertEqual(field.evidence, ())
+        self.assertEqual(ir.unresolved_fields(), ("field_0",))
+
+    def test_justified_field_stays_static_with_full_confidence(self):
+        facts = ProtocolFacts(entry_function="f", filename="bare.c")
+        facts.fields.append(FieldFact(
+            name="field_0", offset=0, width=1, role=ROLE_MAGIC, value="'M'",
+            evidence=[Evidence(
+                kind="literal_guard", line=3, column=9,
+                snippet="data[0] != 'M'", detail="byte at offset 0 compared",
+            )],
+        ))
+        ir = ProtocolIR.from_facts_and_conventions(facts, None)
+        field = ir.frame.fields[0]
+        self.assertEqual(field.source, SOURCE_STATIC)
+        self.assertEqual(field.confidence, 1.0)
+        self.assertEqual(field.evidence[0].location, "bare.c:3:9")
+        self.assertEqual(field.evidence[0].snippet, "data[0] != 'M'")
+        self.assertEqual(ir.unresolved_fields(), ())
+
+    def test_evidence_constructors_agree_with_the_vocabulary(self):
+        for item in (
+            ProtocolEvidence.from_convention_text("x"),
+            ProtocolEvidence.from_engineering_choice("x"),
+            ProtocolEvidence.unresolved("x"),
+        ):
+            self.assertIn(item.source, SOURCES)
+
+
+class MergeContractTests(unittest.TestCase):
+    SOURCE = b"""
+#define HEADER 8
+#define MAX_BODY 64
+enum op { OP_READ = 1, OP_STORE = 2 };
+typedef struct { unsigned char *saved; } ctx_t;
+ctx_t *ctx_new(void);
+void ctx_free(ctx_t *);
+unsigned short read_u16le(const unsigned char *p);
+unsigned short checksum(const unsigned char *payload, unsigned short len);
+
+int parse_frame(ctx_t *ctx, const unsigned char *data, unsigned long size) {
+    if (size < HEADER) return -1;
+    unsigned short len = read_u16le(data + 4);
+    if (len > MAX_BODY || len != size - HEADER) return -2;
+    if (checksum(data + HEADER, len) != read_u16le(data + 6)) return -3;
+    switch (data[3]) {
+        case OP_READ: return 0;
+        case OP_STORE: ctx->saved = (unsigned char *)(data + HEADER); return 1;
+    }
+    return 0;
+}
+"""
+
+    def test_entry_function_mismatch_is_rejected(self):
+        facts = mine_protocol_facts(self.SOURCE, "parse_frame", filename="f.c")
+        with self.assertRaisesRegex(ProtocolIRError, "conventions describe"):
+            ProtocolIR.from_facts_and_conventions(
+                facts, _conventions(entry_function="something_else")
+            )
+
+    def test_absent_conventions_are_reported_not_invented(self):
+        facts = mine_protocol_facts(self.SOURCE, "parse_frame", filename="f.c")
+        ir = ProtocolIR.from_facts_and_conventions(facts, None)
+
+        self.assertIsNone(ir.sequence)
+        self.assertIsNone(ir.context)
+        self.assertEqual(ir.stateful_operations, ())
+        self.assertTrue(any("convention block is absent" in item for item in ir.limitations))
+        # The A/B half still works without an LLM.
+        self.assertEqual(ir.frame.header_size, 8)
+        self.assertIn("checksum", {item.name for item in ir.frame.fields})
+
+    def test_default_max_steps_is_recorded_as_an_engineering_choice(self):
+        facts = mine_protocol_facts(self.SOURCE, "parse_frame", filename="f.c")
+        conventions = ProtocolConventions(
+            entry_function="parse_frame",
+            sequence_model=SequenceModel(
+                multi_frame=True,
+                reason="multi frame",
+                max_steps={"value": None, "source": "", "evidence": []},
+            ),
+            context=ContextModel(type="ctx_t"),
+            metadata={"samples_requested": 2, "valid_samples": 2},
+        )
+        ir = ProtocolIR.from_facts_and_conventions(
+            facts, conventions, default_max_steps=32
+        )
+        self.assertEqual(ir.sequence.max_steps["value"], 32)
+        self.assertEqual(ir.sequence.max_steps["source"], SOURCE_ENGINEERING)
+        # A measured bound must never be overwritten by the fallback.
+        conventions_measured = _conventions(entry_function="parse_frame")
+        measured = ProtocolIR.from_facts_and_conventions(
+            facts, conventions_measured, default_max_steps=99
+        )
+        self.assertEqual(measured.sequence.max_steps["value"], 32)
+
+    def test_duplicate_offsets_are_rejected(self):
+        with self.assertRaisesRegex(ProtocolIRError, "share an offset"):
+            FrameModel(fields=(
+                FrameField(name="a", offset=1, width=1, role="magic"),
+                FrameField(name="b", offset=1, width=1, role="version"),
+            ))
+
+    def test_payload_inside_the_header_is_rejected(self):
+        with self.assertRaisesRegex(ProtocolIRError, "falls inside"):
+            FrameModel(
+                fields=(FrameField(name="a", offset=0, width=1, role="magic"),),
+                header_size=8,
+                payload_offset=4,
+            )
+
+    def test_unknown_provenance_is_rejected(self):
+        with self.assertRaisesRegex(ProtocolIRError, "unknown provenance"):
+            FrameField(name="a", offset=0, width=1, role="magic", source="vibes")
+
+
+class EndToEndInferenceTests(unittest.TestCase):
+    """The IR must accept what the real inference pipeline produces."""
+
+    SOURCE = MergeContractTests.SOURCE
+
+    def test_ir_built_from_a_voted_inference_result(self):
+        from tests.test_protocol_conventions import _sample
+
+        samples = [_sample(include_release=True) for _ in range(3)]
+        facts = mine_protocol_facts(self.SOURCE, "parse_frame", filename="f.c")
+        result = infer_protocol_conventions(
+            facts,
+            "int parse_frame(...)",
+            MockLLM(samples),
+            samples=3,
+        )
+        ir = ProtocolIR.from_facts_and_conventions(facts, result.conventions)
+
+        self.assertEqual(ir.entry_function, "parse_frame")
+        self.assertEqual(ir.llm_confidence, 1.0)  # 3 of 3 parsed
+        self.assertEqual(ir.metadata["valid_samples"], 3)
+        self.assertTrue(ir.stateful_operations)
+        self.assertEqual(ir.sequence.max_steps["value"], 32)
+
+        document = ir.to_protocol_contract()
+        self.assertEqual(document["contract"]["context"]["type"], "parser_ctx")
+        self.assertTrue(document["contract"]["command_loop"]["preferred"])
+
+    def test_unparseable_samples_lower_the_confidence(self):
+        from tests.test_protocol_conventions import _sample
+
+        samples = [_sample()] + ["not json at all"] * 3
+        facts = mine_protocol_facts(self.SOURCE, "parse_frame", filename="f.c")
+        result = infer_protocol_conventions(
+            facts, "int parse_frame(...)", MockLLM(samples), samples=4
+        )
+        ir = ProtocolIR.from_facts_and_conventions(facts, result.conventions)
+        self.assertEqual(ir.llm_confidence, 0.25)
+        self.assertGreater(ir.llm_confidence, 0.0)
+
+
+class SerialisationShapeTests(unittest.TestCase):
+    def test_ir_json_is_versioned_separately_from_the_contract(self):
+        facts = mine_protocol_facts(
+            MergeContractTests.SOURCE, "parse_frame", filename="f.c"
+        )
+        ir = ProtocolIR.from_facts_and_conventions(facts, None)
+        self.assertEqual(ir.to_json()["schema_version"], PROTOCOL_IR_SCHEMA_VERSION)
+        # The contract reuses the loader's version so it can round-trip.
+        self.assertEqual(ir.to_protocol_contract()["schema_version"], 1)
+
+    def test_contract_omits_provenance_but_ir_keeps_it(self):
+        facts = mine_protocol_facts(
+            MergeContractTests.SOURCE, "parse_frame", filename="f.c"
+        )
+        ir = ProtocolIR.from_facts_and_conventions(facts, _conventions("parse_frame"))
+
+        contract = ir.to_protocol_contract()
+        for field in contract["contract"]["frame"]["fields"]:
+            self.assertNotIn("evidence", field)
+            self.assertNotIn("source", field)
+        self.assertNotIn("evidence", contract["contract"]["context"])
+
+        for field in ir.to_json()["frame"]["fields"]:
+            self.assertIn("evidence", field)
+            self.assertIn("source", field)
+
+    def test_unresolved_fields_are_reported(self):
+        facts = mine_protocol_facts(
+            MergeContractTests.SOURCE, "parse_frame", filename="f.c"
+        )
+        ir = ProtocolIR.from_facts_and_conventions(facts, None)
+        self.assertEqual(ir.unresolved_fields(), ())
+
+    def test_variable_width_constant_is_exported(self):
+        self.assertEqual(VARIABLE_WIDTH, "variable")
+        self.assertEqual(SOURCE_UNKNOWN, "unknown")
+        self.assertEqual(DEFAULT_LLM_CONFIDENCE, 0.6)
+
+
+if __name__ == "__main__":
+    unittest.main()

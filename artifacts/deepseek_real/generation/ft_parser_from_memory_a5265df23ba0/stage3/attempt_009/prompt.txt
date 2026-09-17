@@ -1,0 +1,364 @@
+Assemble the supplied C snippets into one coherent rough C program.
+Order operations by structural dependencies, reconcile shared variables and
+cleanup, pass output structures into their downstream inputs, and preserve all
+necessary function calls. Do not merely concatenate, redefine project APIs, or
+invent APIs. Return only C source without Markdown fences. This is a rough code
+sequence, not the final harness: do not emit LLVMFuzzerTestOneInput.
+
+Snippets:
+[
+  {
+    "dependencies": [],
+    "functions": [
+      "parser_from_memory"
+    ],
+    "generated_code": "Parser parser;\nconst unsigned char data[] = {0x01};\nint rc = parser_from_memory(&parser, data, sizeof(data));\nif (rc != 0) {\n    return 0;\n}",
+    "id": "unit_0001",
+    "input_structure": "(null)",
+    "metadata": {
+      "attempt": 3,
+      "failed_stage": "STAGE_4_HARNESS",
+      "failure_type": "compile_error",
+      "finish_reason": "stop",
+      "model": "deepseek-flash",
+      "prompt_version": "stage2-structure-snippet-v1",
+      "provider": "openai-compatible",
+      "response_id": "ca6a2159-6144-4b52-8b02-b41ae28c1923",
+      "retry_reason": "/home/luchitong/work/harness_generation/artifacts/deepseek_real/generation/ft_parser_from_memory_a5265df23ba0/stage4_harness.c:14:12: error: variable has incomplete type 'Parser' (aka 'struct Parser')",
+      "rollback_source": "ROOT_INPUT",
+      "rollback_target": "STAGE_1_DOCS",
+      "usage": {
+        "completion_tokens": 47,
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 499,
+        "prompt_tokens": 499,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 546
+      }
+    },
+    "output_structure": "Parser"
+  },
+  {
+    "dependencies": [
+      "unit_0001"
+    ],
+    "functions": [
+      "parser_next"
+    ],
+    "generated_code": "Node node = parser_next(parser);",
+    "id": "unit_0004",
+    "input_structure": "Parser",
+    "metadata": {
+      "attempt": 3,
+      "failed_stage": "STAGE_4_HARNESS",
+      "failure_type": "compile_error",
+      "finish_reason": "stop",
+      "model": "deepseek-flash",
+      "prompt_version": "stage2-structure-snippet-v1",
+      "provider": "openai-compatible",
+      "response_id": "9604c154-0f64-498e-bf26-d6340d13e9e4",
+      "retry_reason": "/home/luchitong/work/harness_generation/artifacts/deepseek_real/generation/ft_parser_from_memory_a5265df23ba0/stage4_harness.c:14:12: error: variable has incomplete type 'Parser' (aka 'struct Parser')",
+      "rollback_source": "ROOT_INPUT",
+      "rollback_target": "STAGE_1_DOCS",
+      "usage": {
+        "completion_tokens": 12,
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 439,
+        "prompt_tokens": 439,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 451
+      }
+    },
+    "output_structure": "Node"
+  },
+  {
+    "dependencies": [
+      "unit_0004"
+    ],
+    "functions": [
+      "node_process"
+    ],
+    "generated_code": "node_process(node);",
+    "id": "unit_0002",
+    "input_structure": "Node",
+    "metadata": {
+      "attempt": 3,
+      "failed_stage": "STAGE_4_HARNESS",
+      "failure_type": "compile_error",
+      "finish_reason": "stop",
+      "model": "deepseek-flash",
+      "prompt_version": "stage2-structure-snippet-v1",
+      "provider": "openai-compatible",
+      "response_id": "a41b4f1c-3b39-4ddb-8812-4d14ea007743",
+      "retry_reason": "/home/luchitong/work/harness_generation/artifacts/deepseek_real/generation/ft_parser_from_memory_a5265df23ba0/stage4_harness.c:14:12: error: variable has incomplete type 'Parser' (aka 'struct Parser')",
+      "rollback_source": "ROOT_INPUT",
+      "rollback_target": "STAGE_1_DOCS",
+      "usage": {
+        "completion_tokens": 8,
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 425,
+        "prompt_tokens": 425,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 433
+      }
+    },
+    "output_structure": "(null)"
+  },
+  {
+    "dependencies": [
+      "unit_0001",
+      "unit_0004"
+    ],
+    "functions": [
+      "parser_free"
+    ],
+    "generated_code": "parser_free(parser);",
+    "id": "unit_0003",
+    "input_structure": "Parser",
+    "metadata": {
+      "attempt": 3,
+      "failed_stage": "STAGE_4_HARNESS",
+      "failure_type": "compile_error",
+      "finish_reason": "stop",
+      "model": "deepseek-flash",
+      "prompt_version": "stage2-structure-snippet-v1",
+      "provider": "openai-compatible",
+      "response_id": "a6ad52b5-00bf-4920-8733-582834250344",
+      "retry_reason": "/home/luchitong/work/harness_generation/artifacts/deepseek_real/generation/ft_parser_from_memory_a5265df23ba0/stage4_harness.c:14:12: error: variable has incomplete type 'Parser' (aka 'struct Parser')",
+      "rollback_source": "ROOT_INPUT",
+      "rollback_target": "STAGE_1_DOCS",
+      "usage": {
+        "completion_tokens": 9,
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 499,
+        "prompt_tokens": 499,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 508
+      }
+    },
+    "output_structure": "(null)"
+  }
+]
+
+Structural dependencies:
+{
+  "assembly_order": [
+    "unit_0001",
+    "unit_0004",
+    "unit_0002",
+    "unit_0003"
+  ],
+  "ft_edges": [
+    {
+      "dst": "Parser",
+      "file": "src/parser.c",
+      "function": "parser_from_memory",
+      "function_id": "src/parser.c:3:parser_from_memory",
+      "inference_reason": null,
+      "inferred": false,
+      "line": 3,
+      "roles": [
+        "ISF",
+        "HPF"
+      ],
+      "src": "(null)"
+    },
+    {
+      "dst": "(null)",
+      "file": "src/parser.c",
+      "function": "node_process",
+      "function_id": "src/parser.c:20:node_process",
+      "inference_reason": null,
+      "inferred": false,
+      "line": 20,
+      "roles": [
+        "PRF"
+      ],
+      "src": "Node"
+    },
+    {
+      "dst": "(null)",
+      "file": "src/parser.c",
+      "function": "parser_free",
+      "function_id": "src/parser.c:25:parser_free",
+      "inference_reason": null,
+      "inferred": false,
+      "line": 25,
+      "roles": [
+        "HPF"
+      ],
+      "src": "Parser"
+    },
+    {
+      "dst": "Node",
+      "file": "src/parser.c",
+      "function": "parser_next",
+      "function_id": "src/parser.c:13:parser_next",
+      "inference_reason": null,
+      "inferred": false,
+      "line": 13,
+      "roles": [
+        "PRF"
+      ],
+      "src": "Parser"
+    }
+  ],
+  "units": [
+    {
+      "depends_on": [],
+      "id": "unit_0001",
+      "input_structure": "(null)",
+      "output_structure": "Parser"
+    },
+    {
+      "depends_on": [
+        "unit_0001"
+      ],
+      "id": "unit_0004",
+      "input_structure": "Parser",
+      "output_structure": "Node"
+    },
+    {
+      "depends_on": [
+        "unit_0004"
+      ],
+      "id": "unit_0002",
+      "input_structure": "Node",
+      "output_structure": "(null)"
+    },
+    {
+      "depends_on": [
+        "unit_0001",
+        "unit_0004"
+      ],
+      "id": "unit_0003",
+      "input_structure": "Parser",
+      "output_structure": "(null)"
+    }
+  ]
+}
+
+Function metadata:
+[
+  {
+    "file": "src/parser.c",
+    "id": "src/parser.c:3:parser_from_memory",
+    "name": "parser_from_memory",
+    "parameters": [
+      {
+        "base_type": "Parser",
+        "declaration": "Parser *parser",
+        "is_const": false,
+        "is_pointer": true,
+        "is_struct_like": true,
+        "name": "parser",
+        "pointer_depth": 1,
+        "type": "Parser *"
+      },
+      {
+        "base_type": "unsigned char",
+        "declaration": "const unsigned char *data",
+        "is_const": true,
+        "is_pointer": true,
+        "is_struct_like": false,
+        "name": "data",
+        "pointer_depth": 1,
+        "type": "const unsigned char *"
+      },
+      {
+        "base_type": "unsigned long",
+        "declaration": "unsigned long size",
+        "is_const": false,
+        "is_pointer": false,
+        "is_struct_like": false,
+        "name": "size",
+        "pointer_depth": 0,
+        "type": "unsigned long"
+      }
+    ],
+    "return_type": "int",
+    "roles": [
+      "ISF",
+      "HPF"
+    ],
+    "signature": "int parser_from_memory( Parser *parser, const unsigned char *data, unsigned long size);",
+    "start_line": 3
+  },
+  {
+    "file": "src/parser.c",
+    "id": "src/parser.c:13:parser_next",
+    "name": "parser_next",
+    "parameters": [
+      {
+        "base_type": "Parser",
+        "declaration": "Parser *parser",
+        "is_const": false,
+        "is_pointer": true,
+        "is_struct_like": true,
+        "name": "parser",
+        "pointer_depth": 1,
+        "type": "Parser *"
+      }
+    ],
+    "return_type": "Node",
+    "roles": [
+      "PRF"
+    ],
+    "signature": "Node parser_next(Parser *parser);",
+    "start_line": 13
+  },
+  {
+    "file": "src/parser.c",
+    "id": "src/parser.c:20:node_process",
+    "name": "node_process",
+    "parameters": [
+      {
+        "base_type": "Node",
+        "declaration": "Node *node",
+        "is_const": false,
+        "is_pointer": true,
+        "is_struct_like": true,
+        "name": "node",
+        "pointer_depth": 1,
+        "type": "Node *"
+      }
+    ],
+    "return_type": "void",
+    "roles": [
+      "PRF"
+    ],
+    "signature": "void node_process(Node *node);",
+    "start_line": 20
+  },
+  {
+    "file": "src/parser.c",
+    "id": "src/parser.c:25:parser_free",
+    "name": "parser_free",
+    "parameters": [
+      {
+        "base_type": "Parser",
+        "declaration": "Parser *parser",
+        "is_const": false,
+        "is_pointer": true,
+        "is_struct_like": true,
+        "name": "parser",
+        "pointer_depth": 1,
+        "type": "Parser *"
+      }
+    ],
+    "return_type": "void",
+    "roles": [
+      "HPF"
+    ],
+    "signature": "void parser_free(Parser *parser);",
+    "start_line": 25
+  }
+]

@@ -7,10 +7,24 @@ name = "harness-generation"
 version = "0.1.0"
 description = "Generate C libFuzzer harnesses with DeepSeek and check compilation"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+  "tree-sitter>=0.25,<0.27",
+  "tree-sitter-c>=0.24,<0.25",
+  "tree-sitter-cpp>=0.23,<0.24",
+]
 
 [project.scripts]
 harness-generation = "harness_generation.cli:main"
+sfg-builder = "sfg_builder.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["harness_generation*"]
+include = ["harness_generation*", "sfg_builder*"]
+
+[tool.pytest.ini_options]
+# `tests/` is not a package, so pytest's "prepend" import mode puts `tests/`
+# on sys.path instead of the repository root.  The console script `pytest`
+# additionally does not prepend the CWD (unlike `python -m pytest`), which
+# leaves the sibling top-level package `sfg_builder` unimportable and makes
+# every test module fail at collection.  Declaring the root here makes both
+# entry points import the working tree, regardless of what is installed.
+pythonpath = ["."]

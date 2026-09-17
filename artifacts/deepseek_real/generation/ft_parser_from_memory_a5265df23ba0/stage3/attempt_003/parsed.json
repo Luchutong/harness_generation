@@ -1,0 +1,44 @@
+{
+  "metadata": {
+    "assembly_order": [
+      "unit_0001",
+      "unit_0004",
+      "unit_0002",
+      "unit_0003"
+    ],
+    "dependency_warnings": [],
+    "generation_metadata": {
+      "finish_reason": "stop",
+      "model": "deepseek-flash",
+      "prompt_version": "stage3-rough-assembly-v1",
+      "provider": "openai-compatible",
+      "response_id": "6e864baf-270a-4e69-a894-42073c5897e1",
+      "usage": {
+        "completion_tokens": 152,
+        "prompt_cache_hit_tokens": 2560,
+        "prompt_cache_miss_tokens": 154,
+        "prompt_tokens": 2714,
+        "prompt_tokens_details": {
+          "cached_tokens": 2560
+        },
+        "total_tokens": 2866
+      }
+    },
+    "invoked_functions": [
+      "node_process",
+      "parser_free",
+      "parser_from_memory",
+      "parser_next"
+    ],
+    "involved_structures": [
+      "Node",
+      "Parser"
+    ],
+    "missing_functions": [],
+    "schema_version": 1,
+    "stage": "stage3_rough_assembly",
+    "triplet_id": "ft_parser_from_memory_a5265df23ba0",
+    "unexpected_functions": []
+  },
+  "status": "passed"
+}

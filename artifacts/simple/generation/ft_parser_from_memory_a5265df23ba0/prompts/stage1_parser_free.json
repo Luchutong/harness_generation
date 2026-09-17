@@ -1,0 +1,108 @@
+{
+  "content": "You are documenting a C function for a later harness-generation pass.\nUse only the supplied source and context. Do not redefine the function or invent\nfunctions, types, APIs, or semantics that cannot be supported by the source.\n\nFunction signature:\nvoid parser_free(Parser *parser);\n\nFunction source:\nvoid parser_free(Parser *parser)\n{\n    (void)parser;\n}\n\nUsage context:\n{\n  \"access_hints\": [\n    {\n      \"evidence\": [],\n      \"parameter\": \"parser\",\n      \"reads\": false,\n      \"writes\": false\n    }\n  ],\n  \"parameters\": [\n    {\n      \"base_type\": \"Parser\",\n      \"declaration\": \"Parser *parser\",\n      \"is_const\": false,\n      \"is_pointer\": true,\n      \"is_struct_like\": true,\n      \"name\": \"parser\",\n      \"pointer_depth\": 1,\n      \"type\": \"Parser *\"\n    }\n  ],\n  \"related_functions\": [\n    {\n      \"function\": \"parser_from_memory\",\n      \"roles\": [\n        \"ISF\",\n        \"HPF\"\n      ]\n    },\n    {\n      \"function\": \"parser_next\",\n      \"roles\": [\n        \"PRF\"\n      ]\n    },\n    {\n      \"function\": \"node_process\",\n      \"roles\": [\n        \"PRF\"\n      ]\n    },\n    {\n      \"function\": \"parser_free\",\n      \"roles\": [\n        \"HPF\"\n      ]\n    }\n  ],\n  \"return_type\": \"void\",\n  \"roles\": [\n    \"HPF\"\n  ],\n  \"source\": {\n    \"end_line\": 28,\n    \"file\": \"src/parser.c\",\n    \"start_line\": 25\n  },\n  \"structural_edges\": [\n    {\n      \"function\": \"parser_from_memory\",\n      \"roles\": [\n        \"ISF\",\n        \"HPF\"\n      ],\n      \"source\": \"(null)\",\n      \"target\": \"Parser\"\n    },\n    {\n      \"function\": \"node_process\",\n      \"roles\": [\n        \"PRF\"\n      ],\n      \"source\": \"Node\",\n      \"target\": \"(null)\"\n    },\n    {\n      \"function\": \"parser_free\",\n      \"roles\": [\n        \"HPF\"\n      ],\n      \"source\": \"Parser\",\n      \"target\": \"(null)\"\n    },\n    {\n      \"function\": \"parser_next\",\n      \"roles\": [\n        \"PRF\"\n      ],\n      \"source\": \"Parser\",\n      \"target\": \"Node\"\n    }\n  ],\n  \"structures\": [\n    \"Node\",\n    \"Parser\"\n  ],\n  \"target_function\": \"parser_free\",\n  \"triplet_id\": \"ft_parser_from_memory_a5265df23ba0\"\n}\n\nAnalyze the function's functionality and provide an example call according to\nits usage scenario. Return only one JSON object with exactly this schema:\n{\"function\":\"...\",\"signature\":\"...\",\"functionality\":\"...\",\n\"application_scenario\":\"...\",\"example_code\":\"...\",\n\"parameter_notes\":[\"...\"],\"return_semantics\":null,\n\"resource_lifecycle_notes\":[\"...\"],\"notes\":[\"...\"]}\nUse null or an empty list for facts that cannot be reliably inferred.",
+  "name": "stage1_function_doc",
+  "parameters": {
+    "function_signature": "void parser_free(Parser *parser);",
+    "function_source": "void parser_free(Parser *parser)\n{\n    (void)parser;\n}",
+    "usage_context": {
+      "access_hints": [
+        {
+          "evidence": [],
+          "parameter": "parser",
+          "reads": false,
+          "writes": false
+        }
+      ],
+      "parameters": [
+        {
+          "base_type": "Parser",
+          "declaration": "Parser *parser",
+          "is_const": false,
+          "is_pointer": true,
+          "is_struct_like": true,
+          "name": "parser",
+          "pointer_depth": 1,
+          "type": "Parser *"
+        }
+      ],
+      "related_functions": [
+        {
+          "function": "parser_from_memory",
+          "roles": [
+            "ISF",
+            "HPF"
+          ]
+        },
+        {
+          "function": "parser_next",
+          "roles": [
+            "PRF"
+          ]
+        },
+        {
+          "function": "node_process",
+          "roles": [
+            "PRF"
+          ]
+        },
+        {
+          "function": "parser_free",
+          "roles": [
+            "HPF"
+          ]
+        }
+      ],
+      "return_type": "void",
+      "roles": [
+        "HPF"
+      ],
+      "source": {
+        "end_line": 28,
+        "file": "src/parser.c",
+        "start_line": 25
+      },
+      "structural_edges": [
+        {
+          "function": "parser_from_memory",
+          "roles": [
+            "ISF",
+            "HPF"
+          ],
+          "source": "(null)",
+          "target": "Parser"
+        },
+        {
+          "function": "node_process",
+          "roles": [
+            "PRF"
+          ],
+          "source": "Node",
+          "target": "(null)"
+        },
+        {
+          "function": "parser_free",
+          "roles": [
+            "HPF"
+          ],
+          "source": "Parser",
+          "target": "(null)"
+        },
+        {
+          "function": "parser_next",
+          "roles": [
+            "PRF"
+          ],
+          "source": "Parser",
+          "target": "Node"
+        }
+      ],
+      "structures": [
+        "Node",
+        "Parser"
+      ],
+      "target_function": "parser_free",
+      "triplet_id": "ft_parser_from_memory_a5265df23ba0"
+    }
+  },
+  "prompt_version": "stage1-function-doc-v1"
+}

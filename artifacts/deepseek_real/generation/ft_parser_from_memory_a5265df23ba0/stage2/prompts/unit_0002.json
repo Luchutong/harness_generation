@@ -1,0 +1,38 @@
+{
+  "content": "Produce a focused C snippet for one structural-flow step.\nExplicitly call every supplied function, preserve dependencies, and use only the\nprovided functions. Do not reimplement target functions, invent APIs, or add a\nfinal LLVMFuzzerTestOneInput wrapper. Output C only, never C++.\nDependency identifiers describe ordering only; never call them as functions.\n\nInput structure:\nNode\n\nOutput structure:\n(null)\n\nFunctions:\n[\n  \"node_process\"\n]\n\nDependencies:\n[\n  \"unit_0004\"\n]\n\nFunction documentation:\n[\n  {\n    \"application_scenario\": \"Used as a processing step on a Node produced by parser_next, likely to advance or count a value stored in the node during parsing.\",\n    \"example_code\": \"Node *node = parser_next(parser);\\nif (node != NULL) {\\n    node_process(node);\\n}\",\n    \"function\": \"node_process\",\n    \"function_id\": \"src/parser.c:20:node_process\",\n    \"functionality\": \"Increments the integer field 'value' of the Node structure pointed to by 'node' by one.\",\n    \"notes\": [\n      \"The function assumes node is non-NULL; no null check is present in the source.\",\n      \"Only the 'value' field of Node is accessed.\"\n    ],\n    \"parameter_notes\": [\n      \"'node' is a non-const pointer to a Node structure; it must point to a valid, writable Node instance.\",\n      \"The function reads and writes node->value.\"\n    ],\n    \"resource_lifecycle_notes\": [\n      \"No allocation or deallocation is performed; the caller retains ownership of the Node.\",\n      \"The Node must remain valid for the duration of the call.\"\n    ],\n    \"return_semantics\": null,\n    \"signature\": \"void node_process(Node *node);\"\n  }\n]",
+  "name": "stage2_structure_snippet",
+  "parameters": {
+    "dependencies": [
+      "unit_0004"
+    ],
+    "documentation": [
+      {
+        "application_scenario": "Used as a processing step on a Node produced by parser_next, likely to advance or count a value stored in the node during parsing.",
+        "example_code": "Node *node = parser_next(parser);\nif (node != NULL) {\n    node_process(node);\n}",
+        "function": "node_process",
+        "function_id": "src/parser.c:20:node_process",
+        "functionality": "Increments the integer field 'value' of the Node structure pointed to by 'node' by one.",
+        "notes": [
+          "The function assumes node is non-NULL; no null check is present in the source.",
+          "Only the 'value' field of Node is accessed."
+        ],
+        "parameter_notes": [
+          "'node' is a non-const pointer to a Node structure; it must point to a valid, writable Node instance.",
+          "The function reads and writes node->value."
+        ],
+        "resource_lifecycle_notes": [
+          "No allocation or deallocation is performed; the caller retains ownership of the Node.",
+          "The Node must remain valid for the duration of the call."
+        ],
+        "return_semantics": null,
+        "signature": "void node_process(Node *node);"
+      }
+    ],
+    "functions": [
+      "node_process"
+    ],
+    "input_structure": "Node",
+    "output_structure": "(null)"
+  },
+  "prompt_version": "stage2-structure-snippet-v2"
+}

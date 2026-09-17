@@ -1,0 +1,225 @@
+Transform the rough C program into a C libFuzzer harness with
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size). The unique ISF is
+the external-input entry. Connect data and size, remove fixed inputs, demo main,
+irrelevant logging, and unnecessary file I/O. Preserve required initialization,
+downstream behavior, bounds checks, and cleanup. Do not redefine project
+functions, invent APIs, or emit C++ constructs.
+
+Use only the supplied project functions plus necessary standard C memory and
+integer utilities. Emit only C source without Markdown fences. The final source
+must contain exactly one entry point with this signature:
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+Pass the external data and size into the unique ISF according to its signature,
+retain downstream FT calls, initialize writable objects before use, and perform
+cleanup after processing.
+
+Rough program:
+#include <stddef.h>
+
+typedef struct Parser Parser;
+
+typedef struct Node {
+    int value;
+} Node;
+
+int parser_from_memory(Parser *parser, const unsigned char *data, unsigned long size);
+Node parser_next(Parser *parser);
+void node_process(Node *node);
+void parser_free(Parser *parser);
+
+int main(void) {
+    Parser parser;
+    const unsigned char data[] = { 0x01 };
+    unsigned long size = sizeof(data);
+
+    if (parser_from_memory(&parser, data, size) != 0) {
+        return 1;
+    }
+
+    Node node = parser_next(&parser);
+    node_process(&node);
+
+    parser_free(&parser);
+
+    return 0;
+}
+
+
+Unique ISF:
+{
+  "file": "src/parser.c",
+  "id": "src/parser.c:3:parser_from_memory",
+  "name": "parser_from_memory",
+  "parameters": [
+    {
+      "base_type": "Parser",
+      "declaration": "Parser *parser",
+      "is_const": false,
+      "is_pointer": true,
+      "is_struct_like": true,
+      "name": "parser",
+      "pointer_depth": 1,
+      "type": "Parser *"
+    },
+    {
+      "base_type": "unsigned char",
+      "declaration": "const unsigned char *data",
+      "is_const": true,
+      "is_pointer": true,
+      "is_struct_like": false,
+      "name": "data",
+      "pointer_depth": 1,
+      "type": "const unsigned char *"
+    },
+    {
+      "base_type": "unsigned long",
+      "declaration": "unsigned long size",
+      "is_const": false,
+      "is_pointer": false,
+      "is_struct_like": false,
+      "name": "size",
+      "pointer_depth": 0,
+      "type": "unsigned long"
+    }
+  ],
+  "return_type": "int",
+  "roles": [
+    "ISF",
+    "HPF"
+  ],
+  "signature": "int parser_from_memory( Parser *parser, const unsigned char *data, unsigned long size);",
+  "start_line": 3,
+  "structural_edges": [
+    {
+      "dst": "Parser",
+      "file": "src/parser.c",
+      "function": "parser_from_memory",
+      "function_id": "src/parser.c:3:parser_from_memory",
+      "inference_reason": null,
+      "inferred": false,
+      "line": 3,
+      "roles": [
+        "ISF",
+        "HPF"
+      ],
+      "src": "(null)"
+    }
+  ]
+}
+
+Function metadata:
+[
+  {
+    "file": "src/parser.c",
+    "id": "src/parser.c:3:parser_from_memory",
+    "name": "parser_from_memory",
+    "parameters": [
+      {
+        "base_type": "Parser",
+        "declaration": "Parser *parser",
+        "is_const": false,
+        "is_pointer": true,
+        "is_struct_like": true,
+        "name": "parser",
+        "pointer_depth": 1,
+        "type": "Parser *"
+      },
+      {
+        "base_type": "unsigned char",
+        "declaration": "const unsigned char *data",
+        "is_const": true,
+        "is_pointer": true,
+        "is_struct_like": false,
+        "name": "data",
+        "pointer_depth": 1,
+        "type": "const unsigned char *"
+      },
+      {
+        "base_type": "unsigned long",
+        "declaration": "unsigned long size",
+        "is_const": false,
+        "is_pointer": false,
+        "is_struct_like": false,
+        "name": "size",
+        "pointer_depth": 0,
+        "type": "unsigned long"
+      }
+    ],
+    "return_type": "int",
+    "roles": [
+      "ISF",
+      "HPF"
+    ],
+    "signature": "int parser_from_memory( Parser *parser, const unsigned char *data, unsigned long size);",
+    "start_line": 3
+  },
+  {
+    "file": "src/parser.c",
+    "id": "src/parser.c:13:parser_next",
+    "name": "parser_next",
+    "parameters": [
+      {
+        "base_type": "Parser",
+        "declaration": "Parser *parser",
+        "is_const": false,
+        "is_pointer": true,
+        "is_struct_like": true,
+        "name": "parser",
+        "pointer_depth": 1,
+        "type": "Parser *"
+      }
+    ],
+    "return_type": "Node",
+    "roles": [
+      "PRF"
+    ],
+    "signature": "Node parser_next(Parser *parser);",
+    "start_line": 13
+  },
+  {
+    "file": "src/parser.c",
+    "id": "src/parser.c:20:node_process",
+    "name": "node_process",
+    "parameters": [
+      {
+        "base_type": "Node",
+        "declaration": "Node *node",
+        "is_const": false,
+        "is_pointer": true,
+        "is_struct_like": true,
+        "name": "node",
+        "pointer_depth": 1,
+        "type": "Node *"
+      }
+    ],
+    "return_type": "void",
+    "roles": [
+      "PRF"
+    ],
+    "signature": "void node_process(Node *node);",
+    "start_line": 20
+  },
+  {
+    "file": "src/parser.c",
+    "id": "src/parser.c:25:parser_free",
+    "name": "parser_free",
+    "parameters": [
+      {
+        "base_type": "Parser",
+        "declaration": "Parser *parser",
+        "is_const": false,
+        "is_pointer": true,
+        "is_struct_like": true,
+        "name": "parser",
+        "pointer_depth": 1,
+        "type": "Parser *"
+      }
+    ],
+    "return_type": "void",
+    "roles": [
+      "HPF"
+    ],
+    "signature": "void parser_free(Parser *parser);",
+    "start_line": 25
+  }
+]

@@ -1,0 +1,24 @@
+{
+  "attempt": 1,
+  "failed_stage": null,
+  "failure_type": null,
+  "finish_reason": "stop",
+  "model": "deepseek-flash",
+  "prompt_version": "stage1-function-doc-v1",
+  "provider": "openai-compatible",
+  "response_id": "1cda24a8-2263-46f1-a2d5-a06a89114a7d",
+  "retry_reason": null,
+  "rollback_source": null,
+  "rollback_target": null,
+  "timestamp": "2026-09-14T04:41:35.909990+00:00",
+  "usage": {
+    "completion_tokens": 373,
+    "prompt_cache_hit_tokens": 512,
+    "prompt_cache_miss_tokens": 165,
+    "prompt_tokens": 677,
+    "prompt_tokens_details": {
+      "cached_tokens": 512
+    },
+    "total_tokens": 1050
+  }
+}

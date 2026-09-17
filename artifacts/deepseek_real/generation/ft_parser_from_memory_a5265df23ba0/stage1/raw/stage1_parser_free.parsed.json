@@ -1,0 +1,48 @@
+{
+  "application_scenario": "Intended to be called when a Parser instance is no longer needed, as the HPF (heap/parser free) role in the parser lifecycle alongside parser_from_memory (ISF/HPF) and parser_next (PRF). In the current implementation it has no observable effect.",
+  "example_code": "Parser *parser = parser_from_memory(data, size);\n/* ... use parser_next(parser) ... */\nparser_free(parser);",
+  "function": "parser_free",
+  "function_id": "src/parser.c:25:parser_free",
+  "functionality": "No-op function body: it explicitly casts the parser parameter to void and performs no reads, writes, or deallocation. It exists as a placeholder or stub for a parser cleanup/free routine.",
+  "generation_metadata": {
+    "attempt": 1,
+    "failed_stage": null,
+    "failure_type": null,
+    "finish_reason": "stop",
+    "model": "deepseek-flash",
+    "prompt_version": "stage1-function-doc-v1",
+    "provider": "openai-compatible",
+    "response_id": "1cda24a8-2263-46f1-a2d5-a06a89114a7d",
+    "retry_reason": null,
+    "rollback_source": null,
+    "rollback_target": null,
+    "usage": {
+      "completion_tokens": 373,
+      "prompt_cache_hit_tokens": 512,
+      "prompt_cache_miss_tokens": 165,
+      "prompt_tokens": 677,
+      "prompt_tokens_details": {
+        "cached_tokens": 512
+      },
+      "total_tokens": 1050
+    }
+  },
+  "notes": [
+    "Source spans src/parser.c lines 25-28.",
+    "The (void)parser cast is the only statement, indicating an intentionally empty stub.",
+    "Related functions: parser_from_memory (ISF/HPF), parser_next (PRF), node_process (PRF).",
+    "Structures referenced in context: Parser and Node."
+  ],
+  "parameter_notes": [
+    "parser is a non-const pointer to a Parser struct-like type.",
+    "The function body does not read from or write to the pointed-to object; the parameter is cast to void.",
+    "A NULL or dangling pointer would be equally safe here since the pointer is never dereferenced."
+  ],
+  "resource_lifecycle_notes": [
+    "Despite the name, this function does not free, release, or otherwise modify any resource in the supplied source.",
+    "No deallocation or cleanup of the Parser or its associated Node structures is performed.",
+    "Callers relying on this function to release memory would leak resources under the current implementation."
+  ],
+  "return_semantics": null,
+  "signature": "void parser_free(Parser *parser);"
+}

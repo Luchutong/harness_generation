@@ -1,0 +1,44 @@
+{
+  "application_scenario": "Used as a processing step on a Node produced by parser_next, likely to advance or count a value stored in the node during parsing.",
+  "example_code": "Node *node = parser_next(parser);\nif (node != NULL) {\n    node_process(node);\n}",
+  "function": "node_process",
+  "function_id": "src/parser.c:20:node_process",
+  "functionality": "Increments the integer field 'value' of the Node structure pointed to by 'node' by one.",
+  "generation_metadata": {
+    "attempt": 1,
+    "failed_stage": null,
+    "failure_type": null,
+    "finish_reason": "stop",
+    "model": "deepseek-flash",
+    "prompt_version": "stage1-function-doc-v1",
+    "provider": "openai-compatible",
+    "response_id": "8690f55f-8b1d-4fb3-85d7-51b97a9519d4",
+    "retry_reason": null,
+    "rollback_source": null,
+    "rollback_target": null,
+    "usage": {
+      "completion_tokens": 228,
+      "prompt_cache_hit_tokens": 512,
+      "prompt_cache_miss_tokens": 174,
+      "prompt_tokens": 686,
+      "prompt_tokens_details": {
+        "cached_tokens": 512
+      },
+      "total_tokens": 914
+    }
+  },
+  "notes": [
+    "The function assumes node is non-NULL; no null check is present in the source.",
+    "Only the 'value' field of Node is accessed."
+  ],
+  "parameter_notes": [
+    "'node' is a non-const pointer to a Node structure; it must point to a valid, writable Node instance.",
+    "The function reads and writes node->value."
+  ],
+  "resource_lifecycle_notes": [
+    "No allocation or deallocation is performed; the caller retains ownership of the Node.",
+    "The Node must remain valid for the duration of the call."
+  ],
+  "return_semantics": null,
+  "signature": "void node_process(Node *node);"
+}

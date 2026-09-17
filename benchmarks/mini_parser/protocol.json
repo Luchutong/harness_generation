@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "entry_function": "mp_parse",
+  "contract": {
+    "input_model": "The libFuzzer byte stream should be decoded as zero or more mini_parser command frames. Keep one mp_context alive across all frames in one LLVMFuzzerTestOneInput call.",
+    "context": {
+      "type": "mp_context",
+      "init": "mp_init(&ctx)",
+      "destroy": "mp_destroy(&ctx)",
+      "lifetime": "one context per libFuzzer iteration, initialized before the command loop and destroyed after the loop"
+    },
+    "command_loop": {
+      "preferred": true,
+      "max_steps": 32,
+      "selector": "consume one fuzzer byte per step and map it to opcode range 1..7",
+      "payload_length_source": "consume one or more fuzzer bytes per step, cap to MP_MAX_PAYLOAD and remaining bytes"
+    },
+    "frame": {
+      "header_size": 8,
+      "payload_offset": 8,
+      "max_payload": "MP_MAX_PAYLOAD",
+      "fields": [
+        {
+          "name": "magic0",
+          "offset": 0,
+          "width": 1,
+          "value": "'M'"
+        },
+        {
+          "name": "magic1",
+          "offset": 1,
+          "width": 1,
+          "value": "'P'"
+        },
+        {
+          "name": "version",
+          "offset": 2,
+          "width": 1,
+          "value": "1"
+        },
+        {
+          "name": "opcode",
+          "offset": 3,
+          "width": 1,
+          "value": "fuzzer-controlled enum mp_opcode in range 1..7"
+        },
+        {
+          "name": "payload_length",
+          "offset": 4,
+          "width": 2,
+          "endianness": "little_endian",
+          "value": "payload byte count"
+        },
+        {
+          "name": "checksum",
+          "offset": 6,
+          "width": 2,
+          "endianness": "little_endian",
+          "value": "mp_checksum(payload, payload_length)"
+        },
+        {
+          "name": "payload",
+          "offset": 8,
+          "width": "payload_length",
+          "value": "fuzzer-controlled bytes"
+        }
+      ]
+    }
+  },
+  "requirements": [
+    "Use a bounded multi-frame command loop, not a single raw pass-through call.",
+    "Repair the outer frame envelope but preserve fuzzer-controlled payload and nested payload fields.",
+    "Set both bytes of the little-endian payload length at offsets 4 and 5.",
+    "Set both bytes of the little-endian checksum at offsets 6 and 7 using mp_checksum.",
+    "Call mp_parse(&ctx, frame, MP_HEADER_SIZE + payload_length) for each complete frame.",
+    "Call mp_destroy(&ctx) exactly once after the loop."
+  ],
+  "notes": [
+    "Valid envelopes improve coverage and feature discovery because mp_parse rejects malformed magic, version, length and checksum before reaching opcode-specific logic.",
+    "Stateful opcodes MP_STORE, MP_RELEASE and MP_USE need a context that lives across multiple frames in one fuzz input."
+  ]
+}

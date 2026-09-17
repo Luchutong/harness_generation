@@ -1,0 +1,13 @@
+#include <stddef.h>
+#include <stdint.h>
+#include "parser.h"
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+{
+    Parser parser = {0};
+    if (parser_from_memory(&parser, data, (unsigned long)size) == 0) {
+        Node node = parser_next(&parser);
+        node_process(&node);
+    }
+    parser_free(&parser);
+    return 0;
+}

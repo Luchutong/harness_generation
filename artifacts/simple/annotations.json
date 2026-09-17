@@ -1,0 +1,359 @@
+{
+  "annotations": [
+    {
+      "decisions": [
+        {
+          "confidence": 0.95,
+          "error": null,
+          "file": "src/parser.c",
+          "function": "parser_from_memory",
+          "function_id": "src/parser.c:3:parser_from_memory",
+          "line": 3,
+          "prompt": "Function signature: int parser_from_memory( Parser *parser, const unsigned char *data, unsigned long size);\nFunction body:\n{\n    if (size == 0) return -1;\n    parser->state = data[0];\n    return 0;\n}\nRelevant type definitions:\ntypedef struct { int state; } Parser;\nTarget parameter: data: const unsigned char *\nDirectly determine whether the target is a contiguous byte/text stream.\nReturn only this JSON object: {\"is_byte_stream\":bool,\"kind\":\"binary|text|filename|pathname|struct|other\",\"confidence\":0.0,\"reason\":\"...\"}",
+          "prompt_version": "sfg-stream-v1",
+          "response": {
+            "confidence": 0.95,
+            "is_byte_stream": true,
+            "kind": "binary",
+            "reason": "byte-compatible pointer and stream-like declaration"
+          },
+          "status": "ok",
+          "task": "stream_parameter"
+        },
+        {
+          "confidence": 0.95,
+          "error": null,
+          "file": "src/parser.c",
+          "function": "parser_from_memory",
+          "function_id": "src/parser.c:3:parser_from_memory",
+          "line": 3,
+          "prompt": "Function signature: int parser_from_memory( Parser *parser, const unsigned char *data, unsigned long size);\nFunction body:\n{\n    if (size == 0) return -1;\n    parser->state = data[0];\n    return 0;\n}\nRelevant type definitions:\ntypedef struct { int state; } Parser;\nTarget parameter: data: const unsigned char *\nAnswer yes or no internally: does the target point to contiguous byte/text data?\nReturn only this JSON object: {\"is_byte_stream\":bool,\"kind\":\"binary|text|filename|pathname|struct|other\",\"confidence\":0.0,\"reason\":\"...\"}",
+          "prompt_version": "sfg-stream-v1",
+          "response": {
+            "confidence": 0.95,
+            "is_byte_stream": true,
+            "kind": "binary",
+            "reason": "byte-compatible pointer and stream-like declaration"
+          },
+          "status": "ok",
+          "task": "stream_parameter"
+        },
+        {
+          "confidence": 0.95,
+          "error": null,
+          "file": "src/parser.c",
+          "function": "parser_from_memory",
+          "function_id": "src/parser.c:3:parser_from_memory",
+          "line": 3,
+          "prompt": "Function signature: int parser_from_memory( Parser *parser, const unsigned char *data, unsigned long size);\nFunction body:\n{\n    if (size == 0) return -1;\n    parser->state = data[0];\n    return 0;\n}\nRelevant type definitions:\ntypedef struct { int state; } Parser;\nTarget parameter: data: const unsigned char *\nFirst choose exactly one kind: binary, text, filename, pathname, struct, or other; then decide whether that kind is a byte stream.\nReturn only this JSON object: {\"is_byte_stream\":bool,\"kind\":\"binary|text|filename|pathname|struct|other\",\"confidence\":0.0,\"reason\":\"...\"}",
+          "prompt_version": "sfg-stream-v1",
+          "response": {
+            "confidence": 0.95,
+            "is_byte_stream": true,
+            "kind": "binary",
+            "reason": "byte-compatible pointer and stream-like declaration"
+          },
+          "status": "ok",
+          "task": "stream_parameter"
+        },
+        {
+          "confidence": 0.9,
+          "error": null,
+          "file": "src/parser.c",
+          "function": "parser_from_memory",
+          "function_id": "src/parser.c:3:parser_from_memory",
+          "line": 3,
+          "prompt": "Function signature: int parser_from_memory( Parser *parser, const unsigned char *data, unsigned long size);\nFunction body:\n{\n    if (size == 0) return -1;\n    parser->state = data[0];\n    return 0;\n}\nRelevant type definitions:\ntypedef struct { int state; } Parser;\nClassify PRF and HPF independently; both may be true. Return only this JSON object: {\"is_prf\":bool,\"is_hpf\":bool,\"operation\":\"process|read|transform|init|allocate|cleanup|free|other\",\"reason\":\"...\",\"confidence\":0.0}",
+          "prompt_version": "sfg-role-v1",
+          "response": {
+            "confidence": 0.9,
+            "is_hpf": true,
+            "is_prf": false,
+            "operation": "init",
+            "reason": "deterministic mock classification from function metadata"
+          },
+          "status": "ok",
+          "task": "function_role"
+        },
+        {
+          "confidence": 0.9,
+          "error": null,
+          "file": "src/parser.c",
+          "function": "parser_from_memory",
+          "function_id": "src/parser.c:3:parser_from_memory",
+          "line": 3,
+          "prompt": "Function signature: int parser_from_memory( Parser *parser, const unsigned char *data, unsigned long size);\nFunction body:\n{\n    if (size == 0) return -1;\n    parser->state = data[0];\n    return 0;\n}\nRelevant type definitions:\ntypedef struct { int state; } Parser;\nTarget struct pointer: parser: Parser *\nAST access hints: {\"parameter\": \"parser\", \"reads\": false, \"writes\": true, \"evidence\": [\"write: parser->state\"]}\nReturn only this JSON object: {\"parameter\":\"...\",\"struct_type\":\"...\",\"direction\":\"input|output|both|unknown\",\"reason\":\"...\",\"confidence\":0.0}",
+          "prompt_version": "sfg-direction-v1",
+          "response": {
+            "confidence": 0.9,
+            "direction": "output",
+            "parameter": "parser",
+            "reason": "AST reports field writes",
+            "struct_type": "Parser"
+          },
+          "status": "ok",
+          "task": "struct_direction"
+        }
+      ],
+      "file": "src/parser.c",
+      "function": "parser_from_memory",
+      "function_id": "src/parser.c:3:parser_from_memory",
+      "is_hpf": true,
+      "is_prf": false,
+      "labels": [
+        "ISF",
+        "HPF"
+      ],
+      "line": 3,
+      "operation": "init",
+      "output_struct_candidates": [],
+      "reason": "deterministic mock classification from function metadata",
+      "stream_parameters": [
+        {
+          "confidence": 0.9499999999999998,
+          "is_byte_stream": true,
+          "kind": "binary",
+          "parameter": "data",
+          "positive_votes": 3,
+          "reason": "byte-compatible pointer and stream-like declaration",
+          "type": "const unsigned char *",
+          "valid_votes": 3
+        }
+      ],
+      "struct_directions": [
+        {
+          "access_hint": {
+            "evidence": [
+              "write: parser->state"
+            ],
+            "parameter": "parser",
+            "reads": false,
+            "writes": true
+          },
+          "confidence": 0.9,
+          "direction": "output",
+          "parameter": "parser",
+          "reason": "AST reports field writes",
+          "struct_type": "Parser"
+        }
+      ]
+    },
+    {
+      "decisions": [
+        {
+          "confidence": 0.9,
+          "error": null,
+          "file": "src/parser.c",
+          "function": "parser_next",
+          "function_id": "src/parser.c:13:parser_next",
+          "line": 13,
+          "prompt": "Function signature: Node parser_next(Parser *parser);\nFunction body:\n{\n    Node n;\n    n.value = parser->state;\n    return n;\n}\nRelevant type definitions:\ntypedef struct { int value; } Node;\ntypedef struct { int state; } Parser;\nClassify PRF and HPF independently; both may be true. Return only this JSON object: {\"is_prf\":bool,\"is_hpf\":bool,\"operation\":\"process|read|transform|init|allocate|cleanup|free|other\",\"reason\":\"...\",\"confidence\":0.0}",
+          "prompt_version": "sfg-role-v1",
+          "response": {
+            "confidence": 0.9,
+            "is_hpf": false,
+            "is_prf": true,
+            "operation": "read",
+            "reason": "deterministic mock classification from function metadata"
+          },
+          "status": "ok",
+          "task": "function_role"
+        },
+        {
+          "confidence": 0.9,
+          "error": null,
+          "file": "src/parser.c",
+          "function": "parser_next",
+          "function_id": "src/parser.c:13:parser_next",
+          "line": 13,
+          "prompt": "Function signature: Node parser_next(Parser *parser);\nFunction body:\n{\n    Node n;\n    n.value = parser->state;\n    return n;\n}\nRelevant type definitions:\ntypedef struct { int value; } Node;\ntypedef struct { int state; } Parser;\nTarget struct pointer: parser: Parser *\nAST access hints: {\"parameter\": \"parser\", \"reads\": true, \"writes\": false, \"evidence\": [\"read: parser->state\"]}\nReturn only this JSON object: {\"parameter\":\"...\",\"struct_type\":\"...\",\"direction\":\"input|output|both|unknown\",\"reason\":\"...\",\"confidence\":0.0}",
+          "prompt_version": "sfg-direction-v1",
+          "response": {
+            "confidence": 0.9,
+            "direction": "input",
+            "parameter": "parser",
+            "reason": "AST reports field reads",
+            "struct_type": "Parser"
+          },
+          "status": "ok",
+          "task": "struct_direction"
+        }
+      ],
+      "file": "src/parser.c",
+      "function": "parser_next",
+      "function_id": "src/parser.c:13:parser_next",
+      "is_hpf": false,
+      "is_prf": true,
+      "labels": [
+        "PRF"
+      ],
+      "line": 13,
+      "operation": "read",
+      "output_struct_candidates": [
+        "Node"
+      ],
+      "reason": "deterministic mock classification from function metadata",
+      "stream_parameters": [],
+      "struct_directions": [
+        {
+          "access_hint": {
+            "evidence": [
+              "read: parser->state"
+            ],
+            "parameter": "parser",
+            "reads": true,
+            "writes": false
+          },
+          "confidence": 0.9,
+          "direction": "input",
+          "parameter": "parser",
+          "reason": "AST reports field reads",
+          "struct_type": "Parser"
+        }
+      ]
+    },
+    {
+      "decisions": [
+        {
+          "confidence": 0.9,
+          "error": null,
+          "file": "src/parser.c",
+          "function": "node_process",
+          "function_id": "src/parser.c:20:node_process",
+          "line": 20,
+          "prompt": "Function signature: void node_process(Node *node);\nFunction body:\n{\n    node->value++;\n}\nRelevant type definitions:\ntypedef struct { int value; } Node;\nClassify PRF and HPF independently; both may be true. Return only this JSON object: {\"is_prf\":bool,\"is_hpf\":bool,\"operation\":\"process|read|transform|init|allocate|cleanup|free|other\",\"reason\":\"...\",\"confidence\":0.0}",
+          "prompt_version": "sfg-role-v1",
+          "response": {
+            "confidence": 0.9,
+            "is_hpf": false,
+            "is_prf": true,
+            "operation": "process",
+            "reason": "deterministic mock classification from function metadata"
+          },
+          "status": "ok",
+          "task": "function_role"
+        },
+        {
+          "confidence": 0.9,
+          "error": null,
+          "file": "src/parser.c",
+          "function": "node_process",
+          "function_id": "src/parser.c:20:node_process",
+          "line": 20,
+          "prompt": "Function signature: void node_process(Node *node);\nFunction body:\n{\n    node->value++;\n}\nRelevant type definitions:\ntypedef struct { int value; } Node;\nTarget struct pointer: node: Node *\nAST access hints: {\"parameter\": \"node\", \"reads\": true, \"writes\": true, \"evidence\": [\"read+write: node->value\"]}\nReturn only this JSON object: {\"parameter\":\"...\",\"struct_type\":\"...\",\"direction\":\"input|output|both|unknown\",\"reason\":\"...\",\"confidence\":0.0}",
+          "prompt_version": "sfg-direction-v1",
+          "response": {
+            "confidence": 0.9,
+            "direction": "both",
+            "parameter": "node",
+            "reason": "AST reports field reads and writes",
+            "struct_type": "Node"
+          },
+          "status": "ok",
+          "task": "struct_direction"
+        }
+      ],
+      "file": "src/parser.c",
+      "function": "node_process",
+      "function_id": "src/parser.c:20:node_process",
+      "is_hpf": false,
+      "is_prf": true,
+      "labels": [
+        "PRF"
+      ],
+      "line": 20,
+      "operation": "process",
+      "output_struct_candidates": [],
+      "reason": "deterministic mock classification from function metadata",
+      "stream_parameters": [],
+      "struct_directions": [
+        {
+          "access_hint": {
+            "evidence": [
+              "read+write: node->value"
+            ],
+            "parameter": "node",
+            "reads": true,
+            "writes": true
+          },
+          "confidence": 0.9,
+          "direction": "both",
+          "parameter": "node",
+          "reason": "AST reports field reads and writes",
+          "struct_type": "Node"
+        }
+      ]
+    },
+    {
+      "decisions": [
+        {
+          "confidence": 0.9,
+          "error": null,
+          "file": "src/parser.c",
+          "function": "parser_free",
+          "function_id": "src/parser.c:25:parser_free",
+          "line": 25,
+          "prompt": "Function signature: void parser_free(Parser *parser);\nFunction body:\n{\n    (void)parser;\n}\nRelevant type definitions:\ntypedef struct { int state; } Parser;\nClassify PRF and HPF independently; both may be true. Return only this JSON object: {\"is_prf\":bool,\"is_hpf\":bool,\"operation\":\"process|read|transform|init|allocate|cleanup|free|other\",\"reason\":\"...\",\"confidence\":0.0}",
+          "prompt_version": "sfg-role-v1",
+          "response": {
+            "confidence": 0.9,
+            "is_hpf": true,
+            "is_prf": false,
+            "operation": "free",
+            "reason": "deterministic mock classification from function metadata"
+          },
+          "status": "ok",
+          "task": "function_role"
+        },
+        {
+          "confidence": 0.9,
+          "error": null,
+          "file": "src/parser.c",
+          "function": "parser_free",
+          "function_id": "src/parser.c:25:parser_free",
+          "line": 25,
+          "prompt": "Function signature: void parser_free(Parser *parser);\nFunction body:\n{\n    (void)parser;\n}\nRelevant type definitions:\ntypedef struct { int state; } Parser;\nTarget struct pointer: parser: Parser *\nAST access hints: {\"parameter\": \"parser\", \"reads\": false, \"writes\": false, \"evidence\": []}\nReturn only this JSON object: {\"parameter\":\"...\",\"struct_type\":\"...\",\"direction\":\"input|output|both|unknown\",\"reason\":\"...\",\"confidence\":0.0}",
+          "prompt_version": "sfg-direction-v1",
+          "response": {
+            "confidence": 0.9,
+            "direction": "input",
+            "parameter": "parser",
+            "reason": "lifecycle cleanup consumes an existing object",
+            "struct_type": "Parser"
+          },
+          "status": "ok",
+          "task": "struct_direction"
+        }
+      ],
+      "file": "src/parser.c",
+      "function": "parser_free",
+      "function_id": "src/parser.c:25:parser_free",
+      "is_hpf": true,
+      "is_prf": false,
+      "labels": [
+        "HPF"
+      ],
+      "line": 25,
+      "operation": "free",
+      "output_struct_candidates": [],
+      "reason": "deterministic mock classification from function metadata",
+      "stream_parameters": [],
+      "struct_directions": [
+        {
+          "access_hint": {
+            "evidence": [],
+            "parameter": "parser",
+            "reads": false,
+            "writes": false
+          },
+          "confidence": 0.9,
+          "direction": "input",
+          "parameter": "parser",
+          "reason": "lifecycle cleanup consumes an existing object",
+          "struct_type": "Parser"
+        }
+      ]
+    }
+  ],
+  "schema_version": 1
+}
