@@ -1,0 +1,28 @@
+{
+  "capability": "e2e",
+  "compiled": true,
+  "failure_reason": null,
+  "ft_id": "ft_parser_from_memory_a5265df23ba0",
+  "fuzz_smoke_completed": true,
+  "generated": true,
+  "linked": true,
+  "rollback_count": 0,
+  "rollback_targets": [],
+  "runtime_checked": true,
+  "schema_version": 1,
+  "stage_statuses": {
+    "STAGE_1_DOCS": "passed",
+    "STAGE_2_SNIPPETS": "passed",
+    "STAGE_3_ROUGH": "passed",
+    "STAGE_4_HARNESS": "passed"
+  },
+  "success": true,
+  "validated": true,
+  "validator_statuses": {
+    "compiler": "passed",
+    "fuzz_smoke": "passed",
+    "intermediate": "passed",
+    "linker": "passed",
+    "runtime": "passed"
+  }
+}

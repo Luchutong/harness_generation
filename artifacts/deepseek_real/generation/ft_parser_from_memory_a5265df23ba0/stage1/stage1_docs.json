@@ -1,0 +1,189 @@
+{
+  "documents": [
+    {
+      "application_scenario": "Used to initialize a Parser object from a memory buffer before subsequent parsing operations such as parser_next.",
+      "example_code": "Parser parser;\nconst unsigned char buf[] = {0x01, 0x02, 0x03};\nint rc = parser_from_memory(&parser, buf, sizeof(buf));\nif (rc != 0) {\n    /* handle error */\n}",
+      "function": "parser_from_memory",
+      "function_id": "src/parser.c:3:parser_from_memory",
+      "functionality": "Initializes a Parser from an in-memory buffer. If size is zero, returns -1 without modifying the parser. Otherwise, sets parser->state to the first byte of data and returns 0.",
+      "generation_metadata": {
+        "attempt": 1,
+        "failed_stage": null,
+        "failure_type": null,
+        "finish_reason": "stop",
+        "model": "deepseek-flash",
+        "prompt_version": "stage1-function-doc-v1",
+        "provider": "openai-compatible",
+        "response_id": "5a9ec799-71d2-48b8-a57c-d4c701e06e1d",
+        "retry_reason": null,
+        "rollback_source": null,
+        "rollback_target": null,
+        "usage": {
+          "completion_tokens": 351,
+          "prompt_cache_hit_tokens": 640,
+          "prompt_cache_miss_tokens": 247,
+          "prompt_tokens": 887,
+          "prompt_tokens_details": {
+            "cached_tokens": 640
+          },
+          "total_tokens": 1238
+        }
+      },
+      "notes": [
+        "Only the first byte of data is used to initialize parser->state.",
+        "The Parser struct is expected to have a state field.",
+        "Related functions include parser_next, node_process, and parser_free."
+      ],
+      "parameter_notes": [
+        "parser: non-const pointer to a Parser struct; written to via parser->state.",
+        "data: const pointer to the input byte buffer; only data[0] is read when size > 0.",
+        "size: number of bytes in data; must be > 0 for successful initialization."
+      ],
+      "resource_lifecycle_notes": [
+        "Does not allocate or free memory.",
+        "Caller is responsible for the lifetime of the Parser and data buffer.",
+        "Parser should be released via parser_free when no longer needed."
+      ],
+      "return_semantics": "Returns 0 on success (size > 0), -1 if size == 0.",
+      "signature": "int parser_from_memory( Parser *parser, const unsigned char *data, unsigned long size);"
+    },
+    {
+      "application_scenario": "Used as a parser-related processing function (PRF) to obtain the next Node from a Parser, typically after the Parser has been created via parser_from_memory and before the Node is passed to node_process.",
+      "example_code": "Parser *parser = parser_from_memory(...);\nNode n = parser_next(parser);\nnode_process(&n);\nparser_free(parser);",
+      "function": "parser_next",
+      "function_id": "src/parser.c:13:parser_next",
+      "functionality": "Reads the current state field from the given Parser and returns it wrapped in a Node whose value is set to that state.",
+      "generation_metadata": {
+        "attempt": 1,
+        "failed_stage": null,
+        "failure_type": null,
+        "finish_reason": "stop",
+        "model": "deepseek-flash",
+        "prompt_version": "stage1-function-doc-v1",
+        "provider": "openai-compatible",
+        "response_id": "bce297dc-1e94-4cdc-b005-bec9cc9ca4b4",
+        "retry_reason": null,
+        "rollback_source": null,
+        "rollback_target": null,
+        "usage": {
+          "completion_tokens": 294,
+          "prompt_cache_hit_tokens": 512,
+          "prompt_cache_miss_tokens": 185,
+          "prompt_tokens": 697,
+          "prompt_tokens_details": {
+            "cached_tokens": 512
+          },
+          "total_tokens": 991
+        }
+      },
+      "notes": [
+        "The function does not advance or mutate parser->state; it only copies the current state into the returned Node.",
+        "Related functions include parser_from_memory (ISF/HPF), node_process (PRF), and parser_free (HPF)."
+      ],
+      "parameter_notes": [
+        "parser is a non-const pointer to a Parser struct; the function only reads parser->state and does not modify the Parser."
+      ],
+      "resource_lifecycle_notes": [
+        "The returned Node is a value type; no heap allocation is performed by this function.",
+        "The Parser must remain valid for the duration of the call; ownership/lifetime of the Parser is managed elsewhere (e.g., parser_from_memory / parser_free)."
+      ],
+      "return_semantics": null,
+      "signature": "Node parser_next(Parser *parser);"
+    },
+    {
+      "application_scenario": "Used as a processing step on a Node produced by parser_next, likely to advance or count a value stored in the node during parsing.",
+      "example_code": "Node *node = parser_next(parser);\nif (node != NULL) {\n    node_process(node);\n}",
+      "function": "node_process",
+      "function_id": "src/parser.c:20:node_process",
+      "functionality": "Increments the integer field 'value' of the Node structure pointed to by 'node' by one.",
+      "generation_metadata": {
+        "attempt": 1,
+        "failed_stage": null,
+        "failure_type": null,
+        "finish_reason": "stop",
+        "model": "deepseek-flash",
+        "prompt_version": "stage1-function-doc-v1",
+        "provider": "openai-compatible",
+        "response_id": "8690f55f-8b1d-4fb3-85d7-51b97a9519d4",
+        "retry_reason": null,
+        "rollback_source": null,
+        "rollback_target": null,
+        "usage": {
+          "completion_tokens": 228,
+          "prompt_cache_hit_tokens": 512,
+          "prompt_cache_miss_tokens": 174,
+          "prompt_tokens": 686,
+          "prompt_tokens_details": {
+            "cached_tokens": 512
+          },
+          "total_tokens": 914
+        }
+      },
+      "notes": [
+        "The function assumes node is non-NULL; no null check is present in the source.",
+        "Only the 'value' field of Node is accessed."
+      ],
+      "parameter_notes": [
+        "'node' is a non-const pointer to a Node structure; it must point to a valid, writable Node instance.",
+        "The function reads and writes node->value."
+      ],
+      "resource_lifecycle_notes": [
+        "No allocation or deallocation is performed; the caller retains ownership of the Node.",
+        "The Node must remain valid for the duration of the call."
+      ],
+      "return_semantics": null,
+      "signature": "void node_process(Node *node);"
+    },
+    {
+      "application_scenario": "Intended to be called when a Parser instance is no longer needed, as the HPF (heap/parser free) role in the parser lifecycle alongside parser_from_memory (ISF/HPF) and parser_next (PRF). In the current implementation it has no observable effect.",
+      "example_code": "Parser *parser = parser_from_memory(data, size);\n/* ... use parser_next(parser) ... */\nparser_free(parser);",
+      "function": "parser_free",
+      "function_id": "src/parser.c:25:parser_free",
+      "functionality": "No-op function body: it explicitly casts the parser parameter to void and performs no reads, writes, or deallocation. It exists as a placeholder or stub for a parser cleanup/free routine.",
+      "generation_metadata": {
+        "attempt": 1,
+        "failed_stage": null,
+        "failure_type": null,
+        "finish_reason": "stop",
+        "model": "deepseek-flash",
+        "prompt_version": "stage1-function-doc-v1",
+        "provider": "openai-compatible",
+        "response_id": "1cda24a8-2263-46f1-a2d5-a06a89114a7d",
+        "retry_reason": null,
+        "rollback_source": null,
+        "rollback_target": null,
+        "usage": {
+          "completion_tokens": 373,
+          "prompt_cache_hit_tokens": 512,
+          "prompt_cache_miss_tokens": 165,
+          "prompt_tokens": 677,
+          "prompt_tokens_details": {
+            "cached_tokens": 512
+          },
+          "total_tokens": 1050
+        }
+      },
+      "notes": [
+        "Source spans src/parser.c lines 25-28.",
+        "The (void)parser cast is the only statement, indicating an intentionally empty stub.",
+        "Related functions: parser_from_memory (ISF/HPF), parser_next (PRF), node_process (PRF).",
+        "Structures referenced in context: Parser and Node."
+      ],
+      "parameter_notes": [
+        "parser is a non-const pointer to a Parser struct-like type.",
+        "The function body does not read from or write to the pointed-to object; the parameter is cast to void.",
+        "A NULL or dangling pointer would be equally safe here since the pointer is never dereferenced."
+      ],
+      "resource_lifecycle_notes": [
+        "Despite the name, this function does not free, release, or otherwise modify any resource in the supplied source.",
+        "No deallocation or cleanup of the Parser or its associated Node structures is performed.",
+        "Callers relying on this function to release memory would leak resources under the current implementation."
+      ],
+      "return_semantics": null,
+      "signature": "void parser_free(Parser *parser);"
+    }
+  ],
+  "schema_version": 1,
+  "stage": "stage1_function_doc",
+  "triplet_id": "ft_parser_from_memory_a5265df23ba0"
+}

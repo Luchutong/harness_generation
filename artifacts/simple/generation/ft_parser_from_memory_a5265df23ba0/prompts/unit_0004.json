@@ -1,0 +1,31 @@
+{
+  "content": "Produce a focused C snippet for one structural-flow step.\nExplicitly call every supplied function, preserve dependencies, and use only the\nprovided functions. Do not reimplement target functions, invent APIs, or add a\nfinal LLVMFuzzerTestOneInput wrapper. Output C only, never C++.\n\nInput structure:\nParser\n\nOutput structure:\nNode\n\nFunctions:\n[\n  \"parser_next\"\n]\n\nDependencies:\n[\n  \"unit_0001\"\n]\n\nFunction documentation:\n[\n  {\n    \"application_scenario\": \"Parse an in-memory byte stream, process the resulting node, and release parser resources.\",\n    \"example_code\": \"parser_next(...);\",\n    \"function\": \"parser_next\",\n    \"function_id\": \"src/parser.c:13:parser_next\",\n    \"functionality\": \"Use parser_next in the structural flow.\",\n    \"notes\": [\n      \"Offline deterministic engineering acceptance response.\"\n    ],\n    \"parameter_notes\": [],\n    \"resource_lifecycle_notes\": [],\n    \"return_semantics\": null,\n    \"signature\": \"Node parser_next(Parser *parser);\"\n  }\n]",
+  "name": "stage2_structure_snippet",
+  "parameters": {
+    "dependencies": [
+      "unit_0001"
+    ],
+    "documentation": [
+      {
+        "application_scenario": "Parse an in-memory byte stream, process the resulting node, and release parser resources.",
+        "example_code": "parser_next(...);",
+        "function": "parser_next",
+        "function_id": "src/parser.c:13:parser_next",
+        "functionality": "Use parser_next in the structural flow.",
+        "notes": [
+          "Offline deterministic engineering acceptance response."
+        ],
+        "parameter_notes": [],
+        "resource_lifecycle_notes": [],
+        "return_semantics": null,
+        "signature": "Node parser_next(Parser *parser);"
+      }
+    ],
+    "functions": [
+      "parser_next"
+    ],
+    "input_structure": "Parser",
+    "output_structure": "Node"
+  },
+  "prompt_version": "stage2-structure-snippet-v1"
+}

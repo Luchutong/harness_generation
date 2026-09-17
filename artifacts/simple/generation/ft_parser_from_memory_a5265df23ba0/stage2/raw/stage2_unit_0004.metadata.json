@@ -1,0 +1,13 @@
+{
+  "attempt": 1,
+  "failed_stage": null,
+  "failure_type": null,
+  "model": "mock-model",
+  "prompt_version": "stage2-structure-snippet-v1",
+  "provider": "mock",
+  "retry_reason": null,
+  "rollback_source": null,
+  "rollback_target": null,
+  "timestamp": "2026-09-12T08:52:14.914797+00:00",
+  "usage": {}
+}

@@ -1,0 +1,398 @@
+Assemble the supplied C snippets into one coherent rough C program.
+Order operations by structural dependencies, reconcile shared variables and
+cleanup, pass output structures into their downstream inputs, and preserve all
+necessary function calls. Do not merely concatenate, redefine project APIs, or
+invent APIs. Return only C source without Markdown fences. This is a rough code
+sequence, not the final harness: do not emit LLVMFuzzerTestOneInput.
+Use the listed project header instead of redeclaring project functions or types.
+Typedef aliases must retain their exact spelling; never turn an anonymous typedef
+such as T into struct T.
+
+Snippets:
+[
+  {
+    "dependencies": [],
+    "functions": [
+      "parser_from_memory"
+    ],
+    "generated_code": "Parser parser;\nconst unsigned char data[] = {0x01};\nint rc = parser_from_memory(&parser, data, sizeof(data));\nif (rc != 0) {\n    return;\n}",
+    "id": "unit_0001",
+    "input_structure": "(null)",
+    "metadata": {
+      "attempt": 1,
+      "failed_stage": null,
+      "failure_type": null,
+      "finish_reason": "stop",
+      "model": "deepseek-flash",
+      "prompt_version": "stage2-structure-snippet-v2",
+      "provider": "openai-compatible",
+      "response_id": "ac693b0d-6be1-4cdd-8af4-86b915066983",
+      "retry_reason": null,
+      "rollback_source": null,
+      "rollback_target": null,
+      "usage": {
+        "completion_tokens": 45,
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 519,
+        "prompt_tokens": 519,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 564
+      }
+    },
+    "output_structure": "Parser"
+  },
+  {
+    "dependencies": [
+      "unit_0001"
+    ],
+    "functions": [
+      "parser_next"
+    ],
+    "generated_code": "Node node = parser_next(parser);",
+    "id": "unit_0004",
+    "input_structure": "Parser",
+    "metadata": {
+      "attempt": 1,
+      "failed_stage": null,
+      "failure_type": null,
+      "finish_reason": "stop",
+      "model": "deepseek-flash",
+      "prompt_version": "stage2-structure-snippet-v2",
+      "provider": "openai-compatible",
+      "response_id": "a7f47d2a-5c34-401e-bdbb-9e0e2a95b144",
+      "retry_reason": null,
+      "rollback_source": null,
+      "rollback_target": null,
+      "usage": {
+        "completion_tokens": 12,
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 462,
+        "prompt_tokens": 462,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 474
+      }
+    },
+    "output_structure": "Node"
+  },
+  {
+    "dependencies": [
+      "unit_0004"
+    ],
+    "functions": [
+      "node_process"
+    ],
+    "generated_code": "node_process(node);",
+    "id": "unit_0002",
+    "input_structure": "Node",
+    "metadata": {
+      "attempt": 1,
+      "failed_stage": null,
+      "failure_type": null,
+      "finish_reason": "stop",
+      "model": "deepseek-flash",
+      "prompt_version": "stage2-structure-snippet-v2",
+      "provider": "openai-compatible",
+      "response_id": "ac22f55a-83d6-49a9-9e8a-46204414383e",
+      "retry_reason": null,
+      "rollback_source": null,
+      "rollback_target": null,
+      "usage": {
+        "completion_tokens": 8,
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 396,
+        "prompt_tokens": 396,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 404
+      }
+    },
+    "output_structure": "(null)"
+  },
+  {
+    "dependencies": [
+      "unit_0001",
+      "unit_0004"
+    ],
+    "functions": [
+      "parser_free"
+    ],
+    "generated_code": "parser_free(parser);",
+    "id": "unit_0003",
+    "input_structure": "Parser",
+    "metadata": {
+      "attempt": 1,
+      "failed_stage": null,
+      "failure_type": null,
+      "finish_reason": "stop",
+      "model": "deepseek-flash",
+      "prompt_version": "stage2-structure-snippet-v2",
+      "provider": "openai-compatible",
+      "response_id": "72a790f5-2862-4fa5-8f02-d0fdf7d71273",
+      "retry_reason": null,
+      "rollback_source": null,
+      "rollback_target": null,
+      "usage": {
+        "completion_tokens": 9,
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 554,
+        "prompt_tokens": 554,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 563
+      }
+    },
+    "output_structure": "(null)"
+  }
+]
+
+Structural dependencies:
+{
+  "assembly_order": [
+    "unit_0001",
+    "unit_0004",
+    "unit_0002",
+    "unit_0003"
+  ],
+  "ft_edges": [
+    {
+      "dst": "Parser",
+      "file": "src/parser.c",
+      "function": "parser_from_memory",
+      "function_id": "src/parser.c:3:parser_from_memory",
+      "inference_reason": null,
+      "inferred": false,
+      "line": 3,
+      "roles": [
+        "ISF",
+        "HPF"
+      ],
+      "src": "(null)"
+    },
+    {
+      "dst": "(null)",
+      "file": "src/parser.c",
+      "function": "node_process",
+      "function_id": "src/parser.c:20:node_process",
+      "inference_reason": null,
+      "inferred": false,
+      "line": 20,
+      "roles": [
+        "PRF"
+      ],
+      "src": "Node"
+    },
+    {
+      "dst": "(null)",
+      "file": "src/parser.c",
+      "function": "parser_free",
+      "function_id": "src/parser.c:25:parser_free",
+      "inference_reason": null,
+      "inferred": false,
+      "line": 25,
+      "roles": [
+        "HPF"
+      ],
+      "src": "Parser"
+    },
+    {
+      "dst": "Node",
+      "file": "src/parser.c",
+      "function": "parser_next",
+      "function_id": "src/parser.c:13:parser_next",
+      "inference_reason": null,
+      "inferred": false,
+      "line": 13,
+      "roles": [
+        "PRF"
+      ],
+      "src": "Parser"
+    }
+  ],
+  "units": [
+    {
+      "depends_on": [],
+      "id": "unit_0001",
+      "input_structure": "(null)",
+      "output_structure": "Parser"
+    },
+    {
+      "depends_on": [
+        "unit_0001"
+      ],
+      "id": "unit_0004",
+      "input_structure": "Parser",
+      "output_structure": "Node"
+    },
+    {
+      "depends_on": [
+        "unit_0004"
+      ],
+      "id": "unit_0002",
+      "input_structure": "Node",
+      "output_structure": "(null)"
+    },
+    {
+      "depends_on": [
+        "unit_0001",
+        "unit_0004"
+      ],
+      "id": "unit_0003",
+      "input_structure": "Parser",
+      "output_structure": "(null)"
+    }
+  ]
+}
+
+Function metadata:
+[
+  {
+    "file": "src/parser.c",
+    "id": "src/parser.c:3:parser_from_memory",
+    "name": "parser_from_memory",
+    "parameters": [
+      {
+        "base_type": "Parser",
+        "declaration": "Parser *parser",
+        "is_const": false,
+        "is_pointer": true,
+        "is_struct_like": true,
+        "name": "parser",
+        "pointer_depth": 1,
+        "type": "Parser *"
+      },
+      {
+        "base_type": "unsigned char",
+        "declaration": "const unsigned char *data",
+        "is_const": true,
+        "is_pointer": true,
+        "is_struct_like": false,
+        "name": "data",
+        "pointer_depth": 1,
+        "type": "const unsigned char *"
+      },
+      {
+        "base_type": "unsigned long",
+        "declaration": "unsigned long size",
+        "is_const": false,
+        "is_pointer": false,
+        "is_struct_like": false,
+        "name": "size",
+        "pointer_depth": 0,
+        "type": "unsigned long"
+      }
+    ],
+    "return_type": "int",
+    "roles": [
+      "ISF",
+      "HPF"
+    ],
+    "signature": "int parser_from_memory( Parser *parser, const unsigned char *data, unsigned long size);",
+    "start_line": 3
+  },
+  {
+    "file": "src/parser.c",
+    "id": "src/parser.c:13:parser_next",
+    "name": "parser_next",
+    "parameters": [
+      {
+        "base_type": "Parser",
+        "declaration": "Parser *parser",
+        "is_const": false,
+        "is_pointer": true,
+        "is_struct_like": true,
+        "name": "parser",
+        "pointer_depth": 1,
+        "type": "Parser *"
+      }
+    ],
+    "return_type": "Node",
+    "roles": [
+      "PRF"
+    ],
+    "signature": "Node parser_next(Parser *parser);",
+    "start_line": 13
+  },
+  {
+    "file": "src/parser.c",
+    "id": "src/parser.c:20:node_process",
+    "name": "node_process",
+    "parameters": [
+      {
+        "base_type": "Node",
+        "declaration": "Node *node",
+        "is_const": false,
+        "is_pointer": true,
+        "is_struct_like": true,
+        "name": "node",
+        "pointer_depth": 1,
+        "type": "Node *"
+      }
+    ],
+    "return_type": "void",
+    "roles": [
+      "PRF"
+    ],
+    "signature": "void node_process(Node *node);",
+    "start_line": 20
+  },
+  {
+    "file": "src/parser.c",
+    "id": "src/parser.c:25:parser_free",
+    "name": "parser_free",
+    "parameters": [
+      {
+        "base_type": "Parser",
+        "declaration": "Parser *parser",
+        "is_const": false,
+        "is_pointer": true,
+        "is_struct_like": true,
+        "name": "parser",
+        "pointer_depth": 1,
+        "type": "Parser *"
+      }
+    ],
+    "return_type": "void",
+    "roles": [
+      "HPF"
+    ],
+    "signature": "void parser_free(Parser *parser);",
+    "start_line": 25
+  }
+]
+
+Project headers and exact type declarations:
+{
+  "headers": [
+    {
+      "file": "include/parser.h",
+      "include": "parser.h"
+    }
+  ],
+  "types": [
+    {
+      "aliases": [
+        "Node"
+      ],
+      "declaration": "typedef struct { int value; } Node;",
+      "file": "include/parser.h",
+      "name": "Node"
+    },
+    {
+      "aliases": [
+        "Parser"
+      ],
+      "declaration": "typedef struct { int state; } Parser;",
+      "file": "include/parser.h",
+      "name": "Parser"
+    }
+  ]
+}
+
+Previous validation feedback (empty on the first attempt):
+{}

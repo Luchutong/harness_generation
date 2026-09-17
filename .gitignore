@@ -4,6 +4,22 @@ __pycache__/
 .venv/
 .env
 .env.*
+!.env.example
 runs/
 build/
 dist/
+
+# Generated pipeline output.  Two subdirectories are kept because something
+# depends on them by path: `simple` is the fixture `tests/test_sfg_adapter.py`,
+# `tests/test_mock_pipeline_e2e.py` and `tests/test_fuzz_smoke.py` read and
+# assert against, and `deepseek_real` is the worked example that
+# `docs/HARNESS_PIPELINE.md` walks a reader through.  Everything else here is
+# reproducible run output.
+artifacts/*
+!artifacts/simple/
+!artifacts/deepseek_real/
+
+# Worktree metadata.  A git worktree living at .claude/worktrees/<name> is a
+# checkout of its own branch; tracking it here would nest one repository's
+# bookkeeping inside another.
+.claude/worktrees/

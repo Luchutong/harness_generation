@@ -1,0 +1,3 @@
+```c
+Node node = parser_next(parser);
+```

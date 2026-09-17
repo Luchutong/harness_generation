@@ -1,0 +1,50 @@
+{
+  "attempt": 1,
+  "attribution_frame": null,
+  "command": [
+    "/home/luchitong/work/harness_generation/artifacts/simple/build/ft_parser_from_memory_a5265df23ba0/fuzzer",
+    "-max_total_time=30",
+    "-print_final_stats=1",
+    "-seed=1",
+    "-artifact_prefix=/home/luchitong/work/harness_generation/artifacts/simple/fuzz/ft_parser_from_memory_a5265df23ba0/smoke_001/crashes/",
+    "/home/luchitong/work/harness_generation/artifacts/simple/fuzz/ft_parser_from_memory_a5265df23ba0/smoke_001/corpus"
+  ],
+  "corpus_files": [
+    "ascii",
+    "empty",
+    "small",
+    "zero"
+  ],
+  "crash_classification": "none",
+  "crash_inputs": [],
+  "duration_seconds": 30,
+  "elapsed_seconds": 30.625,
+  "errors": [],
+  "executable": "/home/luchitong/work/harness_generation/artifacts/simple/build/ft_parser_from_memory_a5265df23ba0/fuzzer",
+  "final_stats_present": true,
+  "finished_at": "2026-09-12T08:52:48.231192+00:00",
+  "ft_id": "ft_parser_from_memory_a5265df23ba0",
+  "initialized": true,
+  "return_code": 0,
+  "schema_version": 1,
+  "signal": null,
+  "signal_name": null,
+  "stack_parser_status": "not_needed",
+  "stage": "stage4_fuzz_smoke",
+  "started_at": "2026-09-12T08:52:16.840582+00:00",
+  "statistics": {
+    "corp": 1,
+    "cov": 14,
+    "crashes": 0,
+    "execs_done": 41823534,
+    "execs_per_sec": 1349146,
+    "ft": 15,
+    "ooms": 0,
+    "timeouts": 0
+  },
+  "status": "passed",
+  "timed_out": false,
+  "top_frame": null,
+  "wall_timeout_seconds": 45.0,
+  "warnings": []
+}

@@ -1,0 +1,32 @@
+{
+  "content": "Produce a focused C snippet for one structural-flow step.\nExplicitly call every supplied function, preserve dependencies, and use only the\nprovided functions. Do not reimplement target functions, invent APIs, or add a\nfinal LLVMFuzzerTestOneInput wrapper. Output C only, never C++.\n\nInput structure:\nParser\n\nOutput structure:\n(null)\n\nFunctions:\n[\n  \"parser_free\"\n]\n\nDependencies:\n[\n  \"unit_0001\",\n  \"unit_0004\"\n]\n\nFunction documentation:\n[\n  {\n    \"application_scenario\": \"Parse an in-memory byte stream, process the resulting node, and release parser resources.\",\n    \"example_code\": \"parser_free(...);\",\n    \"function\": \"parser_free\",\n    \"function_id\": \"src/parser.c:25:parser_free\",\n    \"functionality\": \"Use parser_free in the structural flow.\",\n    \"notes\": [\n      \"Offline deterministic engineering acceptance response.\"\n    ],\n    \"parameter_notes\": [],\n    \"resource_lifecycle_notes\": [],\n    \"return_semantics\": null,\n    \"signature\": \"void parser_free(Parser *parser);\"\n  }\n]",
+  "name": "stage2_structure_snippet",
+  "parameters": {
+    "dependencies": [
+      "unit_0001",
+      "unit_0004"
+    ],
+    "documentation": [
+      {
+        "application_scenario": "Parse an in-memory byte stream, process the resulting node, and release parser resources.",
+        "example_code": "parser_free(...);",
+        "function": "parser_free",
+        "function_id": "src/parser.c:25:parser_free",
+        "functionality": "Use parser_free in the structural flow.",
+        "notes": [
+          "Offline deterministic engineering acceptance response."
+        ],
+        "parameter_notes": [],
+        "resource_lifecycle_notes": [],
+        "return_semantics": null,
+        "signature": "void parser_free(Parser *parser);"
+      }
+    ],
+    "functions": [
+      "parser_free"
+    ],
+    "input_structure": "Parser",
+    "output_structure": "(null)"
+  },
+  "prompt_version": "stage2-structure-snippet-v1"
+}

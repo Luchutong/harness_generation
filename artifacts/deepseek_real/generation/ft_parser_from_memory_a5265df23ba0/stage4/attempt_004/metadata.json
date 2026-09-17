@@ -1,0 +1,19 @@
+{
+  "attempt": 4,
+  "failed_stage": "STAGE_4_HARNESS",
+  "failure_type": "compile_error",
+  "ft_id": "ft_parser_from_memory_a5265df23ba0",
+  "max_tokens": 4096,
+  "model": "deepseek-flash",
+  "prompt_version": "stage4-harness-transform-v1",
+  "provider": "openai-compatible",
+  "retry_reason": "/home/luchitong/work/harness_generation/artifacts/deepseek_real/generation/ft_parser_from_memory_a5265df23ba0/stage4_harness.c:14:12: error: variable has incomplete type 'Parser' (aka 'struct Parser')",
+  "rollback_attempt": 3,
+  "rollback_source": "STAGE_3_ROUGH",
+  "rollback_target": "STAGE_4_HARNESS",
+  "schema_version": 1,
+  "stage": "stage4",
+  "temperature": 0.2,
+  "timestamp": "2026-09-14T04:37:38.042810+00:00",
+  "validator": "compiler"
+}
