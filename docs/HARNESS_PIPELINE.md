@@ -217,6 +217,9 @@ artifacts/<project>/
 ├── sfg.dot
 ├── triplets.json
 ├── triplets/
+├── protocol_candidates.json
+├── protocol_conventions.json
+├── protocol_ir.json
 ├── generation/
 │   └── <ft_id>/
 │       ├── stage1/
@@ -271,6 +274,8 @@ artifacts/<project>/
 │       ├── compile_commands.json
 │       ├── build.json
 │       └── fuzzer
+├── coverage/
+│   └── <ft_id>/
 └── fuzz/
     └── <ft_id>/
         └── smoke_NNN/
@@ -287,6 +292,14 @@ artifacts/<project>/
 `bypass_semantics`，旧 schema v1/v2 仍可读取并补为空列表。`triplets/<ft_id>.json` 是通过
 `--individual` 请求的可选 inspection artifact。所有新增目录都叠加在 Phase 1
 输出之上，不覆盖 SFG pipeline 的源 artifact。
+
+根目录的三个 `protocol_*.json` 由 protocol mining 单独写出（`protocol-mine
+--output <root>`，见 `docs/PROTOCOL_FORMAT_MINING.md`），不参与 Stage 1--4：
+`protocol_candidates.json` 是静态 miner 的 A/B 事实与证据，
+`protocol_conventions.json` 是 LLM 采样的 C 块与投票元数据，
+`protocol_ir.json` 是两者合并后的 canonical 模型。Stage 4 在读到
+`protocol_ir.json` 时会把它的 `protocol.json` 形状投影注入 plan/transform
+prompt；读不到则退回 FT-only，读到但损坏则报错而不是静默退回。
 
 ## CLI
 
@@ -564,3 +577,41 @@ CLI capability。普通测试不调用真实 LLM。
 4. 当前 smoke 只证明闭环可执行，不代表 coverage 充分、长期稳定或不存在目标缺陷。
 5. `.env.example` 不应长期保存真实 API key；应迁移到被忽略的 `.env` 并保留占位符。
 6. 工作树包含大量未提交文件和既有删除；本次未自动 push，也未替用户清理或提交。
+
+---
+
+## Protocol 挖掘接入（更新于 2026-09-17）
+
+本节记录 2026-09-14 验收**之后**新增的模块与行为。上面 §1 的"修改文件"是那次验收
+的存档，**不随本节更新**——把 09-17 才出现的文件写进 09-14 的清单会让那份记录失真。
+
+**新增模块**
+
+- `llm_config.py`：`resolve_llm` 与缺失键策略。原先它作为私有函数住在
+  `generation_cli.py` 里，`protocol_cli.py` 需要跨模块去取另一个命令模块的内部实现；
+  抽成共享模块。`generation_cli.py` 净减少 74 行（新增 4、删除 78）。
+- `protocol_miner.py`：A/B 静态 miner（tree-sitter），产出 `ProtocolFacts`。
+- `protocol_conventions.py`：C 块 LLM 采样 + 逐字段投票 + 一致性表。
+- `protocol_ir.py`：A/B 与 C 合并为 `ProtocolIR`，并提供 `to_json` / `from_json` /
+  `to_protocol_contract`。
+- `protocol_cli.py`：`protocol-mine` 子命令。
+
+**扩展的既有模块**
+
+- `artifacts.py`：根目录新增 `protocol_candidates.json`、`protocol_conventions.json`、
+  `protocol_ir.json` 的写入（布局见上）。
+- `stage4.py`：`load_protocol_contract` 读 `<artifacts>/protocol_ir.json` 并注入
+  plan/transform prompt 的 `protocol_contract` 槽位（该槽位此前从未被填过）；
+  `plan.json` 的 `generation_metadata` 记录契约来源。
+- `prompts.py`：`stage4_harness_plan` 版本升至 `stage4-harness-plan-v6`，六个协议
+  关注点挂在"有契约"分支下，无契约时明确要求 FT-only 且不得发明 framed protocol。
+- `llm.py`：`TimeoutError` 单独成句。此前超时被并入兜底的
+  `OpenAI-compatible request failed: TimeoutError`，会把超时误报成请求失败，
+  让人去找一个并不存在的响应格式问题；现在报
+  `OpenAI-compatible request timed out after <N>s`。两处 wrap 点都要改：
+  `_post_json` 是静默端点真正浮现的地方，`generate` 覆盖自定义注入的 transport。
+
+设计与状态以 `docs/PROTOCOL_FORMAT_MINING.md` 为准（§5.1 miner、§5.2 C 块与下游
+消费、§5.3 尚未实现的验证闸门）。本节只回答"这轮动了哪些文件"。
+
+**当前测试基线**：`460 passed, 273 subtests`（09-14 时为 248 passed, 61 subtests）。

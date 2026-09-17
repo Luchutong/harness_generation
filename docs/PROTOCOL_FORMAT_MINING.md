@@ -12,8 +12,14 @@
 `harness_generation/protocol_spec.py` 的 `discover_protocol_spec()` 在同目录
 自动发现,由 `load_protocol_spec()` 只做外壳校验(`schema_version` /
 `entry_function` / `contract` 类型),`contract` 内部**原样透传**,再由
-`candidate.py:135` 挂到 `summary["protocol_contract"]`,最终经
-`prompts.py:212` 注入 LLM prompt。
+`candidate.py:135` 挂到 `summary["protocol_contract"]` 写进
+`source_summary.json`。
+
+> 更正(2026-09-17):上面这条路径**不接** Stage 4 的 prompt。Stage 4 的
+> `{protocol_contract}` 槽位由 `<artifacts>/protocol_ir.json` 填(§5.2);
+> 手写 spec 只出现在 `candidate.py` 这条流水线、以及 miner 测试作为 ground
+> truth 的地方。此前本文写作"经 `prompts.py` 注入 LLM prompt"是把设计意图
+> 当成了实现。
 
 ### 0.2 待自动化的对象
 
@@ -407,6 +413,13 @@ C++ + 4,100 行 Perl。
 | `requirements` / `notes` 散文 | ChatAFL | 重复生成 + 逐字段多数投票(一致性表) | C |
 | 下游如何使用 | NAUTILUS / Superion | 树化表示、uniform generation、AST 级 trimming | — |
 
+表的实现落点(2026-09-17):**A/B 行**由 `protocol_miner.py` 从源码产出(§5.1),
+**C 行**由 `protocol_conventions.py` 采样投票产出(§5.2)。一处偏差需要说明:
+`command_loop` 这一行在"方法来源"里写的是 §1.3 循环分析,但第 3 步尚未实现,
+**当前的 sequence model 来自 C 块(LLM)**,只有 `max_steps` 在 LLM 未给出时回落
+到 `SOURCE_ENGINEERING` 的默认值——回落值带 `source` 与 `evidence` 标记,不会被
+误读成实测值。等第 3 步落地后,该行的方法来源才真正成立。
+
 ---
 
 ## 3. 综合流水线
@@ -430,9 +443,14 @@ flowchart TD
     J -->|覆盖率等价<br/>spec 驱动 harness vs structured.c| K
     J -->|失败| H
 
-    K --> L["注入 prompt<br/>prompts.py:212"]
+    K --> L["注入 prompt<br/>stage4_harness_plan / _transform<br/>的 protocol_contract 槽位"]
     K --> M["下游:树化生成 / uniform generation<br/>AST trimming / STT 反馈"]
 ```
+
+上图是**设计**形状,不是当前实现形状:到 2026-09-17 为止,`B`(静态 miner)、
+`F`/`G` 中来自静态分析的部分、`H`(LLM 合成,仅 C 块散文)以及持久化都已落地,
+`L` 也已在 Stage 4 接通,但 `C`(动态探针)、`E`(循环建模)与 `J`(验证闸门)
+尚未实现——**`L` 目前拿到的契约没有经过 `J`**。各步状态以 §5 为准。
 
 各段与方法的对应:
 
@@ -509,8 +527,13 @@ flowchart TD
 | 1 | **A/B 静态 miner**(tree-sitter,复用 `source_analysis`) | **已实现**:`harness_generation/protocol_miner.py` |
 | 2 | 动态探针(REDQUEEN 三原语),判定语义类型与 endianness 的交叉验证 | 待办 |
 | 3 | §1.3 循环建模,针对 `structured.c` 的循环产出 `command_loop` | 待办 |
-| 4 | 验证闸门(扩展 `load_protocol_spec` + 覆盖率等价) | 待办,须先于第 5 步 |
-| 5 | LLM 合成 + 一致性表,只用于 C 块散文 | 待办 |
+| 4 | 验证闸门(扩展 `load_protocol_spec` + 覆盖率等价) | **待办**。原定"须先于第 5 步",实际第 5 步的 C 块合成先行落地而闸门仍未建,见 §5.3 |
+| 5 | LLM 合成 + 一致性表,只用于 C 块散文 | **已实现**:`harness_generation/protocol_conventions.py` |
+| 5b | A/B + C 合并为 `ProtocolIR`、持久化、CLI、下游消费 | **已实现**:`protocol_ir.py`、`protocol_cli.py`、`artifacts.py`、`stage4.py`,见 §5.2 |
+
+第 5 步先于第 4 步落地,不是顺序被推翻,而是两件事的依赖方向本来就不同:
+第 4 步要挡住的是**错误的契约进入下游**,第 5 步要挡的是**样本本身的不可靠**。
+后者用投票一致性在采样内自我收口,不依赖前者;前者至今没有实现,缺口见 §5.3。
 
 ### 5.1 已实现的 A/B miner
 
@@ -523,7 +546,9 @@ flowchart TD
 - `limitations` 显式列出静态分析**无法**决定的内容(含"惯例块不在 parser 体内")
 - CLI:`python -m harness_generation.protocol_miner --source ... --function ...`
 
-**对 `mini_parser` 的实测结果**(`tests/test_protocol_miner.py`,21 项):
+**对 `mini_parser` 的实测结果**(`tests/test_protocol_miner.py` 的
+`MiniParserMiningTests`,8 项 + 13 subtests;差分见同文件
+`DifferentialAgainstHandWrittenContractTests`,5 项):
 
 | offset | 人工 `protocol.json` | miner 恢复 | width | endianness | role |
 |---|---|---|---|---|---|
@@ -535,9 +560,19 @@ flowchart TD
 | 6 | checksum | checksum | 2 | little_endian | checksum |
 | 8 | payload | payload | var | — | payload |
 
-`header_size` 8 = 8;`max_payload` 人工写的符号 `MP_MAX_PAYLOAD` 被解析为 64;
-opcode 范围 1..7 且枚举名全部还原。**7/7 字段、offset、width、endianness、
-role 全部一致。**
+`header_size` 8 = 8;`payload_offset` 8 = 8;`max_payload` 人工写的符号
+`MP_MAX_PAYLOAD` 被解析为 64;opcode 范围 1..7 且枚举名全部还原。
+**7/7 字段、offset、width、endianness、role 全部一致。**
+
+`payload_offset` 是这张表原先没列出的元素,而它恰恰是**不能被上表推出**的:
+`mini_parser` 的 `header_size` 与 `payload_offset` 都是 8,所以只列 header
+的表分不清"payload 起点被单独测出来"与"payload 起点照抄 header"。这两者的
+区别只在 header 之后存在填充或非字段字节时才显形,`PayloadOffsetMiningTests`
+用一个 `header_size=8` 而 `payload_offset=12` 的夹具把它钉死
+(`test_contract_reports_the_measured_payload_offset` 直接断言两者不等),
+并要求证据指向被选中的那个表达式。`ConflictingPayloadRegionTests` 覆盖相邻
+的坑:header 内部的 `data + K` 不得被当成 payload 起点——否则会出现两个
+同 offset 的字段,而下游消费者是按 offset 索引字段的。
 
 关键测试是
 `test_every_field_evidence_points_at_real_source_lines`:它重新读取源文件,
@@ -549,6 +584,72 @@ role 全部一致。**
 **已知未覆盖**(留给第 2 步):miner 从**源码**推断 endianness 与语义类型,
 尚未用 REDQUEEN 的运行期探针交叉验证。§4.1 第 3 条指出的"纯轨迹会低估字段
 宽度"正是反向的;两者应当互为校验。
+
+### 5.2 已实现的 C 块合成、合并与下游消费
+
+第 5 步对应 §1.1 ChatAFL 迁移过来**可靠性工程**,落在
+`harness_generation/protocol_conventions.py`(与 `protocol_ir.py`、`artifacts.py`、
+`protocol_cli.py`):
+
+- **采样与投票**。`infer_protocol_conventions` 顺序请求 N 个样本(CLI 默认
+  `--samples 3`),逐字段投票选值。选值和计数在**同一遍**里完成:选择规则读的
+  就是产生 `vote_summary` 的那个计数器,所以"某个值赢在几票"与"这个值被选中"
+  不可能各算一次而算出两个答案。
+- **一致性表就是置信度**。`vote_summary.confidence.value =
+  sample_validity × mean_field_agreement`,即 §1.1 第 2 条那个一致性表的可计算
+  形式(§2 表中 `requirements`/`notes` 一行,§3 流程图 `H --> I` 那条边)。
+  这修掉的是一个具体的失真:全部样本都解析成功但**互相矛盾**时,旧的
+  `llm_confidence` 仍是 1.0,与三个样本完全一致时不可区分,下游无法分辨稳定
+  推断与掷骰子。`ProtocolIR` 读这个值而不是重算,所以消费方依据的数字与审计
+  方能对着 `fields` 复核的数字是同一个。
+- **合并**。`ProtocolIR.from_facts_and_conventions(facts, conventions)` 把 A/B
+  (miner)与 C(投票)合成 `protocol_ir.json`;`to_protocol_contract()` 把它投影成
+  `load_protocol_spec` 接受的 `protocol.json` 形状。
+- **持久化**。三个产物写在 `--output` 根目录:`protocol_candidates.json`(A/B
+  与证据)、`protocol_conventions.json`(C 块、样本与投票元数据)、
+  `protocol_ir.json`(合并结果)。写法与 `write_triplets` 一致(键排序、无
+  非有限数),同目标两次运行的 diff 是干净的。
+- **CLI**。`protocol-mine --source ... --function ... --output ...`,加
+  `--with-llm` 时摘要打印 `samples=N timeout=Ts worst_case=Ws`。`--llm-timeout`
+  的默认值是 `None` 而非 `120.0`,这样它永远不成为超时的第二个来源。
+
+**下游消费**:Stage 4 的 plan 与 transform prompt 都带 `protocol_contract`
+槽位,`stage4.py` 在读 `<artifacts>/protocol_ir.json` 后填入
+`to_protocol_contract()`。三条边界是刻意的:
+
+1. 发现位置**只有**这一处(即 `protocol-mine --output` 写的那个根,也正是
+   Stage 4 已经拿到的根),没有第二个位置也没有开关——一个能悄悄看别处的阶段,
+   它的输入就无法从命令行读出来;
+2. 文件**在但读不出/不合法**时抛 `Stage4Error`,不回落。静默回落会产出一个
+   "看起来依据协议、实际什么都没被告知"的 harness,而且它会**通过**校验,
+   在帧布局、长度修复与 context 生命周期上悄悄错下去;
+3. 文件**不存在**时是真正的 FT-only:prompt 明确要求"用 unique ISF、必需的
+   PRF/HPF 调用、函数元数据与验证反馈"并**不得**发明 framed protocol。六个
+   协议关注点(帧字段、length/checksum repair、payload 由 fuzz 控制、context
+   生命周期、多帧循环、stateful opcode)明确挂在"有契约"这一支下,否则
+   `mp_init`/`mp_destroy` 这类 triplet 也会被要求陈述 header 字段的 endianness。
+
+> 表述边界:**Stage 4 不再依赖手写 `protocol.json`**,但全仓不是。
+> `candidate.py` 的 `discover_protocol_spec` 路径仍会发现并加载它,那是另一条
+> 流水线;手写的 `benchmarks/mini_parser/protocol.json` 同时是 miner 测试的
+> ground truth,不应删除。
+
+### 5.3 未建的验证闸门(第 4 步)
+
+第 5 步落地后,§3 流程图里 `I --> J{验证闸门}` 这一段仍是空的。当前契约只是
+prompt 输入:**LLM 把 `payload_offset` 写错、漏掉 checksum 修复或改了
+`max_payload_symbol`,Stage 4 的校验器不会拦。** `load_protocol_spec` 至今只做
+外壳校验(`contract` 是浅拷贝透传)。
+
+待建内容,按依赖顺序:
+
+1. schema 层:真正校验 `contract.frame.fields`,而不是只确认键存在;
+2. **plan ↔ contract 一致性**:HarnessPlan 是否引用了正确的 `payload_offset`、
+   是否保留 length/checksum repair 与 stateful context、是否改错
+   `max_payload_symbol`、是否发明了契约里没有的字段;
+3. 覆盖率等价:"spec 驱动的通用 harness 覆盖率 ≈ `structured.c` 覆盖率"。
+
+第 2 项是本文档范围内最直接可做的一项,也是当前链路上最明显的缺口。
 
 ---
 
