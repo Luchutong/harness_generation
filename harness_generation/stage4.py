@@ -17,6 +17,10 @@ from .llm import LLMClient, LLMGeneration
 from .prompts import stage4_harness_plan, stage4_harness_transform
 from .protocol_ir import ProtocolIR, ProtocolIRError
 from .protocol_ir_helpers import ProtocolHelperSet, collect_protocol_helpers
+from .protocol_plan_validation import (
+    protocol_contract_projection,
+    validate_plan_contract,
+)
 from .sfg_adapter import is_null_node
 from .source_paths import SUPPORTED_FUNCTIONS_SCHEMA_VERSIONS
 from .triplet import FunctionTriplet
@@ -61,10 +65,14 @@ class HarnessPlan:
     constraints: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
     generation_metadata: Mapping[str, Any] = field(default_factory=dict)
+    #: The plan's structured promise to the mined protocol contract.  ``None``
+    #: on the FT-only path, and then ``to_dict()`` omits the key entirely, so a
+    #: run with no ``protocol_ir.json`` writes the plan.json it always did.
+    protocol_contract_bindings: Mapping[str, Any] | None = None
     schema_version: int = 1
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        document = {
             "schema_version": self.schema_version,
             "triplet_id": self.triplet_id,
             "entrypoint": self.entrypoint,
@@ -76,6 +84,11 @@ class HarnessPlan:
             "notes": list(self.notes),
             "generation_metadata": dict(self.generation_metadata),
         }
+        if self.protocol_contract_bindings is not None:
+            document["protocol_contract_bindings"] = dict(
+                self.protocol_contract_bindings
+            )
+        return document
 
 
 @dataclass(frozen=True)
@@ -185,6 +198,11 @@ class Stage4Generator:
         protocol_helpers = collect_protocol_helpers(protocol_ir)
         protocol = _protocol_contract(artifacts, protocol_ir)
         protocol_contract = None if protocol is None else protocol[0]
+        # The typed digest of the IR that the plan has to declare it preserves.
+        # ``None`` with no IR, and then no plan carries bindings at all.
+        projection = protocol_contract_projection(
+            protocol_ir, project_functions=all_project_functions
+        )
         plan_prompt = stage4_harness_plan(
             triplet_id=triplet.id,
             rough_code=rough_source,
@@ -205,6 +223,9 @@ class Stage4Generator:
             ],
             project_context=project_context,
             protocol_contract=protocol_contract,
+            protocol_contract_bindings=(
+                None if projection is None else projection.renderable()
+            ),
             validation_feedback=validation_feedback,
         )
         layout = ArtifactStore(Path(artifacts)).for_triplet(triplet.id)
@@ -218,6 +239,21 @@ class Stage4Generator:
                 triplet=triplet,
                 isf_metadata=isf_metadata,
             )
+            # The gate sits here, not after the harness audit: a plan that moved
+            # the payload offset, dropped a repair or invented a helper must not
+            # be allowed to shape the C source in the first place.  Failing now
+            # makes the attempt a plan failure, so the existing retry loop hands
+            # the violations back as validation feedback.
+            conformance = validate_plan_contract(
+                harness_plan.protocol_contract_bindings,
+                projection=projection,
+                input_strategy=harness_plan.input_strategy,
+            )
+            if not conformance.ok:
+                raise Stage4Error(
+                    "HarnessPlan does not preserve the protocol contract: "
+                    + "; ".join(conformance.violations)
+                )
             plan_metadata = _generation_metadata(plan_generation)
             if protocol is not None:
                 # Record where the contract came from, so a plan.json can be
@@ -327,13 +363,19 @@ class Stage4Generator:
         connection_record = (
             None if input_connection is None else input_connection.to_dict()
         )
-        layout.write_json(attempt_directory / "parsed.json", {
+        passed_record: dict[str, Any] = {
             "status": "passed",
             "harness_plan": harness_plan.to_dict(),
             "definitions": [function.name for function in analysis.functions],
             "calls": sorted({call.name for call in analysis.calls}),
             "input_connection": connection_record,
-        })
+        }
+        if projection is not None:
+            # What the plan was measured against, and what the comparison
+            # deliberately could not decide.  Absent without an IR, so an
+            # FT-only attempt record stays exactly what it was.
+            passed_record["protocol_contract_conformance"] = conformance.to_dict()
+        layout.write_json(attempt_directory / "parsed.json", passed_record)
         return Stage4Result(
             triplet_id=triplet.id,
             harness_code=harness,
@@ -611,6 +653,15 @@ def parse_harness_plan(
                     + function.function
                 )
 
+    # The bindings are only type-checked here.  Whether they *match* the mined
+    # contract is a question about the IR, which this function never sees; see
+    # protocol_plan_validation.validate_plan_contract.
+    bindings = document.get("protocol_contract_bindings")
+    if bindings is not None and not isinstance(bindings, Mapping):
+        raise Stage4Error(
+            "HarnessPlan protocol_contract_bindings must be an object"
+        )
+
     return HarnessPlan(
         triplet_id=triplet.id,
         entrypoint=FUZZ_ENTRY,
@@ -620,6 +671,7 @@ def parse_harness_plan(
         cleanup_sequence=tuple(dict(item) for item in cleanup_sequence),
         constraints=tuple(constraints),
         notes=tuple(notes),
+        protocol_contract_bindings=None if bindings is None else dict(bindings),
     )
 
 

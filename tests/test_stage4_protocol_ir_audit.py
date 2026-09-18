@@ -133,7 +133,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     def publish(self, root: Path, harness: str):
         """Run Stage 4 against ``root`` and return the result."""
 
-        llm = MockLLM([self.harness_plan(), harness])
+        llm = MockLLM([self.plan_for(root), harness])
         return Stage4Generator(llm).run(
             self.triplet,
             rough_code=self.rough_code(),

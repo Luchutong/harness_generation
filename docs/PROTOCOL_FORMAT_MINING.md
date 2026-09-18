@@ -634,22 +634,51 @@ flowchart TD
 > 流水线;手写的 `benchmarks/mini_parser/protocol.json` 同时是 miner 测试的
 > ground truth,不应删除。
 
-### 5.3 未建的验证闸门(第 4 步)
+### 5.3 验证闸门(第 4 步)
 
 第 5 步落地后,§3 流程图里 `I --> J{验证闸门}` 这一段仍是空的。当前契约只是
-prompt 输入:**LLM 把 `payload_offset` 写错、漏掉 checksum 修复或改了
-`max_payload_symbol`,Stage 4 的校验器不会拦。** `load_protocol_spec` 至今只做
-外壳校验(`contract` 是浅拷贝透传)。
+prompt 输入:LLM 把 `payload_offset` 写错、漏掉 checksum 修复或改了
+`max_payload_symbol`,原先 Stage 4 的校验器不会拦。
 
-待建内容,按依赖顺序:
+按依赖顺序的三项,现状:
 
-1. schema 层:真正校验 `contract.frame.fields`,而不是只确认键存在;
-2. **plan ↔ contract 一致性**:HarnessPlan 是否引用了正确的 `payload_offset`、
-   是否保留 length/checksum repair 与 stateful context、是否改错
-   `max_payload_symbol`、是否发明了契约里没有的字段;
-3. 覆盖率等价:"spec 驱动的通用 harness 覆盖率 ≈ `structured.c` 覆盖率"。
+1. schema 层:真正校验 `contract.frame.fields`,而不是只确认键存在 —— **待办**。
+   `load_protocol_spec` 仍是外壳校验(`contract` 是浅拷贝透传)。
+2. **plan ↔ contract 一致性** —— **已实现**,见下文。
+3. 覆盖率等价:"spec 驱动的通用 harness 覆盖率 ≈ `structured.c` 覆盖率" ——
+   **待办**,且是动态问题,不属于静态闸门。
 
-第 2 项是本文档范围内最直接可做的一项,也是当前链路上最明显的缺口。
+#### 5.3.1 plan ↔ contract 一致性闸门(已实现)
+
+**Typed Contract Projection + 结构化 binding + 确定性比较**,落在
+`harness_generation/protocol_plan_validation.py`,在 `Stage4Generator.run()` 里
+插在 `parse_harness_plan(...)` 之后、transform prompt 之前。位置是刻意的:
+闸门要挡的是**错误的 plan 继续污染 transform**,放到最终 harness 审计之后
+就只能事后追认。
+
+- **投影** `protocol_contract_projection(ir, project_functions=...)` 把 mined IR
+  压成一份"必须被 plan 保留的规范摘要":`frame`(header_size / payload_offset /
+  max_payload / max_payload_symbol / 每个字段的 role+offset+width+endianness)、
+  `input_model`(bounded_multi_frame / bounded_steps / payload 受 fuzz 控制 /
+  length+checksum 修复)、`context`(type / init / destroy / lifetime)、
+  `stateful_operations`、`helpers`(只含证据支撑**且**项目真有定义的)。
+- **plan 必须返回** `protocol_contract_bindings`,形状相同,取值是数字、布尔、
+  枚举或从投影抄来的 token。投影直接就渲染在 plan prompt 里(prompt 升到
+  `stage4-harness-plan-v7`),所以"照抄"是明确指令而不是猜测。
+- **比较** `validate_plan_contract(...)` 是纯确定性的:不重挖协议、不读散文、
+  不调用 LLM。硬拒项包括 `payload_offset` 写错、字段增删、magic/version 字面量
+  不符、漏声明 length/checksum 修复、有契约却无有界多帧循环、`context` 缺失或
+  `lifetime` 是 `per_frame`、stateful opcode 增删、helper 不在证据∩项目集合内。
+  契约能"要求"行为却不能"禁止"更谨慎,所以这几项是单向的;而抓**凭空发明**的
+  三项(多出的字段 / opcode / helper)是集合比较,双向。
+
+**刻意不查的**(写进 `ProtocolContractProjection.warnings`,只记录不判失败,诚实
+划出静态闸门的边界):miner 的**描述性**字段值(`"le16() load"` 之类;只有
+magic/version 这类裸 C 常量才是字面量并参与比较)、IR 的 `requirements`/`notes`
+散文、`limitations`。覆盖率等价另属第 3 项。
+
+无 `protocol_ir.json` 时投影为 `None`,plan 不得携带 bindings(`plan.json` 因此
+不新增任何键),FT-only 路径逐字未变。
 
 ---
 

@@ -23,6 +23,7 @@ import json
 from pathlib import Path
 import shutil
 import tempfile
+from typing import Any, Mapping
 import unittest
 
 from harness_generation.artifacts import ArtifactStore
@@ -48,6 +49,7 @@ from harness_generation.protocol_miner import (
     mine_protocol_facts,
 )
 from harness_generation.prompts import stage4_harness_plan
+from harness_generation.protocol_plan_validation import protocol_contract_projection
 from harness_generation.sfg_adapter import load_sfg_artifacts
 from harness_generation.stage4 import (
     Stage4Error,
@@ -73,6 +75,56 @@ MINED_FIELD_NAMES = (
     "magic0", "magic1", "version", "opcode",
     "payload_length", "checksum", "payload",
 )
+
+#: The project functions a mined mini_parser IR may name as helpers.  Deriving
+#: bindings for a test IR means intersecting the IR's evidence against a project
+#: function set, and these four are the ones ``target.c`` defines.
+PROJECT_FUNCTIONS = frozenset({"le16", "mp_checksum", "mp_init", "mp_destroy"})
+
+#: A faithful ``protocol_contract_bindings`` for the mined mini_parser IR,
+#: written out in full rather than computed from the projection.  If the
+#: projection ever drifts, every IR-path test here fails at the gate with the
+#: disagreement spelled out -- which is the point of pinning a literal.
+CONTRACT_BINDINGS: dict[str, Any] = {
+    "frame": {
+        "header_size": 8,
+        "payload_offset": 8,
+        "max_payload": 64,
+        "max_payload_symbol": "MP_MAX_PAYLOAD",
+        "fields": [
+            {"role": "magic", "name": "magic0", "offset": 0, "width": 1, "value": "'M'"},
+            {"role": "magic", "name": "magic1", "offset": 1, "width": 1, "value": "'P'"},
+            {"role": "version", "name": "version", "offset": 2, "width": 1, "value": "1"},
+            {"role": "opcode", "name": "opcode", "offset": 3, "width": 1},
+            {"role": "payload_length", "name": "payload_length", "offset": 4,
+             "width": 2, "endianness": "little_endian"},
+            {"role": "checksum", "name": "checksum", "offset": 6,
+             "width": 2, "endianness": "little_endian"},
+            {"role": "payload", "name": "payload", "offset": 8,
+             "width": "payload_length"},
+        ],
+    },
+    "input_model": {
+        "bounded_multi_frame": True,
+        "bounded_steps": 32,
+        "bounded_steps_source": "engineering_choice",
+        "payload_fuzzer_controlled": True,
+        "repair_length": True,
+        "repair_checksum": True,
+    },
+    "context": {
+        "type": "mp_context",
+        "init": "mp_init",
+        "destroy": "mp_destroy",
+        "lifetime": "per_iteration",
+    },
+    "stateful_operations": ["MP_RELEASE", "MP_STORE", "MP_USE"],
+    # ``le16`` is a static in target.c; whether it is in functions.json depends
+    # on the analyzer, so the fixture names only the four the projection is
+    # guaranteed to find.  The gate is a subset check, so a plan naming fewer
+    # helpers than the contract evidences is not a violation.
+    "helpers": ["le16", "mp_checksum", "mp_destroy", "mp_init"],
+}
 
 #: One valid C-block sample for ``mp_parse``, voted three times.  The vote makes
 #: every field unanimous, so the mined IR's confidence is 1.0.
@@ -192,7 +244,44 @@ class Stage4ProjectTests(unittest.TestCase):
     mp_destroy(ctx);
 }"""
 
-    def harness_plan(self, *, bounded_steps: int = 32) -> str:
+    @staticmethod
+    def bindings_for(ir) -> dict[str, Any]:
+        """Bindings faithful to ``ir``, read off its projection.
+
+        ``CONTRACT_BINDINGS`` describes the canonical mined mini_parser IR.  A
+        test that supplies an IR of its own needs bindings for *that* IR, or the
+        gate refuses the plan for a reason the test is not about.
+        """
+
+        projection = protocol_contract_projection(
+            ir, project_functions=PROJECT_FUNCTIONS
+        )
+        return json.loads(json.dumps(projection.renderable()))
+
+    def bindings_in(self, root: Path) -> dict[str, Any] | None:
+        """Bindings for the IR at ``root``, or ``None`` when there is none.
+
+        A plan is only *given* a contract when ``protocol_ir.json`` exists, so
+        this is the shape a well-behaved plan has.  Deriving rather than using
+        the ``CONTRACT_BINDINGS`` literal matters here: several tests mine an IR
+        from a modified source on purpose, and a plan hardcoded to the canonical
+        one would be refused by the gate the test is not about.
+        """
+
+        path = root / "protocol_ir.json"
+        if not path.is_file():
+            return None
+        return self.bindings_for(
+            ProtocolIR.from_json(json.loads(path.read_text(encoding="utf-8")))
+        )
+
+    def plan_for(self, root: Path) -> str:
+        """A HarnessPlan for ``root``: bindings for the IR that is there, or none."""
+
+        return self.harness_plan(bindings=self.bindings_in(root))
+
+    def harness_plan(self, *, bounded_steps: int = 32,
+                     bindings: Mapping[str, Any] | None = CONTRACT_BINDINGS) -> str:
         return json.dumps({
             "schema_version": 1,
             "triplet_id": self.triplet.id,
@@ -233,6 +322,7 @@ class Stage4ProjectTests(unittest.TestCase):
             ],
             "constraints": ["repair length and checksum before mp_parse"],
             "notes": ["keep one mp_context alive across frames"],
+            "protocol_contract_bindings": bindings,
         })
 
     @staticmethod
@@ -255,7 +345,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     def generate(self, root: Path):
         """Run Stage 4 against ``root`` and hand back the client and the result."""
 
-        llm = MockLLM([self.harness_plan(), self.harness_code()])
+        llm = MockLLM([self.plan_for(root), self.harness_code()])
         result = Stage4Generator(llm).run(
             self.triplet,
             rough_code=self.rough_code(),
@@ -634,7 +724,7 @@ class SixConcernsTests(Stage4ProjectTests):
     def test_the_plan_prompt_version_records_the_rewrite(self):
         root = self.artifact_root("version")
         llm, _ = self.generate(root)
-        self.assertEqual(llm.calls[0]["prompt_version"], "stage4-harness-plan-v6")
+        self.assertEqual(llm.calls[0]["prompt_version"], "stage4-harness-plan-v7")
         self.assertEqual(
             llm.calls[1]["prompt_version"], "stage4-harness-transform-v6"
         )

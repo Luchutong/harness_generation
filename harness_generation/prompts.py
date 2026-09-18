@@ -218,7 +218,7 @@ Previous validation feedback (empty on the first attempt):
 
 STAGE4_HARNESS_PLAN = PromptTemplate(
     name="stage4_harness_plan",
-    version="stage4-harness-plan-v6",
+    version="stage4-harness-plan-v7",
     template="""Create a structured HarnessPlan before any final C harness is
 written. Use the rough program, Function Triplet, and exact project declarations
 to decide state objects, fuzzer-input decoding, call order, data/size binding,
@@ -242,7 +242,8 @@ Return only one strict JSON object with exactly this shape:
 "outputs":["..."],"conditions":["..."]}}],
 "cleanup_sequence":[{{"function":"...","purpose":"...",
 "arguments":["..."],"after":["..."]}}],
-"constraints":["..."],"notes":["..."]}}
+"constraints":["..."],"notes":["..."],
+"protocol_contract_bindings":{protocol_contract_bindings}}}
 
 Every FT function must appear exactly once in call_sequence or cleanup_sequence.
 The unique ISF must appear in call_sequence and must use both fuzzer data and
@@ -269,9 +270,28 @@ concerns:
 6. stateful opcodes and cleanup: trigger opcodes whose behavior depends on state
    left by an earlier command in order, after the command that establishes that
    state, and clean up within the iteration.
+protocol_contract_bindings carries the same facts as structured values, and it
+is checked field by field against the contract: every leaf must equal the
+contract's leaf, or the plan is rejected before any C is written.
+- The object above is shown filled in when a contract was supplied, and null
+  when one was not. Copy it exactly: same keys, same offsets, same widths, same
+  values, same lists. Do not paraphrase a value and do not add a key.
+- frame must repeat the contract's header_size, payload_offset, max_payload and
+  every field's role, offset, width, endianness and literal value verbatim.
+- input_model must state the contract's policy: a bounded multi-frame loop with
+  the same positive bounded_steps as input_strategy.bounded_steps, the payload
+  left fuzz-controlled, and length/checksum repair declared whenever the
+  contract has those fields. Claiming less than the contract requires is a
+  rejection.
+- context must name the contract's type, init and destroy, and set lifetime to
+  "per_iteration" -- the context carries state between commands, so it is
+  created once per LLVMFuzzerTestOneInput call, never per frame.
+- stateful_operations must list exactly the contract's opcodes and helpers must
+  name only helpers the contract evidences. An extra name is an invented API.
 If no protocol contract is supplied, fall back to FT-only harness planning: use
 the unique ISF, required PRF/HPF calls, available function metadata, and
-validation feedback. Do not invent a framed protocol.
+validation feedback. Do not invent a framed protocol. Leave
+protocol_contract_bindings null: with no contract there is nothing to bind.
 
 Rough program:
 {rough_code}
@@ -398,6 +418,7 @@ def stage4_harness_plan(*, triplet_id: Any, rough_code: Any, unique_isf: Any,
                         function_metadata: Any, bypass_semantics: Any = (),
                         project_context: Any = (),
                         protocol_contract: Any = None,
+                        protocol_contract_bindings: Any = None,
                         validation_feedback: Any = None) -> RenderedPrompt:
     return STAGE4_HARNESS_PLAN.render(
         triplet_id=triplet_id,
@@ -407,6 +428,9 @@ def stage4_harness_plan(*, triplet_id: Any, rough_code: Any, unique_isf: Any,
         bypass_semantics=bypass_semantics,
         project_context=project_context,
         protocol_contract=protocol_contract or {},
+        # ``None`` renders as JSON null, which is the instruction to the
+        # FT-only run: carry no bindings at all.
+        protocol_contract_bindings=protocol_contract_bindings,
         validation_feedback=validation_feedback or {},
     )
 

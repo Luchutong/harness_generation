@@ -303,10 +303,18 @@ class MinedProtocolEndToEndTests(Stage4ProjectTests):
         return root
 
     def publish(self, root: Path, harness: str):
-        """Stage 4 over ``root``, planned for the mined loop bound."""
+        """Stage 4 over ``root``, planned for the mined loop bound.
+
+        The bindings follow ``root``'s own IR, as a real plan's would, so the
+        conditional-refusal test below stays a test about the audit: its second
+        root has no IR, so its plan carries no bindings to bind.
+        """
 
         llm = MockLLM([
-            self.harness_plan(bounded_steps=self.ir.sequence.max_steps["value"]),
+            self.harness_plan(
+                bounded_steps=self.ir.sequence.max_steps["value"],
+                bindings=self.bindings_in(root),
+            ),
             harness,
         ])
         return llm, Stage4Generator(llm).run(
@@ -460,7 +468,11 @@ class PublishedHarnessBuildTests(Stage4ProjectTests):
         shutil.copy2(cls.phase1 / "functions.json", cls.root / "functions.json")
         cls.ir = mine_protocol_ir(cls.root)
         Stage4Generator(MockLLM([
-            cls.harness_plan(cls, bounded_steps=cls.ir.sequence.max_steps["value"]),
+            cls.harness_plan(
+                cls,
+                bounded_steps=cls.ir.sequence.max_steps["value"],
+                bindings=Stage4ProjectTests.bindings_in(cls, cls.root),
+            ),
             structured_harness(cls.ir),
         ])).run(
             cls.triplet,
