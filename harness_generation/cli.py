@@ -39,6 +39,9 @@ def main(
     if arguments[:1] == ["protocol-mine"]:
         from .protocol_cli import main as protocol_main
         return protocol_main(arguments[1:], llm=llm)
+    if arguments[:1] == ["coverage-arms"]:
+        from .coverage_arms import main as coverage_arms_main
+        return coverage_arms_main(arguments[1:])
 
     parser = argparse.ArgumentParser(description="Generate N independent C libFuzzer harness candidates.")
     parser.add_argument("--source", required=True, type=Path, help="Self-contained UTF-8 C source without main")
@@ -138,6 +141,12 @@ def _measure_target_main(argv: list[str]) -> int:
     parser.add_argument("--corpus", type=Path)
     parser.add_argument("--runs", type=int, default=64)
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=1,
+        help="libFuzzer seed behind --runs; one seed replayed is one sample.",
+    )
+    parser.add_argument(
         "--harness-includes-target",
         action="store_true",
         help="Do not separately compile target sources; use them only as coverage filters.",
@@ -168,6 +177,7 @@ def _measure_target_main(argv: list[str]) -> int:
             )
         result = TargetCoverageCollector(TargetCoverageConfig(
             runs=args.runs,
+            seed=args.seed,
             compile_target_sources=not args.harness_includes_target,
         )).measure(
             harness,

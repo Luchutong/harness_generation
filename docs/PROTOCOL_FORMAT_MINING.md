@@ -646,7 +646,8 @@ prompt 输入:LLM 把 `payload_offset` 写错、漏掉 checksum 修复或改了
    `load_protocol_spec` 仍是外壳校验(`contract` 是浅拷贝透传)。
 2. **plan ↔ contract 一致性** —— **已实现**,见下文。
 3. 覆盖率等价:"spec 驱动的通用 harness 覆盖率 ≈ `structured.c` 覆盖率" ——
-   **待办**,且是动态问题,不属于静态闸门。
+   **已测量,见 §5.3.2**。它是动态问题,不属于静态闸门,因此作为**基准级验收
+   指标**关闭,而不是接进 Stage 4。
 
 #### 5.3.1 plan ↔ contract 一致性闸门(已实现)
 
@@ -679,6 +680,46 @@ magic/version 这类裸 C 常量才是字面量并参与比较)、IR 的 `requir
 
 无 `protocol_ir.json` 时投影为 `None`,plan 不得携带 bindings(`plan.json` 因此
 不新增任何键),FT-only 路径逐字未变。
+
+#### 5.3.2 覆盖率等价(已测量)
+
+**报告:`docs/COVERAGE_EQUIVALENCE.md`;驱动:`harness_generation/coverage_arms.py`
+(CLI 子命令 `coverage-arms`);证据:`tests/fixtures/coverage_arms/measurements.json`。**
+报告由证据渲染而成,没有手写数字;`coverage-arms --check` 能在没有编译器、没有
+LLM 的情况下重算每一个判定。
+
+在 mini_parser 这一个基准上,`-runs=20000`、3 个 seed、5 个 arm,候选
+`contracted`(正式 publish 的 1845 B harness)对 `reference`(`structured.c`):
+
+| 指标 | reference | contracted | ratio | 判定 |
+|---|---|---|---|---|
+| lines | 95.122% | 95.122% | 1.0 | 达标 |
+| regions | 92.1053% | 88.1579% | 0.957 | 容差内(tolerance 0.05) |
+| branches | 82.3529% | 77.9412% | 0.946 | **未达标** |
+
+**结论:不宣称等价** —— `below_reference`。branches 这一项候选比参考低 4.4 个
+百分点,超出容差。三条必须随数字一起读的限定:
+
+- **`cov`/`ft` 是 engine-level,不是目标源码覆盖率。** 它们来自 libFuzzer 对整个
+  插桩程序(含 harness 自身)的计数,只作遥测;闸门只读 `llvm-cov` 过滤到
+  `target.c` 的那一层。两者在报告里分层分表,不混用。
+- **判定是 budget-relative 的。** 同一批 arm 在 `-runs=2000` 时三个指标全部不达标
+  (lines ratio 0.833);即 contract 路径要多跑一些执行次数才能达到 reference 一次
+  就到的覆盖。报告同时给出两个预算,并明确这属于 harness 的性质、不是测量错误。
+- **等量工作要求关掉 sanitizer。** 带 ASan/UBSan 时,reference 跑 10–43 次就崩、
+  contracted 跑 801–1348 次才崩,覆盖率变成"崩得多快",跨 arm 不可比。所以覆盖层
+  不带 sanitizer 构建,每个 arm 跑满同一个 `-runs`。
+
+另有两项如实记录:FT-only arm(494 B,无 `protocol_ir.json` 时 publish 的产物)只
+覆盖 12.2% 的行,与 tracked baseline `pass_through` 逐位相同,即
+`ft_only − pass_through` 的 recipe 效应为 0;被审计拒绝的 `attempt_003` 覆盖率与
+正式发布物相当,说明**该拒绝不是覆盖率过滤器** —— 它拒的是 harness 私自复刻项目
+算法,与覆盖无关。
+
+**边界**:一个基准、一个目标函数、一份语料、一个预算;且闸门只在存在手写参考
+harness 的地方可定义。因此它关闭的是 §5.3 第 3 项作为**基准级验收指标**,不是
+生产环境验证器 —— 接进 Stage 4 意味着每次 attempt 都要跑一整轮 fuzz campaign,
+而对任意 target 并没有 `structured.c` 可比。完整限定见报告 Caveats (a)–(j)。
 
 ---
 

@@ -1,0 +1,69 @@
+{
+  "note": "The five harness arms of the coverage-equivalence measurement, and where each one comes from.  Two arms are tracked benchmark harnesses and are referenced by path so a copy can never fork from them.  One is an already-committed Stage 4 attempt used only as a diagnostic.  The other two are published artifacts whose recording lived only in /tmp, which has since been cleared; they are committed here because the measured object has to survive, and each is pinned by the sha256 recorded from the original file before it was deleted, so the copy is provable rather than plausible.  See docs/COVERAGE_EQUIVALENCE.md and harness_generation/coverage_arms.py.",
+  "target_source": {
+    "path": "benchmarks/mini_parser/target.c",
+    "sha256": "aa82360a8d4b147bbdd69dcd7ea46ca22d9dae0daaf6ae5a77fc951a9bda27ff",
+    "size": 4304
+  },
+  "corpus": {
+    "path": "benchmarks/mini_parser/corpus/structured",
+    "policy": "copied by content hash into each run; the tracked directory is never fuzzed in place",
+    "digests": {
+      "multiply": "35a94c1e95835492ae941af20be1f67c69e0eb2c82536a150acbbee75b9eccab",
+      "nested": "28dde24d730ecc9e9e21516b4ca0a7d210927617e4c571c2ff42240ea1f3c04b",
+      "read": "527e7af33f5c0c4bd6b34f6406175b022385d5173ffe2f73fbcab11351d49be3",
+      "release": "c0ba8a33ac67f44abff5984dfbb6f56c46b880ac2b86e1f23e7fa9c402c53ae7",
+      "stateful_safe": "e0affd36e44cb1e3f3138e09ce7d3f2f305c9d8444c1cf288fe34da993a265c9",
+      "store": "8115ec37c58bd09374c59fe72ae4583ee27ae02c50470d07055055f9fc6a8924",
+      "use": "2921a11f25dadaa24aa79a548e4e81508c2e5e56af2d833d65e2bcce448ce2f5",
+      "write": "d09110611314f131e6e9d6618f12e30f4a37eb87c1eb2c3352e98ff00d5172d6"
+    }
+  },
+  "arms": [
+    {
+      "name": "reference",
+      "path": "benchmarks/mini_parser/harnesses/structured.c",
+      "sha256": "6039764f6fd3b5c4f2ec1a0c4a47e2ee763372fb8bbc635d0df79b8c2e51ea08",
+      "size": 1160,
+      "recipe": "single_tu",
+      "role": "accepted_reference",
+      "provenance": "The tracked hand-written reference harness, which includes target.c and drives every opcode the target defines.  It is the baseline the contract path is compared against, and it is a human artifact, not a pipeline product."
+    },
+    {
+      "name": "contracted",
+      "path": "tests/fixtures/coverage_arms/contracted_published.c",
+      "sha256": "49a5a01c87cf341a0f6a594873d867cb2e9a3fac9fd060f49943f72b2c44a218",
+      "size": 1845,
+      "recipe": "two_tu",
+      "role": "published_contracted",
+      "provenance": "The harness a real-provider run formally published to harnesses/ft_mp_parse_787468773c9f.c after Fix A and Fix B, from the attempt that mined protocol_ir.json licensed.  Byte-identical to stage4/attempt_002/harness.c of that run.  Reconstructed after /tmp was cleared and verified against the sha256 recorded from the file itself while it still existed."
+    },
+    {
+      "name": "ft_only",
+      "path": "tests/fixtures/coverage_arms/ft_only_published.c",
+      "sha256": "20447fb262a322f59855346b03abba16a92559cbec1aefac9b625b33ab43cad9",
+      "size": 494,
+      "recipe": "two_tu",
+      "role": "published_ft_only",
+      "provenance": "The harness a real-provider run published from a tree with no protocol_ir.json, so nothing but the FT drove it: it hands the raw byte stream to mp_parse once.  Reconstructed the same way and verified against its recorded sha256."
+    },
+    {
+      "name": "pass_through",
+      "path": "benchmarks/mini_parser/harnesses/pass_through.c",
+      "sha256": "155663f1033e1262bcdaf352a39937ec5794bd3f6ea22507c7645af5c20eaf88",
+      "size": 492,
+      "recipe": "single_tu",
+      "role": "tracked_baseline",
+      "provenance": "The tracked weak baseline.  It is the same shape as ft_only -- one call, raw bytes -- but single-TU, so the gap between the two bounds the recipe effect rather than a capability difference."
+    },
+    {
+      "name": "rejected_attempt_003",
+      "path": "tests/fixtures/stage4_recorded_attempts/attempt_003.c",
+      "sha256": "fc0cd8ef29b7bf838016228ee3150d9bc29221ef4d0f324a575e5b01a7c93170",
+      "size": 2165,
+      "recipe": "two_tu",
+      "role": "diagnostic_rejected",
+      "provenance": "The attempt the audit refused for redefining mp_checksum.  Measured only under --with-diagnostic-arm, never a gate subject, and never presented as a product: it is here to show what the refusal was worth, not as a candidate."
+    }
+  ]
+}

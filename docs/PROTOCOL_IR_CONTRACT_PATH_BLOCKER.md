@@ -139,6 +139,22 @@ harness.c:6: undefined reference to `le16'
 
 ## 4. 三臂覆盖实验(实验性,不作为结论)
 
+> **已被取代 —— 保留作历史记录,不要再引用本节数字。**
+> 正式测量见 `docs/COVERAGE_EQUIVALENCE.md`(驱动 `harness_generation/coverage_arms.py`,
+> 证据 `tests/fixtures/coverage_arms/measurements.json`)。
+>
+> 三点使本节不能作为结论:
+> 1. 本节 `contracted` 臂用的是 **`attempt_003`**,一个**被拒**的 attempt;正式报告
+>    的 `contracted` 是**正式 publish** 出来的 1845 B harness。两者不是同一个对象,
+>    而当时只有前者存在。
+> 2. "3 次重复"用同一个 `-seed=1` 跑三遍,是**一次采样的三次重放**,不是三个独立
+>    样本。正式报告改成 seed sweep,并把同 seed 重放单独标为 determinism check。
+> 3. 覆盖层当时带着 sanitizer 构建,于是 reference 在 43 次执行就崩、contracted 在
+>    1348 次才崩 —— 那些 cov 数字是"崩得多快"的度量,跨 arm 不可比。正式报告在覆盖
+>    层关掉 sanitizer,让每个 arm 跑满同一个 `-runs`。
+>
+> 下表因此只是"当年看到过什么"的记录,`execs` 一栏尤其不要当作能力比较。
+
 配置:同一 seed corpus、`-runs=20000` 固定执行预算、`-seed=1`、3 次重复。
 
 | arm | 来源 | status | cov | ft | execs | 命中 |
@@ -179,7 +195,11 @@ harness.c:6: undefined reference to `le16'
   `_OPCODE_RANGE = re.compile(r"values\s+(\d+)\.\.(\d+)")` 从这段散文里正则抽取——
   这条正则命中纯属巧合。Task 4.5 的"只认字面常量"决定(`magic`/`version` 是字面量,
   `opcode` 不是)与此一致,修它属于 mining/IR 层面,不是本实验能绕的。
-- 本文未提交任何录制 artifact 作为 fixture;上表可复现但依赖 `/tmp` 下的中间产物。
+- 本节未提交任何录制 artifact 作为 fixture,上表可复现但依赖 `/tmp` 下的中间产物
+  (该目录已被清空)。**这一条已由正式报告解决**:五个 arm 连同 sha256 一起提交在
+  `tests/fixtures/coverage_arms/` 与 `tests/fixtures/stage4_recorded_attempts/`,
+  `coverage-arms --check` 离线重算每一个判定。其中两个 publish 产物是在 `/tmp`
+  被清空后按删除前记录下来的 sha256 重建并核对通过的。
 
 ## 5. 与本次无关但已澄清的一处
 
