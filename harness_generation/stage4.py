@@ -196,6 +196,9 @@ class Stage4Generator:
         # provenance.  With no IR this is the empty set, so the audit is byte
         # for byte the FT-only one it was before any of this existed.
         protocol_helpers = collect_protocol_helpers(protocol_ir)
+        # The same intersection the harness audit uses, so a helper the plan
+        # is allowed to name is exactly one the audit will accept the call to.
+        declared_helpers = _declared_helpers(protocol_helpers, all_project_functions)
         protocol = _protocol_contract(artifacts, protocol_ir)
         protocol_contract = None if protocol is None else protocol[0]
         # The typed digest of the IR that the plan has to declare it preserves.
@@ -238,6 +241,7 @@ class Stage4Generator:
                 plan_generation.content,
                 triplet=triplet,
                 isf_metadata=isf_metadata,
+                declared_helpers=declared_helpers,
             )
             # The gate sits here, not after the harness audit: a plan that moved
             # the payload offset, dropped a repair or invented a helper must not
@@ -561,8 +565,16 @@ def parse_harness_plan(
     *,
     triplet: FunctionTriplet,
     isf_metadata: Mapping[str, Any],
+    declared_helpers: Iterable[str] = (),
 ) -> HarnessPlan:
-    """Parse and validate the strict JSON HarnessPlan returned by the LLM."""
+    """Parse and validate the strict JSON HarnessPlan returned by the LLM.
+
+    ``declared_helpers`` are the contract-declared helpers the project really
+    defines (see ``_declared_helpers``); they may be planned alongside the FT
+    without being FT members.  The default empty sequence makes every caller
+    that does not supply one behave as it did before the protocol IR could
+    reach this validator at all.
+    """
 
     if not isinstance(content, str) or not content.strip():
         raise Stage4Error("HarnessPlan response is empty")
@@ -601,21 +613,29 @@ def parse_harness_plan(
     notes = _plan_string_list(document, "notes")
 
     expected = {function.function for function in triplet.functions}
+    # Contract-declared helpers may be planned alongside the FT, but they are
+    # not FT members: they are exempt from the exactly-once rule and from the
+    # completeness and duplication counts below.
+    helpers = frozenset(declared_helpers)
     planned_calls = [_plan_function(item, "call_sequence") for item in call_sequence]
     planned_cleanup = [
         _plan_function(item, "cleanup_sequence") for item in cleanup_sequence
     ]
     all_planned = planned_calls + planned_cleanup
-    unknown = sorted(set(all_planned) - expected)
+    unknown = sorted(set(all_planned) - expected - helpers)
     if unknown:
-        raise Stage4Error(
-            "HarnessPlan references functions outside the FT: " + ", ".join(unknown)
-        )
-    missing = sorted(expected - set(all_planned))
+        message = ("HarnessPlan references functions outside the FT: "
+                   + ", ".join(unknown))
+        if helpers:
+            message += (" (declared helpers are exempt: "
+                        + ", ".join(sorted(helpers)) + ")")
+        raise Stage4Error(message)
+    ft_planned = [name for name in all_planned if name in expected]
+    missing = sorted(expected - set(ft_planned))
     if missing:
         raise Stage4Error("HarnessPlan omits FT functions: " + ", ".join(missing))
     duplicated = sorted(
-        name for name in set(all_planned) if all_planned.count(name) > 1
+        name for name in set(ft_planned) if ft_planned.count(name) > 1
     )
     if duplicated:
         raise Stage4Error(
@@ -828,6 +848,30 @@ def _analyze_c(source: str) -> _HarnessAnalysis:
     return _HarnessAnalysis(tuple(functions), tuple(all_calls))
 
 
+def _declared_helpers(protocol_helpers: ProtocolHelperSet,
+                      all_project_functions: Iterable[str]) -> frozenset[str]:
+    """The contract-declared helpers that really exist in this project.
+
+    An FT is built from the structural edges its ISF shares with other
+    functions, not from its call closure, so a helper the ISF genuinely calls
+    (a checksum, a context constructor) can sit outside it forever.  A helper is
+    allowed only when the mined protocol's own provenance names it -- a name
+    Stage 4 has never heard of stays forbidden, and prose in the IR's
+    requirements or notes (``helpers.weak``) can never authorise anything.
+
+    The declared name must also *exist* in the project.  The IR's evidence
+    quotes real source, so a name with no definition behind it is a broken
+    claim rather than a licence -- and allowing it would silently disable the
+    unknown-API check for that name, which is weaker than the audit this
+    relaxation is required to leave otherwise intact.
+
+    The plan validator and the C audit both widen their allowance by exactly
+    this set, so the two cannot drift apart.
+    """
+
+    return protocol_helpers.allowed & frozenset(all_project_functions)
+
+
 def _validate_harness(
     analysis: _HarnessAnalysis,
     triplet: FunctionTriplet,
@@ -873,19 +917,9 @@ def _validate_harness(
 
     local_functions = set(definitions)
     expected = {function.function for function in triplet.functions}
-    # An FT is built from the structural edges its ISF shares with other
-    # functions, not from its call closure, so a helper the ISF genuinely calls
-    # (a checksum, a context constructor) can sit outside it forever.  A helper
-    # is allowed here only when the mined protocol's own provenance names it --
-    # a name Stage 4 has never heard of stays forbidden, and prose in the IR's
-    # requirements or notes (`helpers.weak`) can never authorise anything.
-    #
-    # The declared name must also *exist* in the project.  The IR's evidence
-    # quotes real source, so a name with no definition behind it is a broken
-    # claim rather than a licence -- and allowing it would silently disable the
-    # unknown-API check below for that name, which is weaker than the audit
-    # this relaxation is required to leave otherwise intact.
-    declared_helpers = protocol_helpers.allowed & all_project_functions
+    # See _declared_helpers: only a name the IR's own provenance declares *and*
+    # the project actually defines may widen this audit.
+    declared_helpers = _declared_helpers(protocol_helpers, all_project_functions)
     allowed_project_calls = expected | declared_helpers
     outside_ft = sorted(calls & (all_project_functions - allowed_project_calls))
     if outside_ft:
