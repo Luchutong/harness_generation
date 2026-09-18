@@ -1,0 +1,125 @@
+{
+  "note": "One real (non-mock, non-replayed-generation) DeepSeek run of `generate --ft ft_mp_parse_787468773c9f` against a mined protocol_ir.json on benchmarks/mini_parser.  `harness.c` is copied verbatim from each attempt directory; `recorded_error` is the verbatim `parsed.json` error of that attempt.  See docs/PROTOCOL_IR_CONTRACT_PATH_BLOCKER.md.  `*.plan.txt` is the verbatim `plan_response.txt` of the attempts that never reached the harness stage.",
+  "source": "generation/ft_mp_parse_787468773c9f/stage4",
+  "attempts": [
+    {
+      "attempt": "attempt_001",
+      "recorded_phase": "harness_plan",
+      "recorded_error": "HarnessPlan references functions outside the FT: mp_init",
+      "harness": null,
+      "plan_response": "attempt_001.plan.txt"
+    },
+    {
+      "attempt": "attempt_002",
+      "recorded_phase": "harness_plan",
+      "recorded_error": "HarnessPlan references functions outside the FT: mp_init",
+      "harness": null,
+      "plan_response": "attempt_002.plan.txt"
+    },
+    {
+      "attempt": "attempt_003",
+      "recorded_phase": "harness_code",
+      "recorded_error": "Stage 4 redefines project APIs: mp_checksum",
+      "harness": "attempt_003.c",
+      "plan_response": null
+    },
+    {
+      "attempt": "attempt_004",
+      "recorded_phase": "harness_plan",
+      "recorded_error": "HarnessPlan references functions outside the FT: mp_init",
+      "harness": null,
+      "plan_response": "attempt_004.plan.txt"
+    },
+    {
+      "attempt": "attempt_005",
+      "recorded_phase": "harness_code",
+      "recorded_error": "Stage 4 ISF call is not connected to external data/size",
+      "harness": "attempt_005.c",
+      "plan_response": null
+    },
+    {
+      "attempt": "attempt_006",
+      "recorded_phase": "harness_code",
+      "recorded_error": "LLM returned invalid C syntax",
+      "harness": "attempt_006.c",
+      "plan_response": null
+    },
+    {
+      "attempt": "attempt_007",
+      "recorded_phase": "harness_code",
+      "recorded_error": "Stage 4 ISF call is not connected to external data/size",
+      "harness": "attempt_007.c",
+      "plan_response": null
+    },
+    {
+      "attempt": "attempt_008",
+      "recorded_phase": "harness_code",
+      "recorded_error": "Stage 4 redefines project APIs: mp_checksum",
+      "harness": "attempt_008.c",
+      "plan_response": null
+    },
+    {
+      "attempt": "attempt_009",
+      "recorded_phase": "harness_code",
+      "recorded_error": "Stage 4 ISF call is not connected to external data/size",
+      "harness": "attempt_009.c",
+      "plan_response": null
+    },
+    {
+      "attempt": "attempt_010",
+      "recorded_phase": "harness_code",
+      "recorded_error": "LLM returned invalid C syntax",
+      "harness": "attempt_010.c",
+      "plan_response": null
+    },
+    {
+      "attempt": "attempt_011",
+      "recorded_phase": "harness_code",
+      "recorded_error": "Stage 4 redefines project APIs: le16",
+      "harness": "attempt_011.c",
+      "plan_response": null
+    },
+    {
+      "attempt": "attempt_012",
+      "recorded_phase": "harness_code",
+      "recorded_error": "Stage 4 ISF call is not connected to external data/size",
+      "harness": "attempt_012.c",
+      "plan_response": null
+    },
+    {
+      "attempt": "attempt_013",
+      "recorded_phase": "harness_code",
+      "recorded_error": "Stage 4 ISF call is not connected to external data/size",
+      "harness": "attempt_013.c",
+      "plan_response": null
+    },
+    {
+      "attempt": "attempt_014",
+      "recorded_phase": "harness_code",
+      "recorded_error": "LLM returned invalid C syntax",
+      "harness": "attempt_014.c",
+      "plan_response": null
+    },
+    {
+      "attempt": "attempt_015",
+      "recorded_phase": "harness_code",
+      "recorded_error": "LLM returned invalid C syntax",
+      "harness": "attempt_015.c",
+      "plan_response": null
+    },
+    {
+      "attempt": "attempt_016",
+      "recorded_phase": "harness_code",
+      "recorded_error": "Stage 4 ISF call is not connected to external data/size",
+      "harness": "attempt_016.c",
+      "plan_response": null
+    },
+    {
+      "attempt": "attempt_017",
+      "recorded_phase": "harness_code",
+      "recorded_error": "Stage 4 ISF call is not connected to external data/size",
+      "harness": "attempt_017.c",
+      "plan_response": null
+    }
+  ]
+}
