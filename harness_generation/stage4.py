@@ -129,12 +129,36 @@ class _Call:
 
 
 @dataclass(frozen=True)
+class _CopyRegion:
+    """A stretch of a local buffer that an earlier statement filled from ``data``.
+
+    Recorded per function by :func:`_copy_regions`, before the ISF call it might
+    feed.  ``kind`` is ``"call"`` for a ``memcpy``/``memmove`` and ``"loop"`` for
+    a byte-at-a-time ``for`` loop.
+    """
+
+    kind: str
+    destination_identifiers: tuple[str, ...]
+    destination_text: str
+    source: _Argument
+    length: _Argument
+    text: str
+    start_byte: int
+
+
+@dataclass(frozen=True)
 class _FunctionDefinition:
     name: str
     return_type: str
     parameters: tuple[_Parameter, ...]
     calls: tuple[_Call, ...]
     identifiers: tuple[str, ...]
+    #: Names this function binds exactly once, with the identifiers that one
+    #: binding mentions.  See :func:`_unique_local_aliases`.
+    local_aliases: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    #: Regions of local buffers this function fills from ``data``.  See
+    #: :func:`_copy_regions`.
+    copy_regions: tuple[_CopyRegion, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -182,7 +206,8 @@ class Stage4Generator:
         retry_context: Mapping[str, Any] | None = None,
     ) -> Stage4Result:
         rough_source = _load_rough_code(rough_code)
-        function_metadata, all_project_functions, project_context = _load_function_metadata(
+        (function_metadata, all_project_functions, project_context,
+         static_project_functions) = _load_function_metadata(
             Path(functions_json), triplet
         )
         isf_metadata = function_metadata[triplet.isf.function_id]
@@ -346,6 +371,10 @@ class Stage4Generator:
                 isf_metadata,
                 all_project_functions,
                 protocol_helpers=protocol_helpers,
+                static_project_functions=static_project_functions,
+                # An IR is what asks for a frame to be built; without one the
+                # repaired-frame rule stays exactly the rule it always was.
+                structured_frame=protocol_ir is not None,
             )
         except Exception as error:
             layout.write_json(attempt_directory / "parsed.json", {
@@ -747,7 +776,7 @@ def _isf_requires_stream_size(metadata: Mapping[str, Any]) -> bool:
 def _load_function_metadata(
     path: Path,
     triplet: FunctionTriplet,
-) -> tuple[dict[str, dict[str, Any]], set[str], dict[str, Any]]:
+) -> tuple[dict[str, dict[str, Any]], set[str], dict[str, Any], frozenset[str]]:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
@@ -762,6 +791,7 @@ def _load_function_metadata(
 
     by_id = {}
     all_names = set()
+    static_names = set()
     for record in records:
         function_id = _required_string(record, "id", "functions.json")
         name = _required_string(record, "name", function_id)
@@ -769,6 +799,14 @@ def _load_function_metadata(
             raise Stage4Error(f"duplicate functions.json function id: {function_id}")
         by_id[function_id] = record
         all_names.add(name)
+        storage = record.get("storage", [])
+        # Internal linkage, so no other translation unit can call it.  The
+        # miner has always recorded this; only Stage 4 used to drop it, which
+        # is why the audit could promise a call the linker cannot resolve.
+        if isinstance(storage, list) and any(
+            str(item).strip().lower() == "static" for item in storage
+        ):
+            static_names.add(name)
 
     selected = {}
     for function in triplet.functions:
@@ -791,7 +829,7 @@ def _load_function_metadata(
             "file": record.get("file"),
             "start_line": record.get("start_line"),
         }
-    return selected, all_names, project_type_context(document)
+    return selected, all_names, project_type_context(document), frozenset(static_names)
 
 
 def _analyze_c(source: str) -> _HarnessAnalysis:
@@ -844,8 +882,233 @@ def _analyze_c(source: str) -> _HarnessAnalysis:
                 for current in _walk(body)
                 if current.type == "identifier"
             })) if body is not None else (),
+            local_aliases=(_unique_local_aliases(body, encoded)
+                           if body is not None else ()),
+            copy_regions=(_copy_regions(body, encoded, calls)
+                          if body is not None else ()),
         ))
     return _HarnessAnalysis(tuple(functions), tuple(all_calls))
+
+
+def _identifier_names(node: Any, source: bytes) -> tuple[str, ...]:
+    return tuple(sorted({
+        _node_text(source, current)
+        for current in _walk(node)
+        if current.type == "identifier"
+    }))
+
+
+#: Node types whose value is not a plain expression over the identifiers it
+#: mentions, so expanding a name bound to one of them would be a guess.
+_OPAQUE_ALIAS_VALUE_TYPES = frozenset({
+    "call_expression", "subscript_expression", "conditional_expression",
+    "field_expression", "pointer_expression", "initializer_list",
+    "string_literal", "concatenated_string",
+})
+
+
+def _unique_local_aliases(
+    body: Any, source: bytes
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Names this function initialises once and never writes again.
+
+    A repaired frame is usually sized by a local the harness computes first --
+    ``size_t frame_len = MP_HEADER_SIZE + payload_len;`` -- and the ISF is then
+    handed that name, so the copy's length and the ISF's length argument share
+    no identifier even though they are the same number.  Expanding the name
+    closes that gap without any flow analysis: a name whose only write is its
+    own initialiser holds that one value wherever it is read, so expanding it can
+    never invent a value.
+
+    Two ways a name fails to qualify, both of them conservative:
+
+    * it is written more than once -- ``payload_len`` under a clamp, or a
+      ``frame_len`` clamped to ``sizeof(frame)`` afterwards.  The initialiser no
+      longer describes what the call site sees, so it is not expanded;
+    * its initialiser is not a plain arithmetic expression.  ``x = f(a, b)``
+      mentions ``f``, ``a`` and ``b``, but ``x`` is not any of them, so
+      expanding it would inject identifiers that are not part of the value.
+
+    Either refusal can only ever leave a connection refused that the copy rule
+    would otherwise have had to guess at.
+    """
+
+    candidates: dict[str, tuple[str, ...]] = {}
+    written: dict[str, int] = {}
+    for node in _walk(body):
+        if node.type == "init_declarator":
+            target = node.child_by_field_name("declarator")
+            value = node.child_by_field_name("value")
+            if target is None or target.type != "identifier":
+                continue
+            name = _node_text(source, target)
+            written[name] = written.get(name, 0) + 1
+            if value is None:
+                continue
+            if any(current.type in _OPAQUE_ALIAS_VALUE_TYPES for current in _walk(value)):
+                continue
+            candidates[name] = _identifier_names(value, source)
+        elif node.type in {"assignment_expression", "update_expression"}:
+            target = node.child_by_field_name(
+                "left" if node.type == "assignment_expression" else "argument"
+            )
+            if target is not None and target.type == "identifier":
+                name = _node_text(source, target)
+                written[name] = written.get(name, 0) + 1
+    return tuple(
+        (name, identifiers)
+        for name, identifiers in sorted(candidates.items())
+        if written.get(name) == 1
+    )
+
+
+def _resolved_identifiers(
+    identifiers: Iterable[str],
+    aliases: Mapping[str, tuple[str, ...]],
+) -> frozenset[str]:
+    """``identifiers`` plus, transitively, what their local aliases name.
+
+    Only :func:`_unique_local_aliases` decides what may be expanded, so this is
+    a bounded rewrite rather than a data-flow walk.  Each name is expanded at
+    most once, which makes the result the unique fixed point of the alias edges
+    -- independent of the order they are visited in -- and terminates because the
+    identifiers in a function are a finite set.
+    """
+
+    resolved = set(identifiers)
+    if not aliases:
+        return frozenset(resolved)
+    pending = list(resolved)
+    while pending:
+        name = pending.pop()
+        for target in aliases.get(name, ()):
+            if target not in resolved:
+                resolved.add(target)
+                pending.append(target)
+    return frozenset(resolved)
+
+
+def _copy_regions(body: Any, source: bytes, calls: Iterable[_Call]) -> tuple[_CopyRegion, ...]:
+    """Every copy out of ``data`` this function makes into a local buffer.
+
+    Two spellings, both recognised purely by shape: a ``memcpy``/``memmove``
+    call, and a byte-at-a-time ``for`` loop that stores into the buffer.  See
+    :func:`_repaired_frame_connection` for how these are matched against an ISF
+    call and for what this deliberately still misses.
+    """
+
+    regions = []
+    for call in calls:
+        if call.name not in _COPY_CALLS or len(call.arguments) < 3:
+            continue
+        destination, copied, length = call.arguments[:3]
+        regions.append(_CopyRegion(
+            kind="call",
+            destination_identifiers=destination.identifiers,
+            destination_text=destination.text,
+            source=copied,
+            length=length,
+            text=_call_text(call),
+            start_byte=call.start_byte,
+        ))
+    for node in _walk(body):
+        region = _loop_copy_region(node, source)
+        if region is not None:
+            regions.append(region)
+    # Source order, so the first matching region is the one a reader would name
+    # -- and, for calls, exactly the one the pre-region rule used to pick.
+    return tuple(sorted(regions, key=lambda region: region.start_byte))
+
+
+def _loop_copy_region(node: Any, source: bytes) -> _CopyRegion | None:
+    """The copy a single ``for`` loop performs, or ``None``.
+
+    ``for (i = 0; i < len; ++i) buf[off + i] = data[base + i];`` is a copy just
+    as ``memcpy`` is, and it is how most of the real harnesses under a mined
+    contract write the payload into the frame.
+
+    The load-bearing discriminator is the subscript index: it must mention the
+    loop's own induction variable.  A header field written from ``data`` at a
+    constant index (``buf[3] = data[offset + 3];``) is a repair of one byte, not
+    a copy of a frame, and it sits inside the very same loop -- so matching on
+    "reads from data into buf" alone would accept a harness that never copies
+    the payload at all.
+    """
+
+    if node.type != "for_statement":
+        return None
+    condition = node.child_by_field_name("condition")
+    if condition is None or condition.type != "binary_expression":
+        return None
+    operator = condition.child_by_field_name("operator")
+    if operator is None or operator.type not in {"<", "<="}:
+        return None
+    counter = condition.child_by_field_name("left")
+    bound = condition.child_by_field_name("right")
+    # A compound condition (``step < max_steps && offset < size``) has no single
+    # induction variable to bind the index to, so it is not this shape.
+    if counter is None or counter.type != "identifier" or bound is None:
+        return None
+    counter_name = _node_text(source, counter)
+    loop_body = node.child_by_field_name("body")
+    if loop_body is None:
+        return None
+    for statement in _walk(loop_body):
+        if statement.type != "assignment_expression":
+            continue
+        target = statement.child_by_field_name("left")
+        value = statement.child_by_field_name("right")
+        if target is None or value is None or target.type != "subscript_expression":
+            continue
+        base = target.child_by_field_name("argument")
+        index = target.child_by_field_name("index")
+        if base is None or base.type != "identifier" or index is None:
+            continue
+        if counter_name not in _identifier_names(index, source):
+            continue
+        # The stored byte has to *be* this iteration's byte of ``data``, not a
+        # per-iteration digest of it -- see _reads_data_element.
+        if any(current.type == "call_expression" for current in _walk(value)):
+            continue
+        if not _reads_data_element(value, source, counter_name):
+            continue
+        return _CopyRegion(
+            kind="loop",
+            destination_identifiers=(_node_text(source, base),),
+            destination_text=_node_text(source, target),
+            source=_argument(value, source),
+            length=_argument(bound, source),
+            text=_node_text(source, statement),
+            start_byte=statement.start_byte,
+        )
+    return None
+
+
+def _reads_data_element(node: Any, source: bytes, counter_name: str) -> bool:
+    """Whether ``node`` reads a byte of ``data`` at the counter's own index.
+
+    ``data[i]``, ``data[offset + MP_HEADER_SIZE + i]``: the payload byte for this
+    iteration of the loop.  Both halves are load-bearing.  The base being
+    ``data`` keeps the frame tied to the fuzzer's bytes rather than to a local
+    table, and the index mentioning the induction variable is what stops the
+    outer loop of a real harness from being read as a copy: those loops write
+    their header fields from ``data`` too, but always at a constant index
+    (``frame_buf[3] = data[offset + 3];``), one byte at a time.
+    """
+
+    for current in _walk(node):
+        if current.type != "subscript_expression":
+            continue
+        base = current.child_by_field_name("argument")
+        index = current.child_by_field_name("index")
+        if base is None or index is None:
+            continue
+        if "data" not in _identifier_names(base, source):
+            continue
+        if counter_name in _identifier_names(index, source):
+            return True
+    return False
+
 
 
 def _declared_helpers(protocol_helpers: ProtocolHelperSet,
@@ -878,6 +1141,9 @@ def _validate_harness(
     isf_metadata: Mapping[str, Any],
     all_project_functions: set[str],
     protocol_helpers: ProtocolHelperSet = ProtocolHelperSet(),
+    *,
+    static_project_functions: frozenset[str] = frozenset(),
+    structured_frame: bool = False,
 ) -> _InputConnection | None:
     """Raise unless the harness is one Stage 4 may publish.
 
@@ -886,6 +1152,15 @@ def _validate_harness(
     harness's allowance -- and nothing else in this audit.  The default empty
     set makes every caller that does not supply one behave as it did before the
     protocol IR could reach the audit at all.
+
+    ``static_project_functions`` names the project functions with internal
+    linkage.  A contract may still evidence one (``le16`` decodes the frame's
+    length), but the harness is linked against the target's objects rather than
+    compiled beside them, so a call to it cannot resolve; it widens nothing.
+
+    ``structured_frame`` says a protocol IR is in play, which is what lets
+    :func:`_isf_input_connection` recognise the frames that IR asks the harness
+    to build.  Without it the repaired-frame rule is the one it always was.
 
     On success the connection the ISF check accepted is returned, so the record
     persisted next to the attempt is the one the audit actually made.
@@ -896,9 +1171,26 @@ def _validate_harness(
         raise Stage4Error(f"Stage 4 requires exactly one {FUZZ_ENTRY} definition")
     if "main" in definitions:
         raise Stage4Error("Stage 4 harness must not contain a demo main")
+    # See _declared_helpers: only a name the IR's own provenance declares *and*
+    # the project actually defines may widen this audit.  The split is computed
+    # here, before any check that mentions a helper, so the order in which this
+    # audit refuses things is unchanged.
+    declared_helpers = _declared_helpers(protocol_helpers, all_project_functions)
+    evidence_only = declared_helpers & static_project_functions
+    callable_helpers = declared_helpers - evidence_only
     redefined = sorted((set(definitions) - {FUZZ_ENTRY}) & all_project_functions)
     if redefined:
-        raise Stage4Error("Stage 4 redefines project APIs: " + ", ".join(redefined))
+        message = "Stage 4 redefines project APIs: " + ", ".join(redefined)
+        alternatives = sorted(set(redefined) & callable_helpers)
+        if alternatives:
+            # A same-named local helper does not replace the project's own: the
+            # two are separate symbols, so whatever the harness computes with it
+            # is not what the target computes with its own.  The retry loop
+            # feeds this back to the model, which has no other way to learn that
+            # the name it just reimplemented was callable all along.
+            message += (" (callable from the harness: " + ", ".join(alternatives)
+                        + "; call it instead of redefining it)")
+        raise Stage4Error(message)
 
     entry = next(function for function in analysis.functions if function.name == FUZZ_ENTRY)
     _validate_entry_signature(entry)
@@ -917,14 +1209,24 @@ def _validate_harness(
 
     local_functions = set(definitions)
     expected = {function.function for function in triplet.functions}
-    # See _declared_helpers: only a name the IR's own provenance declares *and*
-    # the project actually defines may widen this audit.
-    declared_helpers = _declared_helpers(protocol_helpers, all_project_functions)
     allowed_project_calls = expected | declared_helpers
     outside_ft = sorted(calls & (all_project_functions - allowed_project_calls))
     if outside_ft:
         raise Stage4Error("Stage 4 harness calls project APIs outside the FT: " +
                           ", ".join(outside_ft))
+    unlinkable = sorted(calls & evidence_only)
+    if unlinkable:
+        # The contract evidences these for what they compute, and the harness is
+        # free to compute the same thing -- but under its own name.  Calling the
+        # project's own static definition does not link, and declaring it here
+        # would not change that, because the definition stays internal to the
+        # target's translation unit.
+        raise Stage4Error(
+            "Stage 4 harness calls static project helpers it cannot link: "
+            + ", ".join(unlinkable)
+            + " (the contract evidences them for their algorithm: reimplement it "
+              "under a local name that is not a project API)"
+        )
     allowed = expected | local_functions | _STANDARD_C_CALLS | declared_helpers
     unknown = sorted(calls - allowed)
     if unknown:
@@ -941,7 +1243,9 @@ def _validate_harness(
         raise Stage4Error("Stage 4 harness does not invoke the unique ISF")
     input_connection = None
     for call in isf_calls:
-        input_connection = _isf_input_connection(call, entry, isf_metadata)
+        input_connection = _isf_input_connection(
+            call, entry, isf_metadata, structured_frame=structured_frame
+        )
         if input_connection is not None:
             break
     if input_connection is None:
@@ -1034,6 +1338,8 @@ def _isf_input_connection(
     call: _Call,
     entry: _FunctionDefinition,
     metadata: Mapping[str, Any],
+    *,
+    structured_frame: bool = False,
 ) -> _InputConnection | None:
     """How ``call`` is fed the fuzzer's bytes, or ``None`` if it is not.
 
@@ -1048,20 +1354,30 @@ def _isf_input_connection(
     ``repaired_frame``
         The ISF is handed a local buffer instead of the fuzzer's own bytes,
         because the frame envelope has to be assembled and ``data`` is const.
-        The buffer must be a *bare local identifier* that a ``memcpy`` or
-        ``memmove`` **earlier in the same function** filled from ``data``, and
-        the ISF's length argument must be tied to that copy's length.
+        The buffer must be a *bare local identifier* that an earlier statement in
+        the same function filled from ``data``, and the ISF's length argument
+        must be tied to that copy's length.
 
-    The repaired-frame rule is a syntactic approximation, not taint analysis.
-    It recognises a copy only when it is written as a call named ``memcpy`` or
-    ``memmove``, directly in the entry function, before the ISF call.  A
-    byte-at-a-time copy loop, a helper function that fills the frame (however it
-    is named), ``read(...)``, or a pointer that reaches ``data`` through an
-    intermediate variable are all missed, and the ISF is then reported as
+    Two things widen the repaired-frame rule, and both need ``structured_frame``
+    -- that is, a protocol IR, whose whole point is to ask for a frame to be
+    built.  The copy may be a byte-at-a-time ``for`` loop rather than a
+    ``memcpy`` call, and the length may be tied through a single-assignment local
+    alias (``size_t frame_len = MP_HEADER_SIZE + payload_len;``).  Without an IR
+    neither applies and this is exactly the rule it was before.
+
+    Even so, this is a syntactic approximation, not taint analysis.  It
+    recognises a copy only when it is written as a ``memcpy``/``memmove`` call, a
+    byte-at-a-time store loop, directly in the entry function, before the ISF
+    call.  A copy inside a helper function (however it is named), ``read(...)``,
+    a pointer that reaches ``data`` through an intermediate variable, a store
+    loop whose index is constant, and a copy that reaches ``data`` through a
+    call or a table lookup are all missed, and the ISF is then reported as
     unconnected.  It is an under-approximation in that direction -- it never
     claims a connection that is not really written down -- but it is not sound:
     it does not track the copied bytes afterwards, so a frame copied from
-    ``data`` and then entirely overwritten from a constant still passes.
+    ``data`` and then entirely overwritten from a constant still passes, and a
+    buffer is matched to a copy by name, so a same-named inner block could stand
+    in for a frame that was never filled.
     """
 
     parameters = metadata.get("parameters", [])
@@ -1086,7 +1402,10 @@ def _isf_input_connection(
     direct = _direct_connection(call, stream_indexes, length_indexes)
     if direct is not None:
         return direct
-    return _repaired_frame_connection(call, entry, stream_indexes, length_indexes)
+    return _repaired_frame_connection(
+        call, entry, stream_indexes, length_indexes,
+        structured_frame=structured_frame,
+    )
 
 
 def _direct_connection(
@@ -1127,8 +1446,19 @@ def _repaired_frame_connection(
     entry: _FunctionDefinition,
     stream_indexes: list[int],
     length_indexes: list[int],
+    *,
+    structured_frame: bool = False,
 ) -> _InputConnection | None:
-    """A local frame a preceding ``memcpy``/``memmove`` filled from ``data``."""
+    """A local frame an earlier copy in the same function filled from ``data``.
+
+    The copies come from :func:`_copy_regions`; only the ``memcpy``/``memmove``
+    spelling is considered unless ``structured_frame`` says a protocol IR asked
+    for the frame, in which case store loops count too.  The length tie is the
+    other half: the ISF's length argument has to mention the same name the copy's
+    length does, and under an IR a name whose only write is its own initialiser
+    is expanded to what that initialiser mentions -- see
+    :func:`_unique_local_aliases`.
+    """
 
     buffers = [
         index for index in stream_indexes
@@ -1136,35 +1466,39 @@ def _repaired_frame_connection(
     ]
     if not buffers:
         return None
-    copies = [
-        copy for copy in entry.calls
-        if copy.name in _COPY_CALLS
-        and copy.start_byte < call.start_byte
-        and len(copy.arguments) >= 3
+    aliases = dict(entry.local_aliases) if structured_frame else {}
+    regions = [
+        region for region in entry.copy_regions
+        if region.start_byte < call.start_byte
+        and (structured_frame or region.kind == "call")
     ]
     for index in buffers:
         buffer = call.arguments[index].text
-        for copy in copies:
-            destination, source, length = copy.arguments[:3]
-            if buffer not in destination.identifiers:
+        for region in regions:
+            if buffer not in region.destination_identifiers:
                 continue
-            if "data" not in source.identifiers or source.has_string_literal:
+            if "data" not in region.source.identifiers:
                 continue
-            tied = [
-                position for position in length_indexes
-                if "size" in call.arguments[position].identifiers
-                or set(call.arguments[position].identifiers) & set(length.identifiers)
-            ]
+            if region.source.has_string_literal:
+                continue
+            tied = []
+            for position in length_indexes:
+                names = _resolved_identifiers(
+                    call.arguments[position].identifiers, aliases
+                )
+                if "size" in names or names & set(region.length.identifiers):
+                    tied.append(position)
             # No length parameter at all: there is no frame length to tie, so
             # the copy alone has to carry the claim.
             if length_indexes and not tied:
                 continue
-            evidence = [_call_text(copy)]
-            if destination.text != buffer:
+            evidence = [region.text]
+            if region.destination_text != buffer:
                 # The copy fills a *region* of the buffer (``frame +
-                # MP_HEADER_SIZE``), so the bytes before it are written by the
-                # harness itself rather than copied through.  That is the
-                # observable repair: the envelope is assembled, not aliased.
+                # MP_HEADER_SIZE``, or a store loop's subscript), so the bytes
+                # before it are written by the harness itself rather than copied
+                # through.  That is the observable repair: the envelope is
+                # assembled, not aliased.
                 evidence.append(f"frame length/checksum repaired before {call.name}")
             return _InputConnection(
                 kind="repaired_frame",
@@ -1217,23 +1551,27 @@ def _calls(body: Any, source: bytes) -> Iterable[_Call]:
         arguments = []
         if arguments_node is not None:
             for argument in arguments_node.named_children:
-                arguments.append(_Argument(
-                    text=_node_text(source, argument),
-                    identifiers=tuple(sorted({
-                        _node_text(source, current)
-                        for current in _walk(argument)
-                        if current.type == "identifier"
-                    })),
-                    has_string_literal=any(
-                        current.type in {"string_literal", "concatenated_string"}
-                        for current in _walk(argument)
-                    ),
-                ))
+                arguments.append(_argument(argument, source))
         yield _Call(
             name=_node_text(source, callee),
             arguments=tuple(arguments),
             start_byte=node.start_byte,
         )
+
+
+def _argument(node: Any, source: bytes) -> _Argument:
+    return _Argument(
+        text=_node_text(source, node),
+        identifiers=tuple(sorted({
+            _node_text(source, current)
+            for current in _walk(node)
+            if current.type == "identifier"
+        })),
+        has_string_literal=any(
+            current.type in {"string_literal", "concatenated_string"}
+            for current in _walk(node)
+        ),
+    )
 
 
 def _find_function_declarator(node: Any) -> Any:
