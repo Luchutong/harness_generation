@@ -18,7 +18,7 @@ from .source_paths import SourcePathResolver
 from .stage1 import Stage1Result
 from .stage2 import Stage2Result, required_processing_units
 from .stage3 import Stage3Result
-from .stage4 import Stage4Result
+from .stage4 import Stage4Result, declared_contract_helpers
 from .target_build import TargetBuildConfig
 from .triplet import FunctionTriplet
 from .validation import (
@@ -235,6 +235,23 @@ class PipelineStageValidator:
         )
         return _with_failure_type(validation, "stage3_validation")
 
+    def contract_helpers(self) -> frozenset[str]:
+        """The project functions the mined contract declares but the FT cannot hold.
+
+        Stage 4's own audit allows these calls (``_validate_harness``), and this
+        class re-validates the harness it published -- so it has to allow them
+        too.  A lifecycle or checksum helper the ISF genuinely calls sits outside
+        the FT forever, because an FT is built from shared-structure edges and
+        not from a call closure; refusing it here would reject a harness the
+        stage that produced it had already accepted, and the run would report a
+        failure about code it had just published.
+
+        Empty when there is no ``protocol_ir.json``, which is the contract-free
+        allowance this class always had.
+        """
+
+        return declared_contract_helpers(self.artifacts, self.target_functions)
+
     def validate_stage4(self, result: Stage4Result) -> ValidationResult:
         attempt = result.attempt_directory
         intermediate = IntermediateValidator().validate_triplet(
@@ -243,6 +260,7 @@ class PipelineStageValidator:
             functions_json=self.functions_json,
             artifacts=self.artifacts,
             stage="stage4_harness",
+            allowed_functions=self.contract_helpers(),
         )
         _copy_attempt_validation(self.layout, attempt, "intermediate")
         if intermediate.status == "failed":

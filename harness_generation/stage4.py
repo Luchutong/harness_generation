@@ -216,7 +216,7 @@ class Stage4Generator:
             triplet_id=triplet.id,
             unique_isf_function_id=str(isf_metadata.get("id", "")),
         )
-        protocol_ir = _load_protocol(artifacts)
+        protocol_ir = load_protocol_ir(artifacts)
         # The helpers the audit may accept are read out of the IR's own
         # provenance.  With no IR this is the empty set, so the audit is byte
         # for byte the FT-only one it was before any of this existed.
@@ -465,16 +465,18 @@ def load_protocol_contract(
     be quietly wrong about frame layout, length repair and context lifetime.
     """
 
-    return _protocol_contract(artifacts, _load_protocol(artifacts))
+    return _protocol_contract(artifacts, load_protocol_ir(artifacts))
 
 
-def _load_protocol(artifacts: str | Path) -> ProtocolIR | None:
+def load_protocol_ir(artifacts: str | Path) -> ProtocolIR | None:
     """The mined IR itself, or ``None`` when no ``protocol_ir.json`` is there.
 
     ``run()`` needs the IR and not only its contract projection, because the
-    audit reads the helper names out of the IR's own provenance.  The public
-    :func:`load_protocol_contract` is a view over this: it discards the IR and
-    returns exactly the pair, with exactly the error messages, it always did.
+    audit reads the helper names out of the IR's own provenance, and the
+    pipeline reads the same names back when it re-validates the published
+    harness.  The public :func:`load_protocol_contract` is a view over this: it
+    discards the IR and returns exactly the pair, with exactly the error
+    messages, it always did.
     """
 
     path = ArtifactStore(Path(artifacts)).protocol_ir
@@ -1133,6 +1135,32 @@ def _declared_helpers(protocol_helpers: ProtocolHelperSet,
     """
 
     return protocol_helpers.allowed & frozenset(all_project_functions)
+
+
+def declared_contract_helpers(
+    artifacts: str | Path,
+    all_project_functions: Iterable[str],
+) -> frozenset[str]:
+    """The helper names ``<artifacts>/protocol_ir.json`` declares, from the file.
+
+    The audit in :func:`_validate_harness` and the pipeline's own re-validation
+    of the published harness both widen their allow-set by these names, and they
+    have to widen it by exactly the same ones -- a harness one accepts and the
+    other refuses is a run that publishes nothing while reporting a failure
+    about code it already checked.  This is that one intersection, for callers
+    that do not already hold the IR; with no IR it is empty, so the FT-only path
+    is unchanged on both sides.
+
+    A ``protocol_ir.json`` that is present but unreadable raises, rather than
+    quietly returning nothing: the empty set is the *contract-free* allowance,
+    and handing it to a validator is what would let a harness that was built
+    from a contract be judged as if it never saw one.
+    """
+
+    ir = load_protocol_ir(artifacts)
+    if ir is None:
+        return frozenset()
+    return _declared_helpers(collect_protocol_helpers(ir), all_project_functions)
 
 
 def _validate_harness(

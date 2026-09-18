@@ -4,12 +4,25 @@ import shutil
 import tempfile
 import unittest
 
-from harness_generation.pipeline_validation import PipelineStageValidator
+from harness_generation.artifacts import ArtifactStore
+from harness_generation.llm import MockLLM
+from harness_generation.pipeline_validation import (
+    PipelineStageValidator,
+    PipelineValidationConfig,
+)
 from harness_generation.stage1 import Stage1Result
 from harness_generation.stage2 import Stage2Result, required_processing_units
 from harness_generation.stage3 import Stage3Metadata, Stage3Result
-from harness_generation.stage4 import Stage4Result
+from harness_generation.stage4 import (
+    Stage4Generator,
+    Stage4Result,
+    declared_contract_helpers,
+)
 from harness_generation.triplet import load_triplets_json
+from harness_generation.validation import IntermediateValidator, ValidationResult
+
+from tests.test_stage4_protocol_ir import Stage4ProjectTests
+from tests.test_stage4_structured_input import recorded_ir
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -190,6 +203,211 @@ void rough_sequence(Parser *parser, const unsigned char *data) {
             self.assertFalse((
                 attempt / "validation" / "compiler.json"
             ).exists())
+
+
+class ContractHelperAllowanceTests(Stage4ProjectTests):
+    """This validator has to allow what Stage 4's audit allowed.
+
+    Stage 4 publishes a harness and the pipeline then validates that same file
+    again.  Both checks ask "may this harness call this project function?", and
+    for a contracted harness the answer comes from the mined IR: the lifecycle
+    and checksum helpers the ISF really calls sit outside the FT, because an FT
+    is built from shared-structure edges and not from a call closure.
+
+    When only the audit knew that, a real run published
+    ``harnesses/ft_mp_parse_787468773c9f.c`` and still reported ``FAILED``:
+    three of its six stage-4 attempts were refused here, with
+    ``unexpected target function calls: mp_init, mp_checksum``, for code the
+    stage that produced them had already accepted.
+    """
+
+    #: The shape a contracted harness takes: it calls the contract's lifecycle
+    #: and checksum helpers, repairs the envelope, and hands the ISF a frame it
+    #: assembled.  Accepted by the audit -- see HelperRelaxationTests in
+    #: tests/test_stage4_protocol_ir_audit.py, which pins that half.
+    HARNESS = """#include <stddef.h>
+#include <stdint.h>
+extern "C" {
+#include "target.c"
+}
+
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+{
+    if (size < MP_HEADER_SIZE) return 0;
+    mp_context ctx = {0};
+    mp_init(&ctx);
+
+    uint8_t frame[MP_HEADER_SIZE + MP_MAX_PAYLOAD] = {0};
+    size_t payload_len = size - MP_HEADER_SIZE;
+    if (payload_len > MP_MAX_PAYLOAD) payload_len = MP_MAX_PAYLOAD;
+
+    memcpy(frame + MP_HEADER_SIZE, data + MP_HEADER_SIZE, payload_len);
+    frame[2] = 1;
+    frame[3] = 1;
+    uint16_t sum = mp_checksum(frame + MP_HEADER_SIZE, payload_len);
+    frame[6] = (uint8_t)(sum & 0xff);
+    frame[7] = (uint8_t)(sum >> 8);
+
+    mp_parse(&ctx, frame, MP_HEADER_SIZE + payload_len);
+    mp_destroy(&ctx);
+    return 0;
+}"""
+
+    def project_functions(self) -> frozenset[str]:
+        document = json.loads(
+            (self.phase1 / "functions.json").read_text(encoding="utf-8")
+        )
+        return frozenset(record["name"] for record in document["functions"])
+
+    def with_ir(self, name: str) -> Path:
+        root = self.artifact_root(name)
+        ArtifactStore(root).write_protocol_ir(recorded_ir())
+        return root
+
+    def validator(self, root: Path) -> PipelineStageValidator:
+        return PipelineStageValidator(
+            self.triplet,
+            artifacts=root,
+            functions_json=root / "functions.json",
+            project_root=self.phase1.parent / "project",
+            # The intermediate verdict is what is under test; building and
+            # fuzzing the published harness is a separate, later step.
+            config=PipelineValidationConfig(build_enabled=False, fuzz_smoke=None),
+        )
+
+    def intermediate(self, root: Path, *, allow: bool) -> ValidationResult:
+        (root / "harness.c").write_text(self.HARNESS, encoding="utf-8")
+        return IntermediateValidator().validate_triplet(
+            root / "harness.c",
+            self.triplet,
+            functions_json=root / "functions.json",
+            artifacts=root,
+            stage="stage4_harness",
+            allowed_functions=(
+                declared_contract_helpers(root, self.project_functions())
+                if allow else ()
+            ),
+        )
+
+    # -- the names themselves -------------------------------------------------
+
+    def test_the_allowance_is_the_contracts_declared_helpers(self):
+        root = self.with_ir("revalidation_names")
+        # ``mp_parse`` is the ISF and already expected, so its presence here
+        # changes no decision -- it is in the set because the IR's provenance
+        # names it too, and the two validators get the same names either way.
+        self.assertEqual(
+            declared_contract_helpers(root, self.project_functions()),
+            frozenset({"le16", "mp_checksum", "mp_destroy", "mp_init", "mp_parse"}),
+        )
+        # And the validator's own accessor agrees with the free function, or
+        # the two call sites could drift apart the way the first pair did.
+        self.assertEqual(self.validator(root).contract_helpers(),
+                         declared_contract_helpers(root, self.project_functions()))
+
+    def test_without_an_ir_the_allowance_is_empty(self):
+        root = self.artifact_root("revalidation_no_ir_names")
+        self.assertEqual(declared_contract_helpers(root, self.project_functions()),
+                         frozenset())
+        self.assertEqual(self.validator(root).contract_helpers(), frozenset())
+
+    def test_a_name_the_project_does_not_define_is_not_an_allowance(self):
+        """The IR's evidence quotes real source; a ghost name is not a licence."""
+
+        root = self.with_ir("revalidation_ghost")
+        self.assertNotIn(
+            "invented_checksum",
+            declared_contract_helpers(root, self.project_functions() | {"invented_checksum"}),
+        )
+
+    # -- the decision ---------------------------------------------------------
+
+    def test_the_contracts_helpers_are_refused_without_them(self):
+        """The pre-existing behaviour, on the harness that motivated the fix."""
+
+        result = self.intermediate(self.with_ir("revalidation_off"), allow=False)
+        self.assertFalse(result.success)
+        self.assertIn("unexpected target function calls", result.errors[0])
+        self.assertIn("mp_init", result.errors[0])
+        self.assertIn("mp_checksum", result.errors[0])
+
+    def test_and_accepted_with_them(self):
+        result = self.intermediate(self.with_ir("revalidation_on"), allow=True)
+        self.assertTrue(result.success, result.errors)
+        self.assertIn("mp_checksum", result.metadata["observed_function_calls"])
+
+    def test_a_project_function_the_contract_never_declared_stays_refused(self):
+        """This widening is a list of names, not a licence to call the project.
+
+        ``mp_parse`` is in the FT and ``mp_destroy`` is declared; ``mp_reset``
+        is neither, so adding the contract's helpers must not have turned the
+        check into "any target function is fine".
+        """
+
+        root = self.with_ir("revalidation_undeclared")
+        (root / "harness.c").write_text(
+            self.HARNESS.replace("mp_init(&ctx);", "mp_reset(&ctx);"),
+            encoding="utf-8",
+        )
+        result = IntermediateValidator().validate_triplet(
+            root / "harness.c",
+            self.triplet,
+            functions_json=root / "functions.json",
+            artifacts=root,
+            stage="stage4_harness",
+            allowed_functions=declared_contract_helpers(
+                root, self.project_functions()
+            ),
+        )
+        self.assertFalse(result.success)
+        self.assertIn("mp_reset", result.errors[0])
+
+    # -- end to end, through the pipeline entry point -------------------------
+
+    def test_a_contracted_publish_survives_the_pipelines_revalidation(self):
+        """The bug, stated as the whole path: publish, then validate the publish.
+
+        The harness comes from a formal Stage 4 publish -- not from a text this
+        test wrote -- and the validator is the one ``generate`` calls.
+        """
+
+        root = self.with_ir("revalidation_published")
+        published = Stage4Generator(MockLLM([self.plan_for(root), self.HARNESS])).run(
+            self.triplet,
+            rough_code=self.rough_code(),
+            functions_json=root / "functions.json",
+            artifacts=root,
+        )
+        self.assertTrue(ArtifactStore(root).for_triplet(self.triplet.id).harness.is_file())
+
+        result = self.validator(root).validate_stage4(published)
+        self.assertTrue(result.success, result.errors)
+        self.assertEqual(result.metadata["component_statuses"], ("passed",))
+
+    def test_the_revalidated_file_is_the_harness_that_was_audited(self):
+        """This validator judges ``harness_path``, so that is what has to match.
+
+        Stage 4 writes the harness twice -- once as its own output and once as
+        the stable copy later stages compile -- and the pipeline re-validates
+        the first.  If the two ever disagreed, the check would be about a file
+        nobody builds.
+        """
+
+        root = self.with_ir("revalidation_same_file")
+        published = Stage4Generator(MockLLM([self.plan_for(root), self.HARNESS])).run(
+            self.triplet,
+            rough_code=self.rough_code(),
+            functions_json=root / "functions.json",
+            artifacts=root,
+        )
+        layout = ArtifactStore(root).for_triplet(self.triplet.id)
+        self.assertEqual(published.harness_path,
+                         layout.generation / "stage4_harness.c")
+        self.assertEqual(
+            published.harness_path.read_text(encoding="utf-8").rstrip("\n"),
+            self.HARNESS,
+        )
+        self.assertEqual(published.harness_path.read_bytes(), layout.harness.read_bytes())
 
 
 if __name__ == "__main__":
