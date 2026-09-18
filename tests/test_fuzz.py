@@ -127,6 +127,36 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         self.assertIsNone(result["requested_runs"])
 
     @patch("harness_generation.fuzz.run_logged")
+    def test_the_seed_defaults_to_the_one_this_always_ran_with(self, run_logged):
+        """A single harness is described fine by it, so nothing changes here."""
+
+        run_logged.return_value = {"status": "completed", "returncode": 0}
+        (self.output / "fuzz_stderr.txt").write_text("", encoding="utf-8")
+
+        result = run_fuzzer(self.output, 1)
+
+        self.assertIn("-seed=1", run_logged.call_args.args[1])
+        self.assertEqual(result["seed"], 1)
+
+    @patch("harness_generation.fuzz.run_logged")
+    def test_and_a_named_seed_is_what_reaches_the_engine(self, run_logged):
+        """Repeats at one seed replay one search; comparing harnesses needs more."""
+
+        run_logged.return_value = {"status": "completed", "returncode": 0}
+        (self.output / "fuzz_stderr.txt").write_text("", encoding="utf-8")
+
+        result = run_fuzzer(self.output, 1, runs=2000, seed=7)
+
+        command = run_logged.call_args.args[1]
+        self.assertIn("-seed=7", command)
+        self.assertNotIn("-seed=1", command)
+        self.assertEqual(result["seed"], 7)
+        self.assertEqual(
+            json.loads((self.output / "fuzz_command.json").read_text()),
+            command,
+        )
+
+    @patch("harness_generation.fuzz.run_logged")
     def test_fuzz_finding_is_attributed_to_target_or_harness(self, run_logged):
         target = self.output / "target.c"
         harness = self.output / "harness.c"

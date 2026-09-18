@@ -21,7 +21,7 @@ def stop_process(process: subprocess.Popen) -> None:
 
 
 def run_fuzzer(output: Path, seconds: int, corpus: Path | None = None, *,
-               runs: int | None = None) -> dict:
+               runs: int | None = None, seed: int = 1) -> dict:
     """Run one bounded libFuzzer session over ``output``'s compiled target.
 
     ``seconds`` is the budget by default and the wall-clock safety cap always.
@@ -33,6 +33,13 @@ def run_fuzzer(output: Path, seconds: int, corpus: Path | None = None, *,
     comparison.  ``seconds`` still bounds the process either way, so a run that
     overshoots its wall cap is reported as ``wall_timeout`` rather than
     finishing early.
+
+    ``seed`` is which libFuzzer seed to run with, and it matters for the same
+    reason: repeating one harness at a fixed seed and a fixed ``runs`` replays
+    the same search twice, so the repeats measure determinism and not
+    robustness.  Independent samples need distinct seeds.  The validator paths
+    that bound a *single* harness (smoke, fuzz smoke) deliberately keep the
+    fixed default.
     """
 
     work = output / "corpus"
@@ -47,11 +54,11 @@ def run_fuzzer(output: Path, seconds: int, corpus: Path | None = None, *,
                 (work / hashlib.sha256(data).hexdigest()).write_bytes(data)
     budget = f"-runs={runs}" if runs is not None else f"-max_total_time={seconds}"
     command = ["./fuzz_target", "corpus", budget,
-               "-timeout=2", "-rss_limit_mb=512", "-max_len=4096", "-seed=1",
+               "-timeout=2", "-rss_limit_mb=512", "-max_len=4096", f"-seed={seed}",
                "-artifact_prefix=artifacts/", "-print_final_stats=1"]
     (output / "fuzz_command.json").write_text(json.dumps(command, indent=2) + "\n")
     result = run_logged(output, command, seconds + 7, "fuzz_stdout.txt", "fuzz_stderr.txt")
-    result.update(requested_seconds=seconds, seed=1, requested_runs=runs)
+    result.update(requested_seconds=seconds, seed=seed, requested_runs=runs)
     stats = {}
     findings = set()
     stderr_text = (output / "fuzz_stderr.txt").read_text(

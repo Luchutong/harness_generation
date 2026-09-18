@@ -35,19 +35,56 @@ class TargetCoverageConfig:
     ``compile_target_sources=False`` supports benchmark harnesses that include
     the target implementation directly, while still filtering coverage to the
     configured target source files.
+
+    ``seed`` is the libFuzzer seed behind the ``runs`` budget.  A single
+    harness is described fine by the default; comparing harnesses wants
+    several seeds, because one seed replayed is one sample.
+
+    ``harness_compiler`` and ``harness_compiler_flags`` default to ``None``,
+    which compiles the harness exactly like the target -- the behaviour this
+    always had, and the right one when the harness is C.  Setting them is how
+    a C++ harness gets measured, because one file cannot be both: compiled as
+    C, ``extern "C"`` is a syntax error, and compiled as C++ without it,
+    ``LLVMFuzzerTestOneInput`` is mangled away and the link has no entrypoint.
+    When set, the harness is compiled with ``harness_compiler`` and
+    ``harness_compiler_flags`` plus the profile flags -- deliberately *not*
+    ``compiler_flags``, which describes the target (``-std=c11``).  The two
+    are set together: neither the language standard nor the sanitizer set of a
+    harness can be derived from the target's, so this takes both or neither.
     """
 
     runs: int = 64
+    seed: int = 1
     timeout: float = 30.0
     compiler_flags: tuple[str, ...] = DEFAULT_FUZZER_COMPILE_FLAGS
     link_flags: tuple[str, ...] = DEFAULT_FUZZER_LINK_FLAGS
     llvm_profdata: str = "llvm-profdata"
     llvm_cov: str = "llvm-cov"
     compile_target_sources: bool = True
+    harness_compiler: str | None = None
+    harness_compiler_flags: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if type(self.runs) is not int or self.runs < 1:
             raise ValueError("runs must be a positive integer")
+        if type(self.seed) is not int or self.seed < 0:
+            raise ValueError("seed must be a non-negative integer")
+        if self.harness_compiler is not None and (
+            not isinstance(self.harness_compiler, str)
+            or not self.harness_compiler.strip()
+        ):
+            raise ValueError("harness_compiler must be non-empty text or None")
+        if (self.harness_compiler is None) != (self.harness_compiler_flags is None):
+            raise ValueError(
+                "harness_compiler and harness_compiler_flags are set together"
+            )
+        if self.harness_compiler_flags is not None:
+            flags = self.harness_compiler_flags
+            if isinstance(flags, (str, bytes)) or any(
+                not isinstance(value, str) or not value for value in flags
+            ):
+                raise ValueError("harness_compiler_flags must contain non-empty arguments")
+            object.__setattr__(self, "harness_compiler_flags", tuple(flags))
         if (
             isinstance(self.timeout, bool)
             or not isinstance(self.timeout, (int, float))
@@ -122,12 +159,16 @@ class TargetCoverageCollector:
         commands: list[CommandResult] = []
         errors: list[str] = []
         warnings: list[str] = []
-        compiler = _tool_path(target.compiler)
-        profdata_tool = _tool_path(self.config.llvm_profdata)
-        cov_tool = _tool_path(self.config.llvm_cov)
+        compiler = tool_path(target.compiler)
+        harness_compiler = tool_path(
+            self.config.harness_compiler or target.compiler
+        )
+        profdata_tool = tool_path(self.config.llvm_profdata)
+        cov_tool = tool_path(self.config.llvm_cov)
         missing = [
             name for name, path in (
                 (target.compiler, compiler),
+                (self.config.harness_compiler or target.compiler, harness_compiler),
                 (self.config.llvm_profdata, profdata_tool),
                 (self.config.llvm_cov, cov_tool),
             ) if path is None
@@ -170,12 +211,25 @@ class TargetCoverageCollector:
                     break
                 object_files.append(output)
 
+        # The harness gets its own config, so a C++ harness can be measured
+        # against a C target.  Unset, this is ``compile_config`` verbatim.
+        harness_config = compile_config
+        if self.config.harness_compiler is not None:
+            harness_config = CompilerConfig(
+                compiler=harness_compiler or target.compiler,
+                include_paths=target.include_paths,
+                compiler_flags=_unique_flags(
+                    self.config.harness_compiler_flags or (), _PROFILE_FLAGS
+                ),
+                working_directory=target.project_root,
+                timeout=self.config.timeout,
+            )
         harness_path = Path(harness).resolve()
         harness_object = objects / "harness.o"
         if not errors:
             result = self._run(
                 self.build_adapter.object_command(
-                    harness_path, harness_object, compile_config
+                    harness_path, harness_object, harness_config
                 ),
                 cwd=target.project_root,
             )
@@ -208,7 +262,7 @@ class TargetCoverageCollector:
             command = (
                 str(executable),
                 f"-runs={self.config.runs}",
-                "-seed=1",
+                f"-seed={self.config.seed}",
                 str(corpus_directory),
             )
             result = self._run(
@@ -329,6 +383,12 @@ class TargetCoverageCollector:
             "started_at": started_at.isoformat(),
             "finished_at": finished_at.isoformat(),
             "runs": self.config.runs,
+            "seed": self.config.seed,
+            "harness_compiler": self.config.harness_compiler,
+            "harness_compiler_flags": (
+                None if self.config.harness_compiler_flags is None
+                else list(self.config.harness_compiler_flags)
+            ),
             "scope": "target_code",
             "target_files": [str(path) for path in target_files],
             "compile_target_sources": self.config.compile_target_sources,
@@ -498,7 +558,14 @@ def _prepare_corpus(destination: Path, corpus: str | Path | None) -> None:
         raise ValueError(f"corpus path does not exist: {source}")
 
 
-def _tool_path(tool: str) -> str | None:
+def tool_path(tool: str) -> str | None:
+    """Resolve a tool, accepting the versioned name LLVM ships it under.
+
+    ``llvm-cov`` and ``llvm-profdata`` are not on PATH unversioned on every
+    distribution, and a caller that resolved them differently from the
+    collector would report a toolchain that did not build the numbers.
+    """
+
     direct = shutil.which(tool)
     if direct is not None:
         return direct

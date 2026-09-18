@@ -125,6 +125,78 @@ class TargetCoverageTests(unittest.TestCase):
         self.assertTrue(metric.evidence)
         self.assertTrue(all(m.scope == "target_code" for m in metric.measurements))
 
+    def test_the_seed_is_configurable_and_recorded(self):
+        """One seed replayed is one sample, so an arm comparison needs the knob.
+
+        The default is the value this always ran with, so a single measurement
+        is byte for byte what it was.
+        """
+
+        self.assertEqual(TargetCoverageConfig().seed, 1)
+        self.assertEqual(TargetCoverageConfig(seed=7).seed, 7)
+        for invalid in (-1, 1.0, True, "1"):
+            with self.subTest(seed=invalid):
+                with self.assertRaises(ValueError):
+                    TargetCoverageConfig(seed=invalid)
+
+    def test_the_harness_compiler_is_taken_as_a_pair_or_not_at_all(self):
+        """A harness's language and sanitizer set are not derivable.
+
+        Unset, the harness compiles exactly like the target -- what this always
+        did, and right when the harness is C.  Set, it is a different language
+        standard and probably a different sanitizer set, so a caller that
+        supplied one half would be describing a build nobody can make sense of.
+        """
+
+        self.assertIsNone(TargetCoverageConfig().harness_compiler)
+        self.assertIsNone(TargetCoverageConfig().harness_compiler_flags)
+        config = TargetCoverageConfig(
+            harness_compiler="clang++", harness_compiler_flags=("-x", "c++"),
+        )
+        self.assertEqual(config.harness_compiler_flags, ("-x", "c++"))
+
+        with self.assertRaises(ValueError):
+            TargetCoverageConfig(harness_compiler="clang++")
+        with self.assertRaises(ValueError):
+            TargetCoverageConfig(harness_compiler_flags=("-x", "c++"))
+        for invalid in ("", "   ", 7):
+            with self.subTest(compiler=invalid):
+                with self.assertRaises(ValueError):
+                    TargetCoverageConfig(
+                        harness_compiler=invalid, harness_compiler_flags=(),
+                    )
+        for invalid in (("-x", ""), "-x c++", ("-x", 7)):
+            with self.subTest(flags=invalid):
+                with self.assertRaises(ValueError):
+                    TargetCoverageConfig(
+                        harness_compiler="clang++", harness_compiler_flags=invalid,
+                    )
+
+    @unittest.skipUnless(LLVM_COVERAGE_AVAILABLE, LLVM_COVERAGE_SKIP_REASON)
+    def test_a_named_seed_reaches_the_coverage_fuzzer(self):
+        artifacts = self.directory / "artifacts"
+        harness = self.directory / "harness.c"
+        harness.write_text(VALID_HARNESS, encoding="utf-8")
+        ft_id = "ft_target_coverage_seed"
+
+        result = TargetCoverageCollector(
+            TargetCoverageConfig(runs=8, seed=5)
+        ).measure(
+            harness,
+            TargetBuildConfig.for_simple_project(SIMPLE_PROJECT),
+            artifacts=artifacts,
+            ft_id=ft_id,
+        )
+
+        self.assertEqual(result.status, "passed", result.errors)
+        run = artifacts / "coverage" / ft_id / "run_001"
+        summary = json.loads((run / "target_coverage.json").read_text())
+        self.assertEqual(summary["seed"], 5)
+        commands = json.loads((run / "commands.json").read_text(encoding="utf-8"))
+        run_command = commands[-3]["command"]
+        self.assertIn("-seed=5", run_command)
+        self.assertIn("-runs=8", run_command)
+
     @unittest.skipUnless(LLVM_COVERAGE_AVAILABLE, LLVM_COVERAGE_SKIP_REASON)
     def test_real_simple_target_coverage_excludes_generated_harness(self):
         artifacts = self.directory / "artifacts"
