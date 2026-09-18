@@ -142,11 +142,26 @@ def infer_protocol_conventions(
     llm: LLMClient,
     *,
     samples: int = 3,
+    fail_fast_on_llm_error: bool = False,
 ) -> ConventionInferenceResult:
     """Infer and vote the convention block using an LLM.
 
     Invalid JSON, schema errors and provider errors are recorded as rejected
     samples.  They do not crash the caller unless no valid sample remains.
+
+    ``fail_fast_on_llm_error`` trades that tolerance for a shorter wait: the
+    first sample that fails ends the run instead of being voted around, so the
+    caller does not pay for the remaining samples after a failure that says the
+    provider or the response contract is unusable.  It is about *failed samples*
+    only -- valid samples that contradict each other are the ordinary input to
+    the vote and are never a reason to stop.  The abort re-raises the sample's
+    own error type with the sample position added to the message, so a caller
+    branching on ``LLMError`` (provider/transport, including timeouts) keeps
+    that branch, a caller branching on ``ProtocolConventionError`` (invalid
+    JSON, schema violations) keeps its own, and ``from error`` keeps the
+    original failure in the chain.  Note that with a single sample the flag has
+    nothing to shorten and a first-sample failure surfaces the sample's error
+    rather than the ``no valid protocol convention samples`` error below.
     """
 
     if samples <= 0:
@@ -174,6 +189,16 @@ def infer_protocol_conventions(
                 "error": type(error).__name__,
                 "message": str(error),
             })
+            if fail_fast_on_llm_error:
+                # Same type, enriched message.  Every type this clause catches
+                # is built from one message string, so reconstructing the class
+                # is safe here; keeping the class is what lets a caller tell a
+                # provider failure from a schema failure, while the position is
+                # what lets a reader of the CLI tell "stopped at sample 1" from
+                # "voted over all three and this was the first failure".
+                raise type(error)(
+                    f"sample {index} of {samples} failed: {error}"
+                ) from error
 
     if not accepted:
         raise ProtocolConventionError("no valid protocol convention samples")

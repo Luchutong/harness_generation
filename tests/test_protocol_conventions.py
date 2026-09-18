@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from harness_generation.llm import MockLLM
+from harness_generation.llm import LLMError, MockLLM
 from harness_generation.protocol_conventions import (
     PROTOCOL_CONVENTION_SCHEMA_VERSION,
     ProtocolConventionError,
@@ -420,6 +420,114 @@ class VoteSummaryTests(unittest.TestCase):
         # The sample that failed is still visible, and it did not vote.
         self.assertEqual(self._fields([_sample(), _sample(), "not json at all"])
                          ["context.lifetime"]["valid_samples"], 2)
+
+
+class _FailingLLM:
+    """A client that records its calls and then fails every one of them.
+
+    ``MockLLM`` answers from a queue, so it can only fail the way its own
+    bookkeeping fails (an exhausted sequence).  A provider failure and a
+    timeout both arrive as ``LLMError`` with a message the transport wrote, and
+    that message is part of what these tests check survives, so it is supplied
+    here instead of borrowed.
+    """
+
+    def __init__(self, error: Exception, *, model: str = "failing-model") -> None:
+        self._error = error
+        self.model = model
+        self.provider = "failing"
+        self.calls: list[dict[str, str]] = []
+
+    def generate(self, prompt, *, prompt_version=None):
+        self.calls.append({"prompt": str(prompt)})
+        raise self._error
+
+
+class FailFastTests(unittest.TestCase):
+    """``fail_fast_on_llm_error`` stops on a failed sample, not on a vote.
+
+    The two properties that have to hold at once are easy to confuse: a sample
+    that could not be used at all ends the run early when the flag is set, while
+    samples that are perfectly valid and merely disagree must still reach the
+    vote with the flag set.  Failing one of those for the other would turn a
+    decision about time into a decision about evidence.
+    """
+
+    def _facts(self):
+        return mine_protocol_facts(SOURCE, "parse_frame", filename="proto.c")
+
+    def _infer(self, llm, *, samples, fail_fast):
+        return infer_protocol_conventions(
+            self._facts(),
+            SOURCE.decode("utf-8"),
+            llm,
+            samples=samples,
+            fail_fast_on_llm_error=fail_fast,
+        )
+
+    def test_a_failed_sample_is_voted_around_by_default(self):
+        llm = MockLLM(["not json at all", _sample(), _sample()])
+
+        result = self._infer(llm, samples=3, fail_fast=False)
+
+        self.assertEqual(len(llm.calls), 3)
+        self.assertEqual(result.conventions.metadata["valid_samples"], 2)
+        self.assertEqual(len(result.rejected_samples), 1)
+
+    def test_fail_fast_stops_at_the_first_failed_sample(self):
+        llm = MockLLM(["not json at all", _sample(), _sample()])
+
+        with self.assertRaisesRegex(
+            ProtocolConventionError, "sample 1 of 3 failed"
+        ) as caught:
+            self._infer(llm, samples=3, fail_fast=True)
+
+        # The remaining samples were never requested: the point of the flag is
+        # not to rewrite the outcome but to stop paying for the rest of it.
+        self.assertEqual(len(llm.calls), 1)
+        # The reason is still the reason, in the original words.
+        self.assertIn("not valid JSON", str(caught.exception))
+        self.assertIsInstance(caught.exception.__cause__, ProtocolConventionError)
+
+    def test_fail_fast_keeps_the_type_of_a_provider_failure(self):
+        # A timeout is reported as an LLMError by the transport, and it stays
+        # one here: a caller that catches LLMError to mean "the provider is
+        # unusable" must not have to also catch a schema error to find that out.
+        llm = _FailingLLM(
+            LLMError("OpenAI-compatible request timed out after 10s")
+        )
+
+        with self.assertRaisesRegex(LLMError, "sample 1 of 2 failed") as caught:
+            self._infer(llm, samples=2, fail_fast=True)
+
+        self.assertIn("timed out after 10s", str(caught.exception))
+        self.assertEqual(len(llm.calls), 1)
+
+    def test_valid_samples_that_disagree_still_reach_the_vote(self):
+        llm = MockLLM([_sample(32), _variant(max_steps_value=16), _sample(16)])
+
+        result = self._infer(llm, samples=3, fail_fast=True)
+
+        # Every sample was used, none was rejected, and the disagreement shows
+        # up where it belongs: in the vote summary.
+        self.assertEqual(len(llm.calls), 3)
+        self.assertEqual(result.conventions.metadata["valid_samples"], 3)
+        self.assertEqual(result.rejected_samples, ())
+        fields = result.conventions.metadata["vote_summary"]["fields"]
+        self.assertIn("sequence_model.max_steps.value", fields)
+
+    def test_fail_fast_does_not_change_the_default_path(self):
+        # The kwarg is additive, so a caller that never mentions it gets the
+        # tolerant loop it always got -- including the all-samples-failed error.
+        facts = self._facts()
+        llm = MockLLM(["nope", "nope"])
+
+        with self.assertRaisesRegex(ProtocolConventionError, "no valid"):
+            infer_protocol_conventions(
+                facts, SOURCE.decode("utf-8"), llm, samples=2
+            )
+
+        self.assertEqual(len(llm.calls), 2)
 
 
 class ProtocolConventionTests(unittest.TestCase):

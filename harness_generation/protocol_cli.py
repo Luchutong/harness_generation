@@ -71,6 +71,8 @@ def main(argv: list[str] | None = None, *, llm: LLMClient | None = None) -> int:
         parser.error("--model, --mock-responses and --recorded-responses require --with-llm")
     if args.llm_timeout is not None and not args.with_llm:
         parser.error("--llm-timeout requires --with-llm")
+    if args.fail_fast_on_llm_error and not args.with_llm:
+        parser.error("--fail-fast-on-llm-error requires --with-llm")
     samples = DEFAULT_SAMPLES if args.samples is None else args.samples
     if samples < 1:
         parser.error("--samples must be positive")
@@ -107,7 +109,13 @@ def main(argv: list[str] | None = None, *, llm: LLMClient | None = None) -> int:
         )
         facts = mine_protocol_facts(original, args.function, filename=args.source.name)
         conventions = (
-            infer_protocol_conventions(facts, source_text, client, samples=samples)
+            infer_protocol_conventions(
+                facts,
+                source_text,
+                client,
+                samples=samples,
+                fail_fast_on_llm_error=args.fail_fast_on_llm_error,
+            )
             if client is not None
             else None
         )
@@ -125,7 +133,15 @@ def main(argv: list[str] | None = None, *, llm: LLMClient | None = None) -> int:
         print(f"Protocol mining failed: {exc}", file=sys.stderr)
         return 1
 
-    _print_summary(facts, ir, conventions, written, client=client, samples=samples)
+    _print_summary(
+        facts,
+        ir,
+        conventions,
+        written,
+        client=client,
+        samples=samples,
+        fail_fast=args.fail_fast_on_llm_error,
+    )
     return 0
 
 
@@ -167,6 +183,15 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Replay a versioned recorded-response JSON artifact",
     )
+    parser.add_argument(
+        "--fail-fast-on-llm-error",
+        action="store_true",
+        help=(
+            "Stop at the first sample that fails instead of voting around it; "
+            "requires --with-llm.  Disagreeing samples are not failures and are "
+            "still voted on."
+        ),
+    )
     parser.add_argument("--model", help="Override LLM_MODEL for the real provider")
     # The default is None, not the number, so this flag never becomes a second
     # source of truth for the timeout: `None` means "do not override LLMConfig",
@@ -191,6 +216,7 @@ def _print_summary(
     *,
     client: LLMClient | None = None,
     samples: int = DEFAULT_SAMPLES,
+    fail_fast: bool = False,
 ) -> None:
     """Human-readable account of what was mined, inferred and written."""
 
@@ -204,6 +230,7 @@ def _print_summary(
     # samples and no timeout -- so the exposure line is absent rather than zero.
     if client is not None:
         print(_exposure_line(client, samples))
+        print(_fail_fast_line(fail_fast))
     print(_context_line(ir, conventions))
     print(_stateful_line(ir, conventions))
     _print_limitations(facts, ir)
@@ -235,6 +262,21 @@ def _exposure_line(client: LLMClient, samples: int) -> str:
         return f"samples={samples} timeout=n/a worst_case=n/a"
     # ":g" renders seconds the way a person writes them -- "120", not "120.0".
     return f"samples={samples} timeout={timeout:g}s worst_case={samples * timeout:g}s"
+
+
+def _fail_fast_line(fail_fast: bool) -> str:
+    """State the sample-failure policy the run actually used.
+
+    Printed as its own line rather than appended to the exposure line: the two
+    describe different things.  A mock has no wall-clock bound to report and
+    still has a failure policy -- a mock is in fact the easiest way to hand the
+    loop an unusable response -- so folding them together would either drop the
+    policy on that path or file a statement about failures under a timeout
+    reading "n/a".  The state is named in both directions because a silent
+    default is indistinguishable from a flag that was not understood.
+    """
+
+    return f"LLM fail-fast on error: {'enabled' if fail_fast else 'disabled'}"
 
 
 def _context_line(

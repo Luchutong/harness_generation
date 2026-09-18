@@ -517,6 +517,74 @@ class ProtocolMineCLITests(unittest.TestCase):
         self.assertNotIn("worst_case", stdout)
         self.assertNotIn("samples=", stdout)
 
+    def test_the_summary_states_the_fail_fast_policy_in_both_directions(self):
+        mock_path = self.temporary / "mock.json"
+        mock_path.write_text(
+            json.dumps({"responses": [_sample() for _ in range(3)]}),
+            encoding="utf-8",
+        )
+
+        for extra, expected in (
+            (("--fail-fast-on-llm-error",), "enabled"),
+            ((), "disabled"),
+        ):
+            with self.subTest(expected=expected):
+                code, stdout, stderr = self._run(
+                    "--with-llm", "--samples", "3",
+                    "--mock-responses", str(mock_path), *extra,
+                )
+
+                self.assertEqual(code, 0, stderr)
+                self.assertIn(f"LLM fail-fast on error: {expected}", stdout)
+                # The policy is a separate line, so it costs the timeout line
+                # nothing: a mock still reports no wall-clock bound, and the
+                # two statements never have to share one grammar.
+                self.assertIn("timeout=n/a worst_case=n/a", stdout)
+
+    def test_fail_fast_stops_the_real_provider_at_the_first_failed_sample(self):
+        requests = []
+
+        def timing_out(*_args):
+            requests.append(1)
+            raise TimeoutError("unit-test transport timeout")
+
+        with patch.dict(
+            os.environ, _provider_environment(), clear=True
+        ), patch("harness_generation.llm._post_json", timing_out):
+            code, _, stderr = self._run(
+                "--with-llm", "--samples", "3", "--llm-timeout", "1",
+                "--fail-fast-on-llm-error",
+            )
+
+        self.assertEqual(code, 1)
+        # One request, not three: the flag shortens the wait to the first
+        # failure instead of to the sum of the samples' timeouts.
+        self.assertEqual(len(requests), 1)
+        self.assertIn("sample 1 of 3 failed", stderr)
+        # And the reason survives the wrapping, still as a timeout.
+        self.assertIn("timed out", stderr)
+        self.assertNotIn("invalid OpenAI-compatible response", stderr)
+        self.assertFalse(self.output.exists())
+
+    def test_an_injected_llm_may_be_asked_to_fail_fast(self):
+        # fail-fast is a policy about failed samples, not another way to build a
+        # provider, so it composes with an injected client rather than joining
+        # --llm-timeout on the list of provider options that an injected client
+        # refuses.  A developer testing their own client wants this pair.
+        code, _, stderr = self._run(
+            "--with-llm", "--samples", "2", "--fail-fast-on-llm-error",
+            llm=MockLLM(["not json at all", _sample()]),
+        )
+
+        self.assertEqual(code, 1)
+        self.assertIn("sample 1 of 2 failed", stderr)
+        self.assertFalse(self.output.exists())
+
+    def test_fail_fast_without_an_llm_is_a_usage_error(self):
+        message = self._usage_error("--fail-fast-on-llm-error")
+
+        self.assertIn("--fail-fast-on-llm-error requires --with-llm", message)
+
     def test_injected_llm_with_a_timeout_is_refused_loudly(self):
         # The injected client was built by the caller, timeout included.  Doing
         # nothing with the flag would leave a user who asked for a 10-second
