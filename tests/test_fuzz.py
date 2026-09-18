@@ -96,6 +96,37 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         self.assertEqual(result["findings"], [])
 
     @patch("harness_generation.fuzz.run_logged")
+    def test_runs_replaces_the_wall_clock_budget(self, run_logged):
+        run_logged.return_value = {"status": "completed", "returncode": 0}
+        (self.output / "fuzz_stderr.txt").write_text("", encoding="utf-8")
+
+        result = run_fuzzer(self.output, 1, runs=2000)
+
+        command = run_logged.call_args.args[1]
+        self.assertIn("-runs=2000", command)
+        self.assertNotIn("-max_total_time=1", command)
+        # The wall cap survives the switch: it bounds the process either way,
+        # so a run that overshoots is still reported instead of hanging.
+        self.assertEqual(run_logged.call_args.args[2], 8)
+        self.assertEqual(result["requested_runs"], 2000)
+        self.assertEqual(
+            json.loads((self.output / "fuzz_command.json").read_text())[2],
+            "-runs=2000",
+        )
+
+    @patch("harness_generation.fuzz.run_logged")
+    def test_the_default_budget_is_still_wall_clock(self, run_logged):
+        run_logged.return_value = {"status": "completed", "returncode": 0}
+        (self.output / "fuzz_stderr.txt").write_text("", encoding="utf-8")
+
+        result = run_fuzzer(self.output, 1)
+
+        command = run_logged.call_args.args[1]
+        self.assertIn("-max_total_time=1", command)
+        self.assertFalse([item for item in command if item.startswith("-runs=")])
+        self.assertIsNone(result["requested_runs"])
+
+    @patch("harness_generation.fuzz.run_logged")
     def test_fuzz_finding_is_attributed_to_target_or_harness(self, run_logged):
         target = self.output / "target.c"
         harness = self.output / "harness.c"

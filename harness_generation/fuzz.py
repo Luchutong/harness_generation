@@ -20,7 +20,21 @@ def stop_process(process: subprocess.Popen) -> None:
     process.wait()
 
 
-def run_fuzzer(output: Path, seconds: int, corpus: Path | None = None) -> dict:
+def run_fuzzer(output: Path, seconds: int, corpus: Path | None = None, *,
+               runs: int | None = None) -> dict:
+    """Run one bounded libFuzzer session over ``output``'s compiled target.
+
+    ``seconds`` is the budget by default and the wall-clock safety cap always.
+    ``runs`` switches the budget itself from wall-clock to executions: the
+    session stops after that many inputs instead of when the clock runs out.
+    The distinction matters when two harnesses are being compared, because a
+    wall-clock budget buys each arm a *different* number of executions -- the
+    execution rates differ -- and coverage counted at unequal work is not a
+    comparison.  ``seconds`` still bounds the process either way, so a run that
+    overshoots its wall cap is reported as ``wall_timeout`` rather than
+    finishing early.
+    """
+
     work = output / "corpus"
     artifacts = output / "artifacts"
     work.mkdir()
@@ -31,12 +45,13 @@ def run_fuzzer(output: Path, seconds: int, corpus: Path | None = None) -> dict:
             if path.is_file() and not path.is_symlink():
                 data = path.read_bytes()
                 (work / hashlib.sha256(data).hexdigest()).write_bytes(data)
-    command = ["./fuzz_target", "corpus", f"-max_total_time={seconds}",
+    budget = f"-runs={runs}" if runs is not None else f"-max_total_time={seconds}"
+    command = ["./fuzz_target", "corpus", budget,
                "-timeout=2", "-rss_limit_mb=512", "-max_len=4096", "-seed=1",
                "-artifact_prefix=artifacts/", "-print_final_stats=1"]
     (output / "fuzz_command.json").write_text(json.dumps(command, indent=2) + "\n")
     result = run_logged(output, command, seconds + 7, "fuzz_stdout.txt", "fuzz_stderr.txt")
-    result.update(requested_seconds=seconds, seed=1)
+    result.update(requested_seconds=seconds, seed=1, requested_runs=runs)
     stats = {}
     findings = set()
     stderr_text = (output / "fuzz_stderr.txt").read_text(

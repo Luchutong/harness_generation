@@ -12,6 +12,7 @@ from harness_generation.llm import (
     MockLLM,
     OpenAICompatibleLLM,
     RecordedResponseLLM,
+    RecordingLLM,
     write_recorded_responses,
 )
 from harness_generation.prompts import stage1_function_doc
@@ -76,6 +77,60 @@ class LLMAbstractionTests(unittest.TestCase):
         self.assertEqual(generated.metadata["experiment"], "baseline")
         with self.assertRaisesRegex(LLMError, "exhausted"):
             replay.generate(_prompt())
+
+    def test_recording_a_client_round_trips_through_replay(self):
+        prompt = _prompt()
+        inner = MockLLM(["first output", "second output"])
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "recording.json"
+            recorder = RecordingLLM(inner, path)
+            first = recorder.generate(prompt)
+            second = recorder.generate("plain prompt", prompt_version="manual-v3")
+            replay = RecordedResponseLLM.from_file(path)
+
+            self.assertEqual(
+                [item.content for item in recorder.recorded],
+                ["first output", "second output"],
+            )
+            # Same order, same content, same versions: a replay of the recording
+            # is the run that made it.
+            self.assertEqual(replay.generate(prompt).content, first.content)
+            replayed = replay.generate("plain prompt", prompt_version="manual-v3")
+            self.assertEqual(replayed.content, second.content)
+            self.assertEqual(replayed.prompt_version, "manual-v3")
+
+    def test_recording_keeps_only_the_calls_that_succeeded(self):
+        # A call that raised produced no generation, so there is nothing to
+        # record and nothing to replay.  The recording says what happened, not
+        # what was attempted.
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "recording.json"
+            recorder = RecordingLLM(MockLLM(["only one"]), path)
+            recorder.generate(_prompt())
+            with self.assertRaisesRegex(LLMError, "exhausted"):
+                recorder.generate(_prompt())
+
+        self.assertEqual(len(recorder.recorded), 1)
+
+    def test_recording_forwards_the_attributes_of_the_client_it_wraps(self):
+        # The CLI prints its exposure line by reading ``config.timeout`` off the
+        # client.  A wrapper that hid that would report "n/a" for a real
+        # provider -- a number it does have, dropped by the wrapper.
+        client = OpenAICompatibleLLM(
+            LLMConfig(
+                model="configured-model",
+                base_url="https://llm.example.test/v1",
+                api_key_env_name="LLM_API_KEY",
+                timeout=42.0,
+            ),
+            environ={"LLM_API_KEY": "unit-test-only"},
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            recorder = RecordingLLM(client, Path(temporary) / "recording.json")
+
+        self.assertEqual(recorder.config.timeout, 42.0)
+        self.assertEqual(recorder.model, "configured-model")
+        self.assertEqual(recorder.provider, "openai-compatible")
 
     def test_recorded_response_rejects_prompt_version_mismatch(self):
         replay = RecordedResponseLLM([

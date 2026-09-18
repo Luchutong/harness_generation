@@ -226,6 +226,55 @@ class RecordedResponseLLM:
         return response
 
 
+class RecordingLLM:
+    """Wrap a client and persist every generation it produces.
+
+    The write side of :class:`RecordedResponseLLM`.  What this client sees is
+    what a later replay serves back, in the same order, so one run against a
+    real provider is enough to make every run after it offline and
+    deterministic -- which is the only way a comparison whose input is a
+    model's output can be reproduced by someone who has no key.
+
+    Only successes are recorded: a call that raised produced no generation, and
+    a recording therefore cannot reproduce a run whose provider failed
+    part-way.  Replaying it against a pipeline that tolerates failed samples
+    (convention voting does) yields the successful samples in order, which is
+    the deterministic case, not the one that failed.
+
+    The destination is rewritten after each success rather than at the end, so
+    an interrupted recording still holds everything that did succeed.  Unknown
+    attributes are forwarded, which is what keeps a wrapped client
+    indistinguishable from the one it wraps -- the CLI reads ``config.timeout``
+    off the client to print its exposure line, and a wrapper that swallowed
+    that would report "n/a" for a real provider.
+    """
+
+    def __init__(self, inner: LLMClient, path: str | Path) -> None:
+        self._inner = inner
+        self._path = Path(path)
+        self._recorded: list[LLMGeneration] = []
+
+    def __getattr__(self, name: str) -> Any:
+        # Guard the guard: ``_inner`` is read below, so an instance whose
+        # ``__init__`` has not run must fail here rather than recurse.
+        if name == "_inner":
+            raise AttributeError(name)
+        return getattr(self._inner, name)
+
+    @property
+    def recorded(self) -> tuple[LLMGeneration, ...]:
+        """The generations written so far, in the order they were requested."""
+
+        return tuple(self._recorded)
+
+    def generate(self, prompt: RenderedPrompt | str, *,
+                 prompt_version: str | None = None) -> LLMGeneration:
+        generation = self._inner.generate(prompt, prompt_version=prompt_version)
+        self._recorded.append(generation)
+        write_recorded_responses(self._path, self._recorded)
+        return generation
+
+
 def write_recorded_responses(path: str | Path,
                              responses: Sequence[LLMGeneration]) -> None:
     """Persist replayable responses in a stable, secret-free JSON document."""

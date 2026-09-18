@@ -24,7 +24,7 @@ from .iteration import (ITERATION_POLICY_VERSION, AggregationPolicy,
                         SelectionResult, WeightedAggregationPolicy)
 from .llm import (FakeLLM, LLMClient, LLMConfig, LLMError, LLMGeneration,
                   MockLLM, OpenAICompatibleLLM, RecordedResponseLLM,
-                  write_recorded_responses)
+                  RecordingLLM, write_recorded_responses)
 from .orchestrator import (PIPELINE_STAGES, STAGE_1_DOCS, STAGE_2_SNIPPETS,
                            STAGE_3_ROUGH, STAGE_4_HARNESS, CallableStage,
                            PipelineOrchestrator, PipelineRunResult,
@@ -171,6 +171,7 @@ __all__ = [
     "ProtocolFacts",
     "ProtocolMinerError",
     "RecordedResponseLLM",
+    "RecordingLLM",
     "RenderedPrompt",
     "RuntimeValidationResult",
     "RuntimeValidator",
