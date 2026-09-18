@@ -16,6 +16,7 @@ from .generation_context import (bounded_validation_feedback,
 from .llm import LLMClient, LLMGeneration
 from .prompts import stage4_harness_plan, stage4_harness_transform
 from .protocol_ir import ProtocolIR, ProtocolIRError
+from .protocol_ir_helpers import ProtocolHelperSet, collect_protocol_helpers
 from .sfg_adapter import is_null_node
 from .source_paths import SUPPORTED_FUNCTIONS_SCHEMA_VERSIONS
 from .triplet import FunctionTriplet
@@ -32,6 +33,15 @@ _STANDARD_C_CALLS = {
     "memmove", "memset", "realloc", "strchr", "strcmp", "strlen",
     "strncmp", "strnlen", "strrchr",
 }
+#: The only copies the repaired-frame connection recognises, and it recognises
+#: them by the callee name alone -- see :func:`_isf_input_connection`.
+_COPY_CALLS = {"memcpy", "memmove"}
+#: A parameter name that says "this integer is the length of the frame".
+_LENGTH_PARAMETER_NAMES = {
+    "size", "len", "length", "n", "data_size", "buffer_size",
+}
+#: A bare C identifier and nothing else: ``frame``, never ``frame + 8``.
+_BARE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class Stage4Error(ValueError):
@@ -77,6 +87,10 @@ class Stage4Result:
     generation_metadata: Mapping[str, Any]
     attempt_directory: Path
     harness_plan: Mapping[str, Any] = field(default_factory=dict)
+    #: How the accepted harness was judged to feed the fuzzer's bytes to the
+    #: ISF, or ``None`` when nothing was recorded.  Kept out of
+    #: ``generation_metadata``, whose key set is pinned by the existing tests.
+    input_connection: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -116,6 +130,26 @@ class _HarnessAnalysis:
     calls: tuple[_Call, ...]
 
 
+@dataclass(frozen=True)
+class _InputConnection:
+    """How one ISF call was judged to consume the fuzzer's bytes."""
+
+    kind: str
+    isf: str
+    buffer_argument: str
+    size_argument: str
+    evidence: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "isf": self.isf,
+            "buffer_argument": self.buffer_argument,
+            "size_argument": self.size_argument,
+            "evidence": list(self.evidence),
+        }
+
+
 class Stage4Generator:
     """Generate, validate, and publish one FT-specific libFuzzer harness."""
 
@@ -144,7 +178,12 @@ class Stage4Generator:
             triplet_id=triplet.id,
             unique_isf_function_id=str(isf_metadata.get("id", "")),
         )
-        protocol = load_protocol_contract(artifacts)
+        protocol_ir = _load_protocol(artifacts)
+        # The helpers the audit may accept are read out of the IR's own
+        # provenance.  With no IR this is the empty set, so the audit is byte
+        # for byte the FT-only one it was before any of this existed.
+        protocol_helpers = collect_protocol_helpers(protocol_ir)
+        protocol = _protocol_contract(artifacts, protocol_ir)
         protocol_contract = None if protocol is None else protocol[0]
         plan_prompt = stage4_harness_plan(
             triplet_id=triplet.id,
@@ -261,11 +300,12 @@ class Stage4Generator:
         ))
         try:
             analysis = _analyze_c(harness)
-            _validate_harness(
+            input_connection = _validate_harness(
                 analysis,
                 triplet,
                 isf_metadata,
                 all_project_functions,
+                protocol_helpers=protocol_helpers,
             )
         except Exception as error:
             layout.write_json(attempt_directory / "parsed.json", {
@@ -284,11 +324,15 @@ class Stage4Generator:
         if publish:
             stable_path = layout.harness
             layout.write_text(stable_path, persisted)
+        connection_record = (
+            None if input_connection is None else input_connection.to_dict()
+        )
         layout.write_json(attempt_directory / "parsed.json", {
             "status": "passed",
             "harness_plan": harness_plan.to_dict(),
             "definitions": [function.name for function in analysis.functions],
             "calls": sorted({call.name for call in analysis.calls}),
+            "input_connection": connection_record,
         })
         return Stage4Result(
             triplet_id=triplet.id,
@@ -298,6 +342,7 @@ class Stage4Generator:
             generation_metadata=_generation_metadata(generation),
             attempt_directory=attempt_directory,
             harness_plan=harness_plan.to_dict(),
+            input_connection=connection_record,
         )
 
 
@@ -345,6 +390,18 @@ def load_protocol_contract(
     be quietly wrong about frame layout, length repair and context lifetime.
     """
 
+    return _protocol_contract(artifacts, _load_protocol(artifacts))
+
+
+def _load_protocol(artifacts: str | Path) -> ProtocolIR | None:
+    """The mined IR itself, or ``None`` when no ``protocol_ir.json`` is there.
+
+    ``run()`` needs the IR and not only its contract projection, because the
+    audit reads the helper names out of the IR's own provenance.  The public
+    :func:`load_protocol_contract` is a view over this: it discards the IR and
+    returns exactly the pair, with exactly the error messages, it always did.
+    """
+
     path = ArtifactStore(Path(artifacts)).protocol_ir
     if not path.is_file():
         return None
@@ -355,11 +412,21 @@ def load_protocol_contract(
             f"cannot read protocol IR {path}: {type(error).__name__}: {error}"
         ) from error
     try:
-        ir = ProtocolIR.from_json(document)
+        return ProtocolIR.from_json(document)
     except ProtocolIRError as error:
         raise Stage4Error(f"invalid protocol IR {path}: {error}") from error
+
+
+def _protocol_contract(
+    artifacts: str | Path,
+    ir: ProtocolIR | None,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """``(contract, provenance)`` for an already-loaded IR, or ``None``."""
+
+    if ir is None:
+        return None
     return ir.to_protocol_contract(), {
-        "path": str(path),
+        "path": str(ArtifactStore(Path(artifacts)).protocol_ir),
         "entry_function": ir.entry_function,
         "llm_confidence": ir.llm_confidence,
     }
@@ -714,7 +781,20 @@ def _validate_harness(
     triplet: FunctionTriplet,
     isf_metadata: Mapping[str, Any],
     all_project_functions: set[str],
-) -> None:
+    protocol_helpers: ProtocolHelperSet = ProtocolHelperSet(),
+) -> _InputConnection | None:
+    """Raise unless the harness is one Stage 4 may publish.
+
+    ``protocol_helpers`` are the helpers the mined protocol's own provenance
+    declares.  They widen exactly one rule -- which project calls are inside the
+    harness's allowance -- and nothing else in this audit.  The default empty
+    set makes every caller that does not supply one behave as it did before the
+    protocol IR could reach the audit at all.
+
+    On success the connection the ISF check accepted is returned, so the record
+    persisted next to the attempt is the one the audit actually made.
+    """
+
     definitions = [function.name for function in analysis.functions]
     if definitions.count(FUZZ_ENTRY) != 1:
         raise Stage4Error(f"Stage 4 requires exactly one {FUZZ_ENTRY} definition")
@@ -741,11 +821,25 @@ def _validate_harness(
 
     local_functions = set(definitions)
     expected = {function.function for function in triplet.functions}
-    outside_ft = sorted(calls & (all_project_functions - expected))
+    # An FT is built from the structural edges its ISF shares with other
+    # functions, not from its call closure, so a helper the ISF genuinely calls
+    # (a checksum, a context constructor) can sit outside it forever.  A helper
+    # is allowed here only when the mined protocol's own provenance names it --
+    # a name Stage 4 has never heard of stays forbidden, and prose in the IR's
+    # requirements or notes (`helpers.weak`) can never authorise anything.
+    #
+    # The declared name must also *exist* in the project.  The IR's evidence
+    # quotes real source, so a name with no definition behind it is a broken
+    # claim rather than a licence -- and allowing it would silently disable the
+    # unknown-API check below for that name, which is weaker than the audit
+    # this relaxation is required to leave otherwise intact.
+    declared_helpers = protocol_helpers.allowed & all_project_functions
+    allowed_project_calls = expected | declared_helpers
+    outside_ft = sorted(calls & (all_project_functions - allowed_project_calls))
     if outside_ft:
         raise Stage4Error("Stage 4 harness calls project APIs outside the FT: " +
                           ", ".join(outside_ft))
-    allowed = expected | local_functions | _STANDARD_C_CALLS
+    allowed = expected | local_functions | _STANDARD_C_CALLS | declared_helpers
     unknown = sorted(calls - allowed)
     if unknown:
         raise Stage4Error("Stage 4 harness calls unknown APIs: " + ", ".join(unknown))
@@ -759,7 +853,12 @@ def _validate_harness(
     isf_calls = [call for call in entry_calls if call.name == triplet.isf.function]
     if not isf_calls:
         raise Stage4Error("Stage 4 harness does not invoke the unique ISF")
-    if not any(_isf_uses_external_input(call, isf_metadata) for call in isf_calls):
+    input_connection = None
+    for call in isf_calls:
+        input_connection = _isf_input_connection(call, entry, isf_metadata)
+        if input_connection is not None:
+            break
+    if input_connection is None:
         raise Stage4Error("Stage 4 ISF call is not connected to external data/size")
 
     first_isf = min(call.start_byte for call in isf_calls)
@@ -782,6 +881,7 @@ def _validate_harness(
         raise Stage4Error("Stage 4 cleanup occurs before ISF initialization: " +
                           ", ".join(cleanup_before_entry))
     _validate_cleanup_order(entry_calls, cleanup_names, triplet)
+    return input_connection
 
 
 def _validate_cleanup_order(calls: tuple[_Call, ...], cleanup_names: set[str],
@@ -844,10 +944,43 @@ def _validate_entry_signature(entry: _FunctionDefinition) -> None:
         raise Stage4Error("second fuzzer parameter must be size_t size")
 
 
-def _isf_uses_external_input(call: _Call, metadata: Mapping[str, Any]) -> bool:
+def _isf_input_connection(
+    call: _Call,
+    entry: _FunctionDefinition,
+    metadata: Mapping[str, Any],
+) -> _InputConnection | None:
+    """How ``call`` is fed the fuzzer's bytes, or ``None`` if it is not.
+
+    Two kinds are accepted:
+
+    ``direct``
+        The original rule, unchanged: an argument sitting on a stream parameter
+        carries ``data`` in its expression, and -- when the ISF has any length
+        parameter -- a length argument carries ``size``.  This is what
+        ``mp_parse(&ctx, data, size)`` satisfies.
+
+    ``repaired_frame``
+        The ISF is handed a local buffer instead of the fuzzer's own bytes,
+        because the frame envelope has to be assembled and ``data`` is const.
+        The buffer must be a *bare local identifier* that a ``memcpy`` or
+        ``memmove`` **earlier in the same function** filled from ``data``, and
+        the ISF's length argument must be tied to that copy's length.
+
+    The repaired-frame rule is a syntactic approximation, not taint analysis.
+    It recognises a copy only when it is written as a call named ``memcpy`` or
+    ``memmove``, directly in the entry function, before the ISF call.  A
+    byte-at-a-time copy loop, a helper function that fills the frame (however it
+    is named), ``read(...)``, or a pointer that reaches ``data`` through an
+    intermediate variable are all missed, and the ISF is then reported as
+    unconnected.  It is an under-approximation in that direction -- it never
+    claims a connection that is not really written down -- but it is not sound:
+    it does not track the copied bytes afterwards, so a frame copied from
+    ``data`` and then entirely overwritten from a constant still passes.
+    """
+
     parameters = metadata.get("parameters", [])
     if len(call.arguments) != len(parameters):
-        return False
+        return None
     stream_indexes = [
         index for index, parameter in enumerate(parameters)
         if parameter.get("is_pointer") is True
@@ -859,22 +992,106 @@ def _isf_uses_external_input(call: _Call, metadata: Mapping[str, Any]) -> bool:
     length_indexes = [
         index for index, parameter in enumerate(parameters)
         if parameter.get("is_pointer") is not True
-        and str(parameter.get("name", "")).lower() in {
-            "size", "len", "length", "n", "data_size", "buffer_size"
-        }
+        and str(parameter.get("name", "")).lower() in _LENGTH_PARAMETER_NAMES
     ]
     if not stream_indexes:
-        return False
-    if not any(
-        "data" in call.arguments[index].identifiers
+        return None
+
+    direct = _direct_connection(call, stream_indexes, length_indexes)
+    if direct is not None:
+        return direct
+    return _repaired_frame_connection(call, entry, stream_indexes, length_indexes)
+
+
+def _direct_connection(
+    call: _Call,
+    stream_indexes: list[int],
+    length_indexes: list[int],
+) -> _InputConnection | None:
+    """The fuzzer's own buffer, passed straight to the ISF."""
+
+    streams = [
+        index for index in stream_indexes
+        if "data" in call.arguments[index].identifiers
         and not call.arguments[index].has_string_literal
-        for index in stream_indexes
-    ):
-        return False
-    return not length_indexes or any(
-        "size" in call.arguments[index].identifiers
-        for index in length_indexes
+    ]
+    if not streams:
+        return None
+    sizes = [
+        index for index in length_indexes
+        if "size" in call.arguments[index].identifiers
+    ]
+    if length_indexes and not sizes:
+        return None
+    buffer_index = streams[0]
+    evidence = (call.arguments[buffer_index].text,)
+    if sizes:
+        evidence += (call.arguments[sizes[0]].text,)
+    return _InputConnection(
+        kind="direct",
+        isf=call.name,
+        buffer_argument=call.arguments[buffer_index].text,
+        size_argument=call.arguments[sizes[0]].text if sizes else "",
+        evidence=evidence,
     )
+
+
+def _repaired_frame_connection(
+    call: _Call,
+    entry: _FunctionDefinition,
+    stream_indexes: list[int],
+    length_indexes: list[int],
+) -> _InputConnection | None:
+    """A local frame a preceding ``memcpy``/``memmove`` filled from ``data``."""
+
+    buffers = [
+        index for index in stream_indexes
+        if _BARE_IDENTIFIER.match(call.arguments[index].text)
+    ]
+    if not buffers:
+        return None
+    copies = [
+        copy for copy in entry.calls
+        if copy.name in _COPY_CALLS
+        and copy.start_byte < call.start_byte
+        and len(copy.arguments) >= 3
+    ]
+    for index in buffers:
+        buffer = call.arguments[index].text
+        for copy in copies:
+            destination, source, length = copy.arguments[:3]
+            if buffer not in destination.identifiers:
+                continue
+            if "data" not in source.identifiers or source.has_string_literal:
+                continue
+            tied = [
+                position for position in length_indexes
+                if "size" in call.arguments[position].identifiers
+                or set(call.arguments[position].identifiers) & set(length.identifiers)
+            ]
+            # No length parameter at all: there is no frame length to tie, so
+            # the copy alone has to carry the claim.
+            if length_indexes and not tied:
+                continue
+            evidence = [_call_text(copy)]
+            if destination.text != buffer:
+                # The copy fills a *region* of the buffer (``frame +
+                # MP_HEADER_SIZE``), so the bytes before it are written by the
+                # harness itself rather than copied through.  That is the
+                # observable repair: the envelope is assembled, not aliased.
+                evidence.append(f"frame length/checksum repaired before {call.name}")
+            return _InputConnection(
+                kind="repaired_frame",
+                isf=call.name,
+                buffer_argument=buffer,
+                size_argument=call.arguments[tied[0]].text if tied else "",
+                evidence=tuple(evidence),
+            )
+    return None
+
+
+def _call_text(call: _Call) -> str:
+    return f"{call.name}({', '.join(argument.text for argument in call.arguments)})"
 
 
 def _parameters(function_declarator: Any, source: bytes) -> Iterable[_Parameter]:
