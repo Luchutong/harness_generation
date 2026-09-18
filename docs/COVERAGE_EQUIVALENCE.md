@@ -2,6 +2,18 @@
 
 `docs/PROTOCOL_FORMAT_MINING.md` §5.3 asks whether a spec-driven generic harness reaches the coverage the hand-written reference harness reaches. This document answers it for one benchmark, and it is generated from the measurement it reports: `harness_generation/coverage_arms.py` writes `tests/fixtures/coverage_arms/measurements.json`, and `python -m harness_generation coverage-arms --report docs/COVERAGE_EQUIVALENCE.md` renders that file into this one. No number below is typed by hand.
 
+## Conclusion
+
+Three statements, in the order the evidence carries them.
+
+**1. The contract path reaches far more of the target than the FT-only arm.** Taking `contracted`'s worst seed against `ft_only`'s best -- the reading that gives the gap every chance to close -- it leads on `lines` by 82.9269 points, `regions` by 67.1053 points, `branches` by 66.1765 points. That is every metric. The FT-only arm enters 3 of the target's 5 functions where `contracted` enters all 5. It is the no-contract publish: the pipeline's own output when the model is never asked to bind a frame, and it stays at the target's entry points. What the contract adds is what gets the run past them.
+
+**2. `contracted` has not reached the hand-written reference, and equivalence is not claimed.** The gate reads **`below_reference`**. It is level on `lines`. It clears 0.95 on `regions` at ratio 0.957143, which is inside tolerance and still short of equality. It falls below 0.95 on `branches` at ratio 0.946429, so it is not equivalent even at the looser reading. An arm-level verdict requires every metric at every seed, so one metric short decides it. The question this measurement was built to answer was equivalence with `reference`; the answer is no, and this document does not round it up to yes.
+
+**3. What is left is a harness-quality gap, not a broken pipeline.** `contracted` is a formally published artifact, it builds, it runs its full 20000-execution budget, and each run ends in a sanitizer finding attributed to `target.c:73` and `target.c:91` -- the same frames `reference` ends in. Its coverage of the target is measured, and the target layer above is that measurement, not the engine's telemetry.
+
+So the shortfall is in how much of the target's branch space the harness's structure strategy reaches, not in whether the contract path runs end to end. Read it neither as "the pipeline is broken" nor as "the pipeline is fine": the gate above is the measurement, and it says the strategy is not there yet. Narrowing it means comparing the branches `contracted` misses against the ones `reference` reaches and changing the strategy; it does not mean moving the tolerance.
+
 ## Arms
 
 | arm | role | recipe | sha256 | bytes | source |
@@ -205,6 +217,14 @@ FT-only path (provenance is uncontrolled, see (d)). Not that coverage
 equivalence holds in general (one benchmark, one budget, see (h)). Not that an
 accepted contract means the gates work -- acceptance and coverage equivalence
 are different properties, and this measures only the second.
+
+## Evaluation infrastructure fixes
+
+Two defects in the measurement apparatus were found while producing this document. Neither is a property of any arm, and both are recorded because a number produced by the apparatus before the fix was not the number it appeared to be.
+
+**An arm's copy lost its executable bit.** The driver runs `./fuzz_target` from its scratch directory, and it made that copy with `shutil.copyfile`, which preserves content and not the mode. Every two-TU arm therefore failed to start, and its `Layer A` row came back `error` with empty statistics -- missing measurements, not wrong ones, which is the harder kind to notice. Fixed to `shutil.copy`; the campaign was re-run rather than the evidence edited, because this module's whole point is that the document cannot contain a number the run did not produce.
+
+**Versioned tool names were reported as missing tools.** The toolchain block resolved its versions with a bare `shutil.which`, while the collector resolves `llvm-cov-18` and `llvm-profdata-18`. On this machine that printed `llvm-cov: unavailable` above a measurement `llvm-cov-18` had just produced, which is a false statement in the block a reader uses to judge reproducibility. Both now go through one public resolver (`target_coverage.tool_path`), so the report cannot describe a toolchain other than the one that ran.
 
 ## Reproduce
 

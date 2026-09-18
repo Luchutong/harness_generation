@@ -698,7 +698,20 @@ LLM 的情况下重算每一个判定。
 | branches | 82.3529% | 77.9412% | 0.946 | **未达标** |
 
 **结论:不宣称等价** —— `below_reference`。branches 这一项候选比参考低 4.4 个
-百分点,超出容差。三条必须随数字一起读的限定:
+百分点,超出容差。报告把结论写成三层(见 `COVERAGE_EQUIVALENCE.md` 的
+`## Conclusion`,每一句都由证据渲染):
+
+1. **contract 路径显著优于 FT-only arm** —— 取 contracted 最差 seed 与 ft_only
+   最好 seed 相比,三个指标分别领先 82.9 / 67.1 / 66.2 个百分点;ft_only 只进入
+   target 的 5 个函数中的 3 个,且它只是"没给合约时 pipeline 自己的产物"。
+2. **但尚未达到手写 reference,因此不宣称等价** —— branch ratio 0.946 低于容差
+   下限 0.95;region 0.957 在容差内但不等;line 1.0 达标。
+3. **剩下的是 harness quality gap,不是 pipeline 断链** —— contracted 是正式
+   publish 产物、能 build、能跑满 20000 次,且每次运行都以 sanitizer finding
+   结束并落在 `target.c:73` / `target.c:91`(与 reference 同一批 frame)。缺的是
+   结构策略覆盖分支空间的能力,不是链路本身。**缩小它要改策略,不是改阈值。**
+
+三条必须随数字一起读的限定:
 
 - **`cov`/`ft` 是 engine-level,不是目标源码覆盖率。** 它们来自 libFuzzer 对整个
   插桩程序(含 harness 自身)的计数,只作遥测;闸门只读 `llvm-cov` 过滤到
@@ -710,11 +723,24 @@ LLM 的情况下重算每一个判定。
   contracted 跑 801–1348 次才崩,覆盖率变成"崩得多快",跨 arm 不可比。所以覆盖层
   不带 sanitizer 构建,每个 arm 跑满同一个 `-runs`。
 
-另有两项如实记录:FT-only arm(494 B,无 `protocol_ir.json` 时 publish 的产物)只
-覆盖 12.2% 的行,与 tracked baseline `pass_through` 逐位相同,即
-`ft_only − pass_through` 的 recipe 效应为 0;被审计拒绝的 `attempt_003` 覆盖率与
-正式发布物相当,说明**该拒绝不是覆盖率过滤器** —— 它拒的是 harness 私自复刻项目
-算法,与覆盖无关。
+另有三项如实记录:
+
+- **FT-only arm(494 B,无 `protocol_ir.json` 时 publish 的产物)**只覆盖 12.2% 的
+  行,与 tracked baseline `pass_through` 逐位相同,即 `ft_only − pass_through` 的
+  recipe 效应为 0 —— 上面那张表的差距不是编译方式造成的。
+- **被审计拒绝的 `attempt_003` 覆盖率与正式发布物相当**,说明**该拒绝不是覆盖率
+  过滤器**:它拒的是 harness 私自复刻项目算法,与覆盖无关。它因此在报告里只作
+  `diagnostic_rejected`,**不作为候选**,也不能被 gate 读取。
+- **seed 只证明确定性,不构成独立样本。** `-seed=1/2/3` 确实传到了命令行
+  (`commands.json` 可查),但覆盖层在 `-runs=20000` 已饱和,除 `rejected_attempt_003`
+  外每个 arm 三个 seed 数字完全相同。所以那次 sweep 是"同一个数测了三遍",
+  报告有专门的 `### Seed spread` 段落把这件事说出来,而不是让读者当成三次独立确认。
+
+测量装置本身修掉两个缺陷(报告 `## Evaluation infrastructure fixes`):two-TU arm
+的 `./fuzz_target` 副本丢可执行位(`shutil.copyfile` 不保 mode,导致 Layer A 整列
+`error` 空统计),以及 toolchain 版本解析用裸 `shutil.which` 而 collector 用带版本
+名的 `llvm-cov-18`(报告曾印出"unavailable"却正是它跑的测量)。两处修完后**重跑了
+campaign**,而不是手改证据 —— 这个模块的全部意义就是文档里不能有跑不出来的数字。
 
 **边界**:一个基准、一个目标函数、一份语料、一个预算;且闸门只在存在手写参考
 harness 的地方可定义。因此它关闭的是 §5.3 第 3 项作为**基准级验收指标**,不是

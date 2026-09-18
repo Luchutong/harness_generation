@@ -168,7 +168,12 @@
             "undefined_behavior"
           ],
           "truncated_by_finding": true,
-          "crash_classification": "potential_target_crash"
+          "crash_classification": "potential_target_crash",
+          "crash_frame": {
+            "file": "target.c",
+            "line": 91,
+            "column": 53
+          }
         },
         {
           "scope": "instrumented_program",
@@ -205,7 +210,12 @@
             "address_sanitizer"
           ],
           "truncated_by_finding": true,
-          "crash_classification": "potential_target_crash"
+          "crash_classification": "potential_target_crash",
+          "crash_frame": {
+            "file": "target.c",
+            "line": 73,
+            "column": 50
+          }
         },
         {
           "scope": "instrumented_program",
@@ -242,7 +252,12 @@
             "address_sanitizer"
           ],
           "truncated_by_finding": true,
-          "crash_classification": "potential_target_crash"
+          "crash_classification": "potential_target_crash",
+          "crash_frame": {
+            "file": "target.c",
+            "line": 73,
+            "column": 50
+          }
         },
         {
           "scope": "instrumented_program",
@@ -300,7 +315,12 @@
             "address_sanitizer"
           ],
           "truncated_by_finding": true,
-          "crash_classification": "potential_target_crash"
+          "crash_classification": "potential_target_crash",
+          "crash_frame": {
+            "file": "target.c",
+            "line": 73,
+            "column": 50
+          }
         },
         {
           "scope": "instrumented_program",
@@ -358,7 +378,12 @@
             "address_sanitizer"
           ],
           "truncated_by_finding": true,
-          "crash_classification": "potential_target_crash"
+          "crash_classification": "potential_target_crash",
+          "crash_frame": {
+            "file": "target.c",
+            "line": 73,
+            "column": 50
+          }
         },
         {
           "scope": "instrumented_program",
@@ -417,7 +442,12 @@
             "undefined_behavior"
           ],
           "truncated_by_finding": true,
-          "crash_classification": "potential_target_crash"
+          "crash_classification": "potential_target_crash",
+          "crash_frame": {
+            "file": "target.c",
+            "line": 91,
+            "column": 53
+          }
         },
         {
           "scope": "instrumented_program",
@@ -473,7 +503,8 @@
           "requested_runs": 20000,
           "findings": [],
           "truncated_by_finding": false,
-          "crash_classification": "none"
+          "crash_classification": "none",
+          "crash_frame": null
         },
         {
           "scope": "instrumented_program",
@@ -529,7 +560,8 @@
           "requested_runs": 20000,
           "findings": [],
           "truncated_by_finding": false,
-          "crash_classification": "none"
+          "crash_classification": "none",
+          "crash_frame": null
         },
         {
           "scope": "instrumented_program",
@@ -585,7 +617,8 @@
           "requested_runs": 20000,
           "findings": [],
           "truncated_by_finding": false,
-          "crash_classification": "none"
+          "crash_classification": "none",
+          "crash_frame": null
         },
         {
           "scope": "instrumented_program",
@@ -620,7 +653,8 @@
           "requested_runs": 20000,
           "findings": [],
           "truncated_by_finding": false,
-          "crash_classification": "none"
+          "crash_classification": "none",
+          "crash_frame": null
         },
         {
           "scope": "instrumented_program",
@@ -655,7 +689,8 @@
           "requested_runs": 20000,
           "findings": [],
           "truncated_by_finding": false,
-          "crash_classification": "none"
+          "crash_classification": "none",
+          "crash_frame": null
         },
         {
           "scope": "instrumented_program",
@@ -690,7 +725,8 @@
           "requested_runs": 20000,
           "findings": [],
           "truncated_by_finding": false,
-          "crash_classification": "none"
+          "crash_classification": "none",
+          "crash_frame": null
         },
         {
           "scope": "instrumented_program",
@@ -748,7 +784,12 @@
             "address_sanitizer"
           ],
           "truncated_by_finding": true,
-          "crash_classification": "potential_target_crash"
+          "crash_classification": "potential_target_crash",
+          "crash_frame": {
+            "file": "target.c",
+            "line": 73,
+            "column": 50
+          }
         },
         {
           "scope": "instrumented_program",
@@ -806,7 +847,12 @@
             "address_sanitizer"
           ],
           "truncated_by_finding": true,
-          "crash_classification": "potential_target_crash"
+          "crash_classification": "potential_target_crash",
+          "crash_frame": {
+            "file": "target.c",
+            "line": 73,
+            "column": 50
+          }
         },
         {
           "scope": "instrumented_program",
@@ -865,7 +911,12 @@
             "undefined_behavior"
           ],
           "truncated_by_finding": true,
-          "crash_classification": "potential_target_crash"
+          "crash_classification": "potential_target_crash",
+          "crash_frame": {
+            "file": "target.c",
+            "line": 91,
+            "column": 53
+          }
         }
       ]
     },

@@ -487,8 +487,27 @@ def measure_engine_arm(
         # a result comparable to an arm that ran the whole budget.
         truncated_by_finding=result["status"] == "finding",
         crash_classification=result.get("crash_classification", {}).get("classification"),
+        # Where the sanitizer says the crash is.  Recorded because it is the
+        # only thing separating "this arm reaches the target's bug" from "this
+        # arm crashes its own harness", and a claim in the report depends on
+        # it.  The path is a scratch directory, so only the file is kept.
+        crash_frame=_crash_frame(result.get("crash_classification")),
     )
     return record
+
+
+def _crash_frame(classification: Any) -> dict[str, Any] | None:
+    if not isinstance(classification, Mapping):
+        return None
+    frame = classification.get("attribution_frame")
+    if not isinstance(frame, Mapping):
+        return None
+    source = frame.get("source")
+    return {
+        "file": Path(source).name if isinstance(source, str) else None,
+        "line": frame.get("line"),
+        "column": frame.get("column"),
+    }
 
 
 def measure_target_arm(
@@ -872,6 +891,129 @@ def percent_range(
     }
 
 
+def conclusion(document: Mapping[str, Any]) -> dict[str, Any]:
+    """The three claims this measurement supports, each tied to its evidence.
+
+    Ordered by how much the evidence carries.  The first compares two pipeline
+    products on a gap that is not close; the second is the gate's own verdict,
+    which is where the measurement says no; the third is what the first two
+    leave -- and it is the one worth being careful about, because "we did not
+    reach the reference" reads as "something is broken" unless the evidence
+    that the path ran end to end is stated next to it.
+    """
+
+    gate = document.get("gate", {})
+    candidate = gate.get("candidate")
+    reference = gate.get("reference")
+    target = document.get("layers", {}).get(TARGET_LAYER, {}).get("runs", ())
+    engine = document.get("layers", {}).get(ENGINE_LAYER, {}).get("runs", ())
+    roles = {
+        arm.get("name"): arm.get("role") for arm in document.get("arms", ())
+    }
+    baseline = next(
+        (
+            arm.get("name") for arm in document.get("arms", ())
+            if arm.get("role") == ROLE_FT_ONLY
+        ),
+        None,
+    )
+
+    def bounds(records, arm, metric):
+        return percent_range(records, arm, (metric,)).get(metric)
+
+    over_baseline: dict[str, Any] = {}
+    for metric in GATE_METRICS:
+        candidate_bounds = bounds(target, candidate, metric) if candidate else None
+        baseline_bounds = bounds(target, baseline, metric) if baseline else None
+        if not candidate_bounds or not baseline_bounds:
+            over_baseline[metric] = {"beats": None, "gap": None}
+            continue
+        # Conservative on both sides: the candidate's worst seed against the
+        # baseline's best.  A gap that survives that is a gap.
+        over_baseline[metric] = {
+            "beats": candidate_bounds[0] > baseline_bounds[1],
+            "gap": round(candidate_bounds[0] - baseline_bounds[1], 6),
+        }
+
+    def functions(records, arm):
+        """How much of the target's function set the arm enters, worst seed.
+
+        Read from the arm's own totals rather than from its function names:
+        the reference is compiled as C++ with the target inlined and the arms
+        beside a C object, so the names are not spelled the same way and a
+        name-level comparison across recipes would be an artifact of that.
+        """
+
+        if not arm:
+            return None
+        counts = [
+            ((run.get("totals") or {}).get("functions") or {}).get("covered")
+            for run in records if run.get("arm") == arm
+        ]
+        counts = [count for count in counts if count is not None]
+        totals = [
+            ((run.get("totals") or {}).get("functions") or {}).get("count")
+            for run in records if run.get("arm") == arm
+        ]
+        totals = [count for count in totals if count is not None]
+        if not counts or not totals:
+            return None
+        return {"covered": min(counts), "count": max(totals)}
+
+    def frames_of(runs):
+        # A set of frames, not a dict keyed by file: an arm that crashes at two
+        # different lines of the same file has two frames, and collapsing them
+        # would report one of them as if it were the only one.
+        frames = set()
+        for run in runs:
+            frame = run.get("crash_frame") or {}
+            if frame.get("file"):
+                frames.add((frame["file"], frame.get("line")))
+        return sorted(
+            f"{name}:{line}" if line is not None else name
+            for name, line in frames
+        )
+
+    candidate_engine = [run for run in engine if run.get("arm") == candidate]
+    candidate_target = [run for run in target if run.get("arm") == candidate]
+    reference_engine = [run for run in engine if run.get("arm") == reference]
+    return {
+        "candidate": candidate,
+        "reference": reference,
+        "baseline": baseline,
+        "candidate_role": roles.get(candidate),
+        "baseline_role": roles.get(baseline) if baseline else None,
+        "verdict": gate.get("verdict"),
+        "tolerance": gate.get("tolerance"),
+        "budget": gate.get("budget"),
+        "over_baseline": over_baseline,
+        "candidate_functions": functions(target, candidate),
+        "baseline_functions": functions(target, baseline),
+        "reaches_reference": {
+            metric: report.get("passes_strict")
+            for metric, report in (gate.get("metrics") or {}).items()
+        },
+        "within_tolerance": {
+            metric: report.get("passes_tolerance")
+            for metric, report in (gate.get("metrics") or {}).items()
+        },
+        # What "the path ran" means, measured rather than asserted.
+        "published": roles.get(candidate) == ROLE_CONTRACTED,
+        "built": bool(candidate_engine) and all(
+            run.get("build_status") == "passed" for run in candidate_engine
+        ),
+        "ran": bool(candidate_engine) and all(
+            run.get("status") in {"completed", "finding"} for run in candidate_engine
+        ),
+        "found": any(run.get("truncated_by_finding") for run in candidate_engine),
+        "crash_frames": frames_of(candidate_engine),
+        "reference_crash_frames": frames_of(reference_engine),
+        "coverage_measured": bool(candidate_target) and all(
+            run.get("status") == "passed" for run in candidate_target
+        ),
+    }
+
+
 def rejected_arm(document: Mapping[str, Any]) -> str | None:
     for arm in document.get("arms", ()):
         if arm.get("role") == ROLE_REJECTED:
@@ -1203,6 +1345,207 @@ def render_report(measurements: Mapping[str, Any]) -> str:
         "number below is typed by hand."
     )
     add("")
+    answers = conclusion(measurements)
+    metrics = gate.get("metrics") or {}
+    candidate = answers.get("candidate")
+    baseline = answers.get("baseline")
+    reference = answers.get("reference")
+
+    add("## Conclusion")
+    add("")
+    add("Three statements, in the order the evidence carries them.")
+    add("")
+
+    over = answers.get("over_baseline") or {}
+    gaps = [
+        f"`{metric}` by {over[metric]['gap']} points"
+        for metric in GATE_METRICS
+        if (over.get(metric) or {}).get("gap") is not None
+    ]
+    missed = [
+        metric for metric in GATE_METRICS
+        if (over.get(metric) or {}).get("beats") is False
+    ]
+    baseline_functions = answers.get("baseline_functions")
+    candidate_functions = answers.get("candidate_functions")
+    add(
+        f"**1. The contract path reaches far more of the target than the "
+        f"FT-only arm.** Taking `{candidate}`'s worst seed against "
+        f"`{baseline}`'s best -- the reading that gives the gap every chance to "
+        f"close -- it leads on " + ", ".join(gaps) + "."
+        + (
+            " That is every metric." if not missed
+            else " It does not hold on "
+                 + ", ".join(f"`{metric}`" for metric in missed) + "."
+        )
+        + (
+            f" The FT-only arm enters {baseline_functions['covered']} of the "
+            f"target's {baseline_functions['count']} functions where "
+            f"`{candidate}` enters "
+            + (
+                f"all {candidate_functions['count']}"
+                if candidate_functions["covered"] == candidate_functions["count"]
+                else f"{candidate_functions['covered']}"
+            )
+            + "."
+            if baseline_functions and candidate_functions else ""
+        )
+        + " It is the no-contract publish: the pipeline's own output when the "
+        "model is never asked to bind a frame, and it stays at the target's "
+        "entry points. What the contract adds is what gets the run past them."
+    )
+    add("")
+
+    tolerance = answers.get("tolerance")
+    floor = (
+        "the tolerance floor" if tolerance is None
+        else f"{round(1.0 - float(tolerance), 4)}"
+    )
+    # Three dispositions, not two: level, inside tolerance but short of
+    # equality, and below the floor.  Collapsing the middle one into either
+    # neighbour is how "within tolerance" turns into "equivalent".
+    def report_of(metric):
+        return metrics.get(metric) or {}
+
+    def at_ratio(metric):
+        return f"`{metric}` at ratio {report_of(metric).get('min_ratio')}"
+
+    strict_pass = [m for m in GATE_METRICS if report_of(m).get("passes_strict")]
+    tolerance_only = [
+        m for m in GATE_METRICS
+        if report_of(m).get("passes_tolerance") and not report_of(m).get("passes_strict")
+    ]
+    short = [
+        at_ratio(m) for m in GATE_METRICS
+        if report_of(m).get("passes_tolerance") is False
+    ]
+    verdict = answers.get("verdict")
+    # The headline follows the verdict, because a report that hard-codes
+    # "not equivalent" would go on saying it after a campaign that came out
+    # level -- and a hand-edited conclusion is exactly what this document
+    # exists not to be.
+    headlines = {
+        "equivalent_strict": (
+            f"**2. `{candidate}` is level with the hand-written reference on "
+            f"every metric at every seed.** The gate reads **`{verdict}`**."
+        ),
+        "equivalent_within_tolerance": (
+            f"**2. `{candidate}` reaches the reference within the tolerance "
+            f"this gate declares, which is not equality.** The gate reads "
+            f"**`{verdict}`**."
+        ),
+        "below_reference": (
+            f"**2. `{candidate}` has not reached the hand-written reference, "
+            f"and equivalence is not claimed.** The gate reads **`{verdict}`**."
+        ),
+        "not_admissible": (
+            f"**2. No equivalence claim is readable for this pair.** The gate "
+            f"reads **`{verdict}`**: the subject is not a published arm, so "
+            f"there is nothing here to compare."
+        ),
+    }
+    parts = [headlines.get(verdict, f"**2. The gate reads `{verdict}`.**")]
+    if verdict != "not_admissible":
+        if strict_pass:
+            parts.append(
+                " It is level on "
+                + ", ".join(f"`{metric}`" for metric in strict_pass) + "."
+            )
+        if tolerance_only:
+            parts.append(
+                " It clears " + floor + " on "
+                + ", ".join(at_ratio(metric) for metric in tolerance_only)
+                + ", which is inside tolerance and still short of equality."
+            )
+        if short:
+            parts.append(
+                " It falls below " + floor + " on " + ", ".join(short)
+                + ", so it is not equivalent even at the looser reading."
+            )
+        elif strict_pass:
+            parts.append(
+                " Every metric at every seed, which is the one verdict here "
+                "that makes `equivalent` the right word."
+            )
+    parts.append(
+        " An arm-level verdict requires every metric at every seed, so one "
+        "metric short decides it. "
+        + {
+            "equivalent_strict": (
+                "The question this measurement was built to answer was "
+                f"equivalence with `{reference}`; at this budget, on this gate, "
+                "the answer is yes -- and the same number would read "
+                "differently at a larger budget, which is why the budget is in "
+                "the verdict."
+            ),
+            "equivalent_within_tolerance": (
+                "The question this measurement was built to answer was "
+                f"equivalence with `{reference}`; the answer is inside "
+                "tolerance, not equal, and this document does not round it up."
+            ),
+            "below_reference": (
+                "The question this measurement was built to answer was "
+                f"equivalence with `{reference}`; the answer is no, and this "
+                "document does not round it up to yes."
+            ),
+        }.get(
+            verdict,
+            "The gate does not read this pair at all: the subject is not a "
+            "published arm, so no equivalence claim about it would mean "
+            "anything.",
+        )
+    )
+    add("".join(parts))
+    add("")
+
+    frames = answers.get("crash_frames") or []
+    reference_frames = answers.get("reference_crash_frames") or []
+    add(
+        f"**3. What is left is a harness-quality gap, not a broken pipeline.** "
+        f"`{candidate}` is "
+        + (
+            "a formally published artifact" if answers.get("published")
+            else f"a `{answers.get('candidate_role')}` artifact"
+        )
+        + (", it builds" if answers.get("built") else ", it does not build")
+        + (
+            f", it runs its full {answers.get('budget')}-execution budget"
+            if answers.get("ran") else ", it does not run"
+        )
+        + (
+            ", and each run ends in a sanitizer finding attributed to "
+            + " and ".join(f"`{name}`" for name in frames)
+            + (
+                " -- the same frames `" + str(reference) + "` ends in"
+                if frames and frames == reference_frames else
+                " -- a target file `" + str(reference) + "` also crashes in ("
+                + ", ".join(f"`{name}`" for name in reference_frames) + ")"
+                if reference_frames else ""
+            )
+            if answers.get("found") and frames else
+            ", and each run ends in a sanitizer finding"
+            if answers.get("found") else
+            ", and it finds nothing"
+        )
+        + (
+            ". Its coverage of the target is measured, and the target layer "
+            "above is that measurement, not the engine's telemetry."
+            if answers.get("coverage_measured") else
+            ". Its coverage of the target could not be measured."
+        )
+    )
+    add("")
+    add(
+        f"So the shortfall is in how much of the target's branch space the "
+        f"harness's structure strategy reaches, not in whether the contract "
+        f"path runs end to end. Read it neither as \"the pipeline is broken\" "
+        f"nor as \"the pipeline is fine\": the gate above is the measurement, "
+        f"and it says the strategy is not there yet. Narrowing it means "
+        f"comparing the branches `{candidate}` misses against the ones "
+        f"`{reference}` reaches and changing the strategy; it does not mean "
+        f"moving the tolerance."
+    )
+    add("")
     add("## Arms")
     add("")
     add("| arm | role | recipe | sha256 | bytes | source |")
@@ -1426,6 +1769,38 @@ def render_report(measurements: Mapping[str, Any]) -> str:
     add("## Caveats")
     add("")
     add(CAVEATS)
+    add("## Evaluation infrastructure fixes")
+    add("")
+    add(
+        "Two defects in the measurement apparatus were found while producing "
+        "this document. Neither is a property of any arm, and both are "
+        "recorded because a number produced by the apparatus before the fix "
+        "was not the number it appeared to be."
+    )
+    add("")
+    add(
+        "**An arm's copy lost its executable bit.** The driver runs "
+        "`./fuzz_target` from its scratch directory, and it made that copy "
+        "with `shutil.copyfile`, which preserves content and not the mode. "
+        "Every two-TU arm therefore failed to start, and its `Layer A` row "
+        "came back `error` with empty statistics -- missing measurements, not "
+        "wrong ones, which is the harder kind to notice. Fixed to "
+        "`shutil.copy`; the campaign was re-run rather than the evidence "
+        "edited, because this module's whole point is that the document "
+        "cannot contain a number the run did not produce."
+    )
+    add("")
+    add(
+        "**Versioned tool names were reported as missing tools.** The "
+        "toolchain block resolved its versions with a bare `shutil.which`, "
+        "while the collector resolves `llvm-cov-18` and `llvm-profdata-18`. On "
+        "this machine that printed `llvm-cov: unavailable` above a "
+        "measurement `llvm-cov-18` had just produced, which is a false "
+        "statement in the block a reader uses to judge reproducibility. Both "
+        "now go through one public resolver (`target_coverage.tool_path`), so "
+        "the report cannot describe a toolchain other than the one that ran."
+    )
+    add("")
     add("## Reproduce")
     add("")
     add("```bash")
@@ -1495,10 +1870,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        if args.report is not None:
+            # Render before checking.  Asking for both means "check what you
+            # just rendered"; checking first would verify the copy that was on
+            # disk before this invocation and pass on a report this run has
+            # already replaced.
+            code = _report_main(args)
+            if code:
+                return code
+            if not args.check:
+                return 0
         if args.check:
             return _check_main(args)
-        if args.report is not None:
-            return _report_main(args)
         return _run_main(args)
     except CoverageArmsError as error:
         print(f"Coverage arms failed: {error}", file=sys.stderr)
@@ -1563,9 +1946,12 @@ def _check_main(args: argparse.Namespace) -> int:
     if not Path(record).is_file():
         raise CoverageArmsError(f"no measurements to check at {record}")
     measurements = json.loads(Path(record).read_text(encoding="utf-8"))
+    # The document checked is the one this invocation names, so `--report X
+    # --check` verifies X rather than silently verifying the default and
+    # leaving a stale X unexamined.
+    doc = args.report if args.report is not None else DEFAULT_REPORT
     problems = check_measurements(
-        manifest_path, measurements,
-        doc_path=DEFAULT_REPORT if DEFAULT_REPORT.is_file() else None,
+        manifest_path, measurements, doc_path=doc if doc.is_file() else None,
     )
     if problems:
         for problem in problems:

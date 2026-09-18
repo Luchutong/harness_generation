@@ -25,12 +25,14 @@ from harness_generation.coverage_arms import (
     DEFAULT_REPORT,
     ENGINE_LAYER,
     GATE_METRICS,
+    ROLE_CONTRACTED,
     ROLE_REJECTED,
     TARGET_LAYER,
     ArmSpec,
     CoverageArmsConfig,
     CoverageArmsError,
     check_measurements,
+    conclusion,
     evaluate_gate,
     load_manifest,
     percent_range,
@@ -39,6 +41,7 @@ from harness_generation.coverage_arms import (
     seed_spread,
     verify_manifest,
 )
+from harness_generation.coverage_arms import main as coverage_arms_main
 from harness_generation.llm import MockLLM
 from harness_generation.stage4 import Stage4Generator
 from tests.test_stage4_protocol_ir import Stage4ProjectTests
@@ -357,6 +360,174 @@ class CommittedEvidenceTests(unittest.TestCase):
         ):
             with self.subTest(claim=claim):
                 self.assertIn(claim, report)
+
+    def test_the_report_records_the_apparatus_fixes(self):
+        """A number from before a fix is not the number it looked like.
+
+        Both of these were found while producing this evidence, and a reader
+        comparing these rows against an older run needs to be told that the
+        older rows came out of a harness that could not start an arm and a
+        toolchain block that denied using a tool it was using.
+        """
+
+        report = DEFAULT_REPORT.read_text(encoding="utf-8")
+        self.assertIn("Evaluation infrastructure fixes", report)
+        self.assertIn("shutil.copyfile", report)      # the executable bit
+        self.assertIn("llvm-cov-18", report)          # the versioned name
+        self.assertIn("tool_path", report)            # the shared resolver
+
+
+class ConclusionTests(unittest.TestCase):
+    """The three claims the report leads with, held to the evidence.
+
+    The conclusion is the part a reader quotes and nobody re-derives, so each
+    of these takes one claim and asks the records whether it is true -- and,
+    where the claim could have come out the other way, builds the document
+    that would have made it come out the other way.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.document = evidence()
+        cls.answers = conclusion(cls.document)
+
+    def test_the_path_facts_are_read_off_the_records(self):
+        """"Published, built, ran, found" is a claim about the document.
+
+        A pipeline that broke would leave some of these false, and the
+        conclusion is the sentence that would then be lying.
+        """
+
+        engine = self.document["layers"][ENGINE_LAYER]["runs"]
+        target = self.document["layers"][TARGET_LAYER]["runs"]
+        candidate = self.answers["candidate"]
+        mine = [run for run in engine if run["arm"] == candidate]
+
+        self.assertTrue(self.answers["published"])
+        self.assertEqual(self.answers["candidate_role"], ROLE_CONTRACTED)
+        self.assertTrue(mine, "the candidate was never measured")
+        self.assertEqual(
+            self.answers["built"], all(run["build_status"] == "passed" for run in mine)
+        )
+        self.assertEqual(
+            self.answers["ran"],
+            all(run["status"] in {"completed", "finding"} for run in mine),
+        )
+        self.assertEqual(
+            self.answers["found"], any(run["truncated_by_finding"] for run in mine)
+        )
+        self.assertEqual(
+            self.answers["coverage_measured"],
+            all(run["status"] == "passed"
+                for run in target if run["arm"] == candidate),
+        )
+        # Read off the records, not from the fixture's shape: the claim is only
+        # as good as where the numbers in it came from.
+        self.assertTrue(all(self.answers[key] for key in (
+            "published", "built", "ran", "found", "coverage_measured",
+        )))
+
+    def test_a_broken_build_is_reported_as_broken(self):
+        """The inverse document: if it had not built, the report must say so."""
+
+        document = evidence()
+        for run in document["layers"][ENGINE_LAYER]["runs"]:
+            if run["arm"] == "contracted":
+                run["build_status"] = "failed"
+        answers = conclusion(document)
+        self.assertFalse(answers["built"])
+        report = render_report(document)
+        self.assertIn("it does not build", report)
+        self.assertNotIn("it builds", report)
+
+    def test_every_crash_frame_is_reported_not_just_one_per_file(self):
+        """One file can be crashed in at two lines, and both are the finding.
+
+        Collapsing them by filename would report one sanitizer site as if it
+        were the arm's only one.
+        """
+
+        frames = self.answers["crash_frames"]
+        expected = sorted({
+            f"{run['crash_frame']['file']}:{run['crash_frame']['line']}"
+            for run in self.document["layers"][ENGINE_LAYER]["runs"]
+            if run["arm"] == self.answers["candidate"] and run.get("crash_frame")
+        })
+        self.assertEqual(frames, expected)
+        self.assertGreater(len({name.split(":")[0] for name in frames}), 0)
+        report = render_report(self.document)
+        for frame in frames:
+            self.assertIn(frame, report)
+
+    def test_the_lead_over_the_ft_only_arm_survives_the_worst_case(self):
+        """Worst candidate seed against best baseline seed, on the records."""
+
+        target = self.document["layers"][TARGET_LAYER]["runs"]
+        candidate = self.answers["candidate"]
+        baseline = self.answers["baseline"]
+        for metric in GATE_METRICS:
+            with self.subTest(metric=metric):
+                worst = percent_range(target, candidate, (metric,))[metric][0]
+                best = percent_range(target, baseline, (metric,))[metric][1]
+                self.assertTrue(self.answers["over_baseline"][metric]["beats"])
+                self.assertEqual(
+                    self.answers["over_baseline"][metric]["gap"],
+                    round(worst - best, 6),
+                )
+                self.assertGreater(worst, best)
+
+    def test_the_headline_follows_the_verdict_and_is_not_hard_coded(self):
+        """A report that always says "not equivalent" is wrong the day it is.
+
+        The metric rows are left as they are on purpose: the question here is
+        whether the sentence is read off the verdict or typed in, and only the
+        verdict is moved.
+        """
+
+        below_reference = "has not reached the hand-written reference"
+        for verdict, must_say in (
+            ("below_reference", below_reference),
+            ("equivalent_strict",
+             "is level with the hand-written reference on every metric"),
+            ("equivalent_within_tolerance", "which is not equality"),
+            ("not_admissible", "does not read this pair at all"),
+        ):
+            with self.subTest(verdict=verdict):
+                document = evidence()
+                document["gate"]["verdict"] = verdict
+                report = render_report(document)
+                self.assertIn(must_say, report)
+                self.assertEqual(
+                    below_reference in report, verdict == "below_reference",
+                )
+
+    def test_the_refusal_to_round_up_is_in_the_report(self):
+        report = DEFAULT_REPORT.read_text(encoding="utf-8")
+        self.assertIn("equivalence is not claimed", report)
+        self.assertIn("does not round it up to yes", report)
+        self.assertIn("it does not mean moving the tolerance", report)
+        self.assertIn("harness-quality gap, not a broken pipeline", report)
+
+    def test_a_report_is_rendered_before_it_is_checked(self):
+        """`--report X --check` has to check X, and check what it just wrote.
+
+        Checking first would verify the file that was on disk before this
+        invocation and leave the one this run produced unexamined.
+        """
+
+        with tempfile.TemporaryDirectory() as temporary:
+            document = Path(temporary) / "report.md"
+            document.write_text("stale\n", encoding="utf-8")
+            code = coverage_arms_main([
+                "--manifest", str(DEFAULT_MANIFEST),
+                "--record", str(MEASUREMENTS),
+                "--report", str(document),
+                "--check",
+            ])
+            self.assertEqual(code, 0)
+            self.assertEqual(
+                document.read_text(encoding="utf-8"), render_report(evidence()),
+            )
 
 
 class FtOnlyArmTests(Stage4ProjectTests):
