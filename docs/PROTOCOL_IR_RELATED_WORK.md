@@ -5,6 +5,10 @@
 它和 `docs/PROTOCOL_FORMAT_MINING.md` 是互补的:那篇问"怎么把 `protocol.json` 从
 手写变成自动抽取",本篇问"抽出来之后,IR 缺的那一块,别人已经怎么做过了"。
 
+本篇是**文献侧**。把这里的方法变成可以动手改的东西(落到哪个 schema 字段 / 哪个函数 /
+代价 / 验收判据)在 `docs/PROTOCOL_IR_METHOD_TRANSFER.md`;那份文档同时给了缺口的
+第一手证据——**IR 自己把缺的那条契约写在 `limitations` 里点了名**。
+
 ## 0. 本文的读法
 
 ### 0.1 为什么每条都要标核实等级
@@ -284,13 +288,25 @@ arXiv 2305.13483)、ParDiff(OOPSLA 2024,DOI 10.1145/3649854)、ProtocolGPT
 **LLM 反馈回路**:SBFT 2026 Java harness 生成(arXiv 2603.08616)、ProteusFuzz
 (IEEE 11677698)、PromeFuzz(**CCS 2025**, DOI 10.1145/3719027.3765222)、FuzzAgent
 (arXiv 2605.14431)、IncrFuzz(IEEE 11360448)、FuzzPilot(arXiv 2605.26539)、
-ReFuzzer(ASE 2025)、"How Many Tries"(arXiv 2604.10508)、Rapid Fixes(ICML 2026)、
+ReFuzzer(ASE 2025)、Rapid Fixes(ICML 2026)、
 SCAM 2026 seed generation、UniFuzz(USENIX Sec 2021)、BDCC 2026 10(4):129、
 ISSTA 2024 LLM fuzz driver 实证(arXiv 2307.12469)。
+
+**已核实不属于本域(从上面的线索列表移出)**:
+- "How Many Tries"(arXiv 2604.10508)——曾被列在 LLM 反馈回路里。全文检索 "coverage"
+  **零命中**,实际内容是 HumanEval / MBPP 上的 Python 自修复。**与 fuzzing、harness 生成、
+  覆盖率反馈均无关,不得引用。**
 
 **已知不可信/已撤回的线索**(勿再引入):
 - "Pensieve: Code Coverage Based Instruction Set Fuzzing (USENIX Sec 2018)"——两次检索
   均无任何证据,同名系统是三个无关工作。**不存在**。
+- SemFuzz 的 "formalize field mutation as `R=(p,m,c)`"——`R` 是**从 RFC 解析的规范条目**
+  (协议名/报文类型/内容),**不是字段变异**;字段要到 `SR=(p,m,f,C,P)` 才出现。
+  另:其 87%→36% 是**测试用例生成准确率**,且与"语义规则抽取"恰好也是 87% 的另一个数字
+  必须分开引用。详见 `docs/PROTOCOL_IR_METHOD_TRANSFER.md` §4 末。
+- SynapseFlow(arXiv 2607.07007)——**归属待裁定**:与本仓库 `sfg_builder` 标识符级一致
+  (`"(null)"` 节点 / ISF-PRF-HPF / Function Triplet / 三次投票)。澄清之前不得当作独立
+  相关工作引用。见同文 M10 的 ⚠️ 块。
 - "Nautilus 自动更新 length 字段"——无证据。Nautilus 可用的是**深度受限的均匀生成**。
 - FormatFuzzer(TOSEM 2024)——检索结果中**完全没有** checksum 处理,且需手写 `.bt` 模板。
 - PULSAR 是 **SecureComm 2015**,不是 NDSS 2020。

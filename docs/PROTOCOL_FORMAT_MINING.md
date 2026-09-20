@@ -4,6 +4,18 @@
 `benchmarks/mini_parser/protocol.json` 的各个字段与 `harness_generation/`
 的现有模块上,给出从手工编写走向自动抽取的可行路径。
 
+四份文档的分工:
+
+| 文档 | 问的问题 |
+|---|---|
+| **本文** | 怎么把 `protocol.json` 从手写变成自动抽取(六组工作 → 块 A/B/C) |
+| `docs/PROTOCOL_IR_RELATED_WORK.md` | 抽出来之后,IR 缺的那一块别人怎么做过了(文献综述) |
+| `docs/PROTOCOL_IR_METHOD_TRANSFER.md` | 那些方法落到哪个 schema 字段 / 哪个函数 / 哪个闸门(M1–M11) |
+| `docs/FRAMEWORK_PAIN_POINTS.md` | 现有实现的痛在哪、按什么顺序动、与上面三份怎么对应 |
+
+**术语碰撞提醒**:本文的 **A/B/C 块**指契约的三个来源分块(帧格式 / 常量约束 /
+惯用法);`PROTOCOL_IR_METHOD_TRANSFER.md` 的 **A/B/C** 指**核实等级**。两者无关。
+
 ## 0. 问题定位
 
 ### 0.1 现状
@@ -488,6 +500,12 @@ flowchart TD
    泛化(成对出现的 init/destroy;被 entry 守卫子句调用的纯函数)。
 
 2. **`structured.c:16` 的取模偏差**(见 §1.6)。
+   > 补记(2026-09-20):这一条记的是缺陷本身,**缺口在同一个循环的下一行**。
+   > `structured.c:17` 的 `% (MP_MAX_PAYLOAD + 1u)` 抽的是"一段"而非"全部剩余",
+   > 所以 `pos` 只推进 `len`,`:15` 的循环得以跑很多轮。契约路径丢掉的正是这条性质
+   > (它把长度写成 `payload_len = remaining`,于是循环恰好跑一次)——2026-09-18 的
+   > 覆盖率测量里 4 个分支的差距来自这里。诊断见 `docs/FRAMEWORK_PAIN_POINTS.md`
+   > §6.2(1),方法落点见 `docs/PROTOCOL_IR_METHOD_TRANSFER.md` §1.1。
 
 3. **纯 trace 方法会低估字段宽度 —— 这是必须走混合路线的硬证据**。
    `payload_length` 宽 2 字节(`le16`,小端),但参考 harness 里
@@ -649,6 +667,13 @@ prompt 输入:LLM 把 `payload_offset` 写错、漏掉 checksum 修复或改了
    **已测量,见 §5.3.2**。它是动态问题,不属于静态闸门,因此作为**基准级验收
    指标**关闭,而不是接进 Stage 4。
 
+> 补记(2026-09-20):上面三项都在问"**产物对不对**",缺一项问
+> "**这次失败是产物错,还是工具链错**"。这一项不是锦上添花:当前 gate 把
+> "没测到"与"测到但更低"归约成同一个词(不达标),而 harness 以 C++ 编译、
+> 却由 C 驱动 `clang` 链接,一个用了 `std::vector` 的合法 harness 会因此链接失败、
+> 得到空统计,进而被报成"覆盖率低于参考"。诊断与修法见
+> `docs/FRAMEWORK_PAIN_POINTS.md` §3.2 / §3.4 / P0-d。
+
 #### 5.3.1 plan ↔ contract 一致性闸门(已实现)
 
 **Typed Contract Projection + 结构化 binding + 确定性比较**,落在
@@ -687,6 +712,11 @@ magic/version 这类裸 C 常量才是字面量并参与比较)、IR 的 `requir
 (CLI 子命令 `coverage-arms`);证据:`tests/fixtures/coverage_arms/measurements.json`。**
 报告由证据渲染而成,没有手写数字;`coverage-arms --check` 能在没有编译器、没有
 LLM 的情况下重算每一个判定。
+
+> 补记(2026-09-20):可复现性主张**只到"判定"层,不到"输入"层**。实测
+> `verify_manifest`(`coverage_arms.py:267`)只遍历 `manifest.arms`,
+> `target_source.sha256` 与 `corpus.digests` **从不被读**——改了 `target.c` 或语料后
+> 重跑,`--check` 不报任何问题。见 `docs/FRAMEWORK_PAIN_POINTS.md` §4。
 
 在 mini_parser 这一个基准上,`-runs=20000`、3 个 seed、5 个 arm,候选
 `contracted`(正式 publish 的 1845 B harness)对 `reference`(`structured.c`):
