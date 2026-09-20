@@ -70,13 +70,21 @@ class StatefulOperation:
     opcode: str
     reason: str = ""
     evidence: tuple[str, ...] = ()
+    writes: tuple[str, ...] = ()
+    reads: tuple[str, ...] = ()
+    guard_symbols: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        document = {
             "opcode": self.opcode,
             "reason": self.reason,
             "evidence": list(self.evidence),
         }
+        for name in ("writes", "reads", "guard_symbols"):
+            values = getattr(self, name)
+            if values:
+                document[name] = list(values)
+        return document
 
 
 @dataclass(frozen=True)
@@ -449,12 +457,53 @@ def _stateful_operations_from(
         evidence = _voted_strings([item.get("evidence", []) for item in items], 1)
         if not evidence:
             continue
+        writes, reads, guards = _state_accesses(evidence)
         voted.append(StatefulOperation(
             opcode=opcode,
             reason=_mode_string([item.get("reason", "") for item in items]),
             evidence=evidence,
+            writes=writes,
+            reads=reads,
+            guard_symbols=guards,
         ))
     return tuple(voted)
+
+
+_STATE_MEMBER = re.compile(r"\b([A-Za-z_]\w*)->([A-Za-z_]\w*)\b")
+
+
+def _state_accesses(evidence: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """Conservatively classify direct member accesses in voted evidence.
+
+    This is a syntax approximation.  Calls that mutate through pointers and
+    aliases are deliberately left unclassified; guessing a write could invent
+    an order constraint and reject a valid plan.
+    """
+
+    writes: set[str] = set()
+    reads: set[str] = set()
+    guards: set[str] = set()
+    for snippet in evidence:
+        # A sentence such as "RELEASE clears ctx->saved" is an interpretation,
+        # not an observed assignment.  Only code-shaped snippets contribute
+        # typed access facts; otherwise prose can invent an order constraint.
+        if not any(token in snippet for token in (";", "(", "=")):
+            continue
+        for match in _STATE_MEMBER.finditer(snippet):
+            name = match.group(0)
+            before = snippet[:match.start()]
+            after = snippet[match.end():].lstrip()
+            if re.search(r"\bif\s*\([^)]*$", before):
+                guards.add(name)
+            if after.startswith("=") and not after.startswith("=="):
+                writes.add(name)
+            elif re.search(r"\bfree\s*\([^)]*$", before):
+                # Releasing a nullable pointer is safe before any store.  It
+                # cannot establish a prerequisite for this opcode.
+                continue
+            else:
+                reads.add(name)
+    return tuple(sorted(writes)), tuple(sorted(reads)), tuple(sorted(guards))
 
 
 def _entry_function(facts: ProtocolFacts | Mapping[str, Any]) -> str:

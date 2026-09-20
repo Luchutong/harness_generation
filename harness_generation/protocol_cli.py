@@ -122,7 +122,8 @@ def main(argv: list[str] | None = None, *, llm: LLMClient | None = None) -> int:
         # One merge, used for both the persisted IR and the summary, so the two
         # cannot describe different models.
         ir = ProtocolIR.from_facts_and_conventions(
-            facts, conventions.conventions if conventions is not None else None
+            facts, conventions.conventions if conventions is not None else None,
+            strict=True,
         )
         written = ArtifactStore(args.output).write_protocol(facts, conventions, ir)
     except (OSError, ValueError, LLMError, SourceAnalysisError) as exc:

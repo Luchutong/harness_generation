@@ -180,7 +180,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         )
         self.assertEqual(
             result.generation_metadata["prompt_version"],
-            "stage4-harness-transform-v6",
+            "stage4-harness-transform-v7",
         )
         self.assertEqual(
             attempt_files,
@@ -195,10 +195,10 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         self.assertEqual(attempt_metadata["provider"], "mock")
         self.assertEqual(attempt_metadata["model"], "mock-model")
         self.assertEqual(
-            attempt_metadata["prompt_version"], "stage4-harness-transform-v6"
+            attempt_metadata["prompt_version"], "stage4-harness-transform-v7"
         )
         self.assertEqual(
-            attempt_metadata["plan_prompt_version"], "stage4-harness-plan-v7"
+            attempt_metadata["plan_prompt_version"], "stage4-harness-plan-v8"
         )
         self.assertIn("timestamp", attempt_metadata)
         self.assertIsNone(attempt_metadata["rollback_source"])

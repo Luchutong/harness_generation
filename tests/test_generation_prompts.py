@@ -86,9 +86,9 @@ class GenerationPromptTests(unittest.TestCase):
                 "stage1-function-doc-v1",
                 "stage2-structure-snippet-v2",
                 "stage3-rough-assembly-v2",
-                "protocol-convention-refinement-v1",
-                "stage4-harness-plan-v7",
-                "stage4-harness-transform-v6",
+                "protocol-convention-refinement-v2",
+                "stage4-harness-plan-v8",
+                "stage4-harness-transform-v7",
             ],
         )
         self.assertIn("int parse(Parser *p)", str(prompts[0]))
@@ -140,14 +140,14 @@ class GenerationPromptTests(unittest.TestCase):
 
     def test_registry_lookup_is_explicit(self):
         template = get_prompt_template("stage4_harness_transform")
-        self.assertEqual(template.version, "stage4-harness-transform-v6")
+        self.assertEqual(template.version, "stage4-harness-transform-v7")
         self.assertEqual(
             get_prompt_template("stage4_harness_plan").version,
-            "stage4-harness-plan-v7",
+            "stage4-harness-plan-v8",
         )
         self.assertEqual(
             get_prompt_template("protocol_convention_refinement").version,
-            "protocol-convention-refinement-v1",
+            "protocol-convention-refinement-v2",
         )
         with self.assertRaisesRegex(KeyError, "unknown prompt template"):
             get_prompt_template("missing")

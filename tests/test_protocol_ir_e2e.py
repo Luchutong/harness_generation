@@ -314,6 +314,10 @@ class MinedProtocolEndToEndTests(Stage4ProjectTests):
             self.harness_plan(
                 bounded_steps=self.ir.sequence.max_steps["value"],
                 bindings=self.bindings_in(root),
+                payload_length_expression=(
+                    "data[pos++] % ("
+                    + self.ir.frame.max_payload_symbol + " + 1u)"
+                ),
             ),
             harness,
         ])

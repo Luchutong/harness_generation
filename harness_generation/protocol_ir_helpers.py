@@ -20,8 +20,13 @@ Provenance tiers
 Only sources that carry a location or a snippet are consulted:
 
 ``context.init`` / ``context.destroy``
-    The context lifecycle expressions, e.g. ``mp_init(&ctx)``.  These are the
-    convention block's own claims, and each is backed by ``context.evidence``.
+    Deliberately **not** a source.  These are the convention block's own claims,
+    and the evidence that backs them is ``context.evidence``, listed below.  An
+    expression read as its own justification authorizes every call it happens to
+    mention: ``init: "mp_init(&ctx); invented(&ctx)"`` would license
+    ``invented``.  :func:`read_lifecycle_expression` reads them for the *name*
+    they state and nothing else, and :mod:`.protocol_reconciliation` decides
+    whether that name may be called.
 ``frame.fields[].value``
     A field's documented access form, e.g. ``le16() load``.
 ``frame.fields[].evidence``, ``frame.evidence``, ``context.evidence``,
@@ -62,6 +67,131 @@ _CALL_PATTERN = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _NOT_CALLS = frozenset({
     "defined", "for", "if", "return", "sizeof", "switch", "while",
 })
+
+#: A whole expression that is one call: ``mp_init(&ctx)``, ``malloc(n)``.
+_CALL_OPEN = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
+#: A whole expression that is one bare name: ``mp_init``.  The miner's own
+#: convention sample writes both roles this way, so this is the shape the
+#: recorded IRs actually carry.
+_BARE_NAME = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*$")
+
+#: What may follow the call's closing parenthesis: nothing, or one statement
+#: terminator.  Anything else is a second statement, and a slot that states two
+#: things states neither.
+_AFTER_CALL = re.compile(r"\s*;?\s*$")
+
+#: A declaration rather than a call: ``mp_context ctx = {0}``, ``struct
+#: mp_context ctx;``.  What separates it from prose is the *shape* -- a type,
+#: the name it declares, then an initializer, a terminator or an array -- and a
+#: sentence has no such shape however many words it uses.
+_DECLARATION = re.compile(
+    r"^\s*(?:(?:auto|const|enum|extern|long|register|short|signed|static|struct"
+    r"|union|unsigned|volatile)\s+)*"
+    r"[A-Za-z_][A-Za-z0-9_]*\s*\**\s*"   # the type
+    r"[A-Za-z_][A-Za-z0-9_]*\s*"         # the name it declares
+    r"(?:=|;|\[)"
+)
+
+#: The shapes a ``context`` slot can take.
+LIFECYCLE_CALL = "call"
+LIFECYCLE_NAME = "name"
+LIFECYCLE_INITIALIZATION = "initialization"
+LIFECYCLE_INVALID = "invalid"
+
+
+@dataclass(frozen=True)
+class LifecycleExpression:
+    """One ``context.init`` / ``context.destroy`` value, read as C.
+
+    ``kind`` is one of the four :data:`LIFECYCLE_CALL` ... :data:`LIFECYCLE_INVALID`
+    constants.  Only the first two name a function, and only those carry one:
+    a declaration has nothing to call, and prose has nothing at all.
+    """
+
+    text: str
+    kind: str
+    function: str | None = None
+
+
+def read_lifecycle_expression(expression: Any) -> LifecycleExpression:
+    """Classify one ``context`` slot, and name the function it names.
+
+    A lifecycle slot is a piece of the harness's own control flow -- the plan
+    prompt reads it as one -- so it is read as C: one call, one bare name, or one
+    declaration.  A sentence is none of those, and reading one as a name (or
+    writing it into a binding verbatim) is how a paragraph becomes a call the
+    contract appears to require.
+
+    The call has to be the *whole* expression.  ``"mp_init(&ctx); invented(&ctx)"``
+    is two statements, and a slot that says two things authorizes neither: taking
+    the leading call would read the rest of the string as evidence for it.
+    """
+
+    if not isinstance(expression, str) or not expression.strip():
+        return LifecycleExpression("", LIFECYCLE_INVALID)
+
+    call = _CALL_OPEN.match(expression)
+    if call is not None:
+        end = _closing_parenthesis(expression, call.end() - 1)
+        if end is None or not _AFTER_CALL.match(expression[end:]):
+            return LifecycleExpression(expression, LIFECYCLE_INVALID)
+        name = call.group(1)
+        if name in _NOT_CALLS:
+            return LifecycleExpression(expression, LIFECYCLE_INVALID)
+        return LifecycleExpression(expression, LIFECYCLE_CALL, name)
+
+    bare = _BARE_NAME.match(expression)
+    if bare is not None:
+        name = bare.group(1)
+        if name in _NOT_CALLS:
+            return LifecycleExpression(expression, LIFECYCLE_INVALID)
+        return LifecycleExpression(expression, LIFECYCLE_NAME, name)
+
+    if _DECLARATION.match(expression):
+        return LifecycleExpression(expression, LIFECYCLE_INITIALIZATION)
+    return LifecycleExpression(expression, LIFECYCLE_INVALID)
+
+
+def _closing_parenthesis(text: str, opened: int) -> int | None:
+    """The index just past the ``)`` matching the ``(`` at ``opened``.
+
+    Parentheses nest -- ``malloc(sizeof(mp_context))`` -- and one inside a
+    literal is text rather than syntax, so both are counted for.
+    """
+
+    depth = 0
+    index = opened
+    while index < len(text):
+        character = text[index]
+        if character in "\"'":
+            index = _after_literal(text, index)
+            if index is None:
+                return None
+            continue
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return None
+
+
+def _after_literal(text: str, opened: int) -> int | None:
+    """The index just past the literal opening at ``opened``, or ``None``."""
+
+    quote = text[opened]
+    index = opened + 1
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+            continue
+        if text[index] == quote:
+            return index + 1
+        index += 1
+    return None
 
 
 @dataclass(frozen=True)
@@ -155,10 +285,11 @@ def _strong_sources(ir: ProtocolIR) -> Iterable[tuple[str, str]]:
 
     context = ir.context
     if context is not None:
-        if context.init:
-            yield "context.init", context.init
-        if context.destroy:
-            yield "context.destroy", context.destroy
+        # ``context.init`` and ``context.destroy`` are not read here.  They are
+        # the convention block's claims, and a claim that justifies itself lets
+        # one sentence authorize every call it mentions; the lifecycle's
+        # justification is ``context.evidence`` below, and the slot itself is
+        # settled by :func:`.protocol_reconciliation.reconcile_protocol_ir`.
         yield from _plain_sources("context.evidence", context.evidence)
 
     sequence = ir.sequence

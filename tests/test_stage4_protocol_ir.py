@@ -49,7 +49,9 @@ from harness_generation.protocol_miner import (
     mine_protocol_facts,
 )
 from harness_generation.prompts import stage4_harness_plan
+from harness_generation.project_functions import ProjectFunctionIndex
 from harness_generation.protocol_plan_validation import protocol_contract_projection
+from harness_generation.protocol_reconciliation import reconcile_protocol_ir
 from harness_generation.sfg_adapter import load_sfg_artifacts
 from harness_generation.stage4 import (
     Stage4Error,
@@ -76,15 +78,15 @@ MINED_FIELD_NAMES = (
     "payload_length", "checksum", "payload",
 )
 
-#: The project functions a mined mini_parser IR may name as helpers.  Deriving
-#: bindings for a test IR means intersecting the IR's evidence against a project
-#: function set, and these four are the ones ``target.c`` defines.
-PROJECT_FUNCTIONS = frozenset({"le16", "mp_checksum", "mp_init", "mp_destroy"})
-
 #: A faithful ``protocol_contract_bindings`` for the mined mini_parser IR,
 #: written out in full rather than computed from the projection.  If the
 #: projection ever drifts, every IR-path test here fails at the gate with the
 #: disagreement spelled out -- which is the point of pinning a literal.
+#:
+#: ``helpers`` is the half of the binding that cannot be read off the IR alone:
+#: the projection intersects the IR's evidenced names against the *linkable*
+#: definitions in ``functions.json``, so it is the fixture that has to state
+#: what ``target.c`` can actually be asked to call.
 CONTRACT_BINDINGS: dict[str, Any] = {
     "frame": {
         "header_size": 8,
@@ -101,7 +103,9 @@ CONTRACT_BINDINGS: dict[str, Any] = {
             {"role": "checksum", "name": "checksum", "offset": 6,
              "width": 2, "endianness": "little_endian"},
             {"role": "payload", "name": "payload", "offset": 8,
-             "width": "payload_length"},
+             "width": "payload_length", "relation": {
+                 "kind": "size_of", "target": "payload", "direction": "parse",
+             }},
         ],
     },
     "input_model": {
@@ -111,6 +115,7 @@ CONTRACT_BINDINGS: dict[str, Any] = {
         "payload_fuzzer_controlled": True,
         "repair_length": True,
         "repair_checksum": True,
+        "requires_length_sampling": True,
     },
     "context": {
         "type": "mp_context",
@@ -119,11 +124,14 @@ CONTRACT_BINDINGS: dict[str, Any] = {
         "lifetime": "per_iteration",
     },
     "stateful_operations": ["MP_RELEASE", "MP_STORE", "MP_USE"],
-    # ``le16`` is a static in target.c; whether it is in functions.json depends
-    # on the analyzer, so the fixture names only the four the projection is
-    # guaranteed to find.  The gate is a subset check, so a plan naming fewer
-    # helpers than the contract evidences is not a violation.
-    "helpers": ["le16", "mp_checksum", "mp_destroy", "mp_init"],
+    "stateful_dependencies": [["MP_STORE", "MP_USE"]],
+    # Three names, not the four the IR evidences.  ``le16`` is ``static`` in
+    # target.c, so the IR is right to record it as the algorithm behind
+    # ``payload_length`` and wrong to imply a harness could call it: the name
+    # does not link.  It stays in the reconciliation as a reference-only
+    # helper.  The gate is a subset check, so a plan naming fewer helpers than
+    # the contract evidences is not a violation.
+    "helpers": ["mp_checksum", "mp_destroy", "mp_init"],
 }
 
 #: One valid C-block sample for ``mp_parse``, voted three times.  The vote makes
@@ -154,17 +162,20 @@ CONVENTION_SAMPLE = json.dumps({
         {
             "opcode": "MP_STORE",
             "reason": "stores the payload pointer in the context",
-            "evidence": ["case MP_STORE writes ctx->saved"],
+            "evidence": ["ctx->saved = p;", "ctx->saved_len = len;",
+                         "ctx->owns_saved = 1;"],
         },
         {
             "opcode": "MP_USE",
             "reason": "reads state stored by an earlier frame",
-            "evidence": ["case MP_USE reads ctx->saved"],
+            "evidence": [
+                "if (ctx->saved && ctx->saved_len) ctx->observation = ctx->saved[0];"
+            ],
         },
         {
             "opcode": "MP_RELEASE",
             "reason": "clears the stored state",
-            "evidence": ["case MP_RELEASE clears ctx->saved"],
+            "evidence": ["ctx->owns_saved = 0;"],
         },
     ],
     "requirements": [
@@ -224,6 +235,21 @@ class Stage4ProjectTests(unittest.TestCase):
             for triplet in extract_function_triplets(load_sfg_artifacts(cls.phase1))
             if triplet.isf.function == "mp_parse"
         )
+        cls.functions = ProjectFunctionIndex.from_document(
+            json.loads((cls.phase1 / "functions.json").read_text(encoding="utf-8"))
+        )
+
+    @classmethod
+    def callable_helpers_for(cls, ir) -> frozenset[str]:
+        """The helper names ``ir`` evidences that this project can be asked to call.
+
+        Derived, never hand-listed: reading a name off the IR says nothing about
+        whether the project defines it, whether that definition links, or
+        whether two definitions compete.  The reconciliation resolves all three
+        against ``functions.json`` and keeps only the names that survive.
+        """
+
+        return reconcile_protocol_ir(ir, cls.triplet, cls.functions).callable_helpers
 
     def artifact_root(self, name: str) -> Path:
         """A fresh artifact root holding the FT's functions.json, and nothing else."""
@@ -244,8 +270,8 @@ class Stage4ProjectTests(unittest.TestCase):
     mp_destroy(ctx);
 }"""
 
-    @staticmethod
-    def bindings_for(ir) -> dict[str, Any]:
+    @classmethod
+    def bindings_for(cls, ir) -> dict[str, Any]:
         """Bindings faithful to ``ir``, read off its projection.
 
         ``CONTRACT_BINDINGS`` describes the canonical mined mini_parser IR.  A
@@ -254,7 +280,7 @@ class Stage4ProjectTests(unittest.TestCase):
         """
 
         projection = protocol_contract_projection(
-            ir, project_functions=PROJECT_FUNCTIONS
+            ir, callable_helpers=cls.callable_helpers_for(ir)
         )
         return json.loads(json.dumps(projection.renderable()))
 
@@ -278,10 +304,20 @@ class Stage4ProjectTests(unittest.TestCase):
     def plan_for(self, root: Path) -> str:
         """A HarnessPlan for ``root``: bindings for the IR that is there, or none."""
 
-        return self.harness_plan(bindings=self.bindings_in(root))
+        symbol = "MP_MAX_PAYLOAD"
+        path = root / "protocol_ir.json"
+        if path.is_file():
+            ir = ProtocolIR.from_json(json.loads(path.read_text(encoding="utf-8")))
+            symbol = ir.frame.max_payload_symbol or symbol
+        return self.harness_plan(
+            bindings=self.bindings_in(root),
+            payload_length_expression=f"data[pos++] % ({symbol} + 1u)",
+        )
 
     def harness_plan(self, *, bounded_steps: int = 32,
-                     bindings: Mapping[str, Any] | None = CONTRACT_BINDINGS) -> str:
+                     bindings: Mapping[str, Any] | None = CONTRACT_BINDINGS,
+                     payload_length_expression: str =
+                     "data[pos++] % (MP_MAX_PAYLOAD + 1u)") -> str:
         return json.dumps({
             "schema_version": 1,
             "triplet_id": self.triplet.id,
@@ -291,6 +327,8 @@ class Stage4ProjectTests(unittest.TestCase):
                 "data_identifier": "data",
                 "size_identifier": "size",
                 "bounded_steps": bounded_steps,
+                "payload_length_strategy": "fuzz_byte_bounded",
+                "payload_length_expression": payload_length_expression,
                 "notes": [],
             },
             "state_objects": [
@@ -342,10 +380,25 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     return 0;
 }"""
 
+    def harness_for(self, root: Path) -> str:
+        """Use a sampled multi-frame harness when the mined IR requires one."""
+
+        path = root / "protocol_ir.json"
+        if path.is_file():
+            ir = ProtocolIR.from_json(json.loads(path.read_text(encoding="utf-8")))
+            if ir.sequence is not None and ir.sequence.multi_frame and any(
+                field.relation is not None for field in ir.frame.fields
+            ):
+                # Imported at call time because the end-to-end test imports
+                # this shared project fixture.
+                from tests.test_protocol_ir_e2e import structured_harness
+                return structured_harness(ir)
+        return self.harness_code()
+
     def generate(self, root: Path):
         """Run Stage 4 against ``root`` and hand back the client and the result."""
 
-        llm = MockLLM([self.plan_for(root), self.harness_code()])
+        llm = MockLLM([self.plan_for(root), self.harness_for(root)])
         result = Stage4Generator(llm).run(
             self.triplet,
             rough_code=self.rough_code(),
@@ -724,9 +777,9 @@ class SixConcernsTests(Stage4ProjectTests):
     def test_the_plan_prompt_version_records_the_rewrite(self):
         root = self.artifact_root("version")
         llm, _ = self.generate(root)
-        self.assertEqual(llm.calls[0]["prompt_version"], "stage4-harness-plan-v7")
+        self.assertEqual(llm.calls[0]["prompt_version"], "stage4-harness-plan-v8")
         self.assertEqual(
-            llm.calls[1]["prompt_version"], "stage4-harness-transform-v6"
+            llm.calls[1]["prompt_version"], "stage4-harness-transform-v7"
         )
 
 

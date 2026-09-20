@@ -41,7 +41,14 @@ from tests.test_stage4_protocol_ir import Stage4ProjectTests, mined_ir
 
 
 #: The helpers the mined mini_parser IR's own provenance names.
-DECLARED_HELPERS = frozenset({"le16", "mp_checksum", "mp_init", "mp_destroy"})
+#:
+#: ``mp_init`` and ``mp_destroy`` are deliberately not here.  They are named by
+#: ``context.init`` / ``context.destroy``, and a convention expression is not
+#: evidence for itself -- reading it as its own justification would let a slot
+#: stating two calls authorize both.  Those two names reach the audit's
+#: allowance through the lifecycle instead, which is one authority for them
+#: rather than two.
+DECLARED_HELPERS = frozenset({"le16", "mp_checksum"})
 
 #: The copy that assembles the frame, and the ISF call it feeds.  These are the
 #: exact texts the connection record has to quote back.
@@ -170,7 +177,16 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         return message
 
     def with_protocol_ir(self, root: Path, ir=None):
-        ArtifactStore(root).write_protocol_ir(mined_ir() if ir is None else ir)
+        # These tests isolate the helper and input-connection rules.  Use the
+        # legacy relation-free IR shape: their deliberately direct or
+        # remaining-length harnesses are separate from P1's sampled-length
+        # contract, which has its own recorded regression test.
+        ir = mined_ir() if ir is None else ir
+        ir = replace(ir, frame=replace(
+            ir.frame,
+            fields=tuple(replace(field, relation=None) for field in ir.frame.fields),
+        ))
+        ArtifactStore(root).write_protocol_ir(ir)
         return root
 
     # -- 1. a declared helper is allowed -----------------------------------
@@ -295,40 +311,65 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         self.assertIn("invented_checksum", message)
 
     def ghost_ir(self):
-        """The mined IR declaring a lifecycle helper the project never defines.
+        """The mined IR whose lifecycle slot names a function nobody defines.
 
-        ``context.init`` is a *strong* provenance source -- a convention
-        expression, not prose -- so this name does reach
-        ``ProtocolHelperSet.allowed``.  It must be refused anyway: the IR's
-        evidence quotes real source, so a name with no definition behind it is a
-        broken claim rather than a licence.  Allowing it would additionally stop
-        the unknown-API check firing for that name, which is weaker than the
-        audit this relaxation has to leave otherwise intact.
+        The slot is the *only* place the name appears: ``context.evidence``
+        still names ``mp_init`` and ``mp_destroy`` and nothing else.  So the
+        name is not a declared helper -- an expression is not evidence for
+        itself -- and it must be refused all the same, because a lifecycle is
+        mandatory: the plan prompt tells the model to call what the slot names,
+        and there is nothing to call.
         """
 
         return replace(
             mined_ir(), context=replace(mined_ir().context, init="invented_init(&ctx)")
         )
 
-    def ghost_harness(self) -> str:
-        return self.structured_harness().replace(
-            "mp_init(&ctx);", "invented_init(&ctx);"
-        )
-
     def test_a_declared_helper_the_project_does_not_define_is_still_refused(self):
+        """``invented_init`` dies at reconciliation, before the model is asked.
+
+        The refusal used to come from the C audit, several checks later and only
+        once a harness existed that actually called the name.  A lifecycle
+        helper is not optional the way a helper is -- the plan prompt tells the
+        model to name it -- so the failure is settled from the IR and the
+        project alone, and no attempt is spent learning it.
+        """
+
         root = self.artifact_root("audit_ghost")
         ir = self.ghost_ir()
         helpers = collect_protocol_helpers(ir)
-        # The name really is declared -- so this test exercises the intersection
-        # against the project, not the weak-prose path the previous test covers.
-        self.assertIn("invented_init", helpers.allowed)
+        # Nothing but the slot names it: the expression is not its own evidence,
+        # so it reaches no allow-set at all -- not even the weak, prose-only one
+        # the previous test covers.  The refusal is the lifecycle's.
+        self.assertNotIn("invented_init", helpers.allowed)
+        self.assertNotIn("invented_init", helpers.weak)
         self.with_protocol_ir(root, ir)
 
-        message = self.refused(
-            root, self.ghost_harness(), r"Stage 4 harness calls unknown APIs: "
-        )
-        self.assertIn("invented_init", message)
+        llm = MockLLM([self.plan_for(root), self.structured_harness()])
+        with self.assertRaisesRegex(
+            Stage4Error,
+            r"protocol_ir\.json does not reconcile with the FT: "
+            r"context\.init requires a call to invented_init, but invented_init "
+            r"is not a function of this project",
+        ):
+            Stage4Generator(llm).run(
+                self.triplet,
+                rough_code=self.rough_code(),
+                functions_json=root / "functions.json",
+                artifacts=root,
+            )
+        # No prompt was rendered, so the model was never asked to plan around a
+        # helper that cannot be called -- which is the whole point of failing
+        # here rather than at the audit.
+        self.assertEqual(llm.calls, [])
         self.assertFalse(self.published_harness(root).exists())
+        outcome = json.loads((
+            root / "generation" / self.triplet.id / "stage4" / "attempt_001"
+            / "outcome.json"
+        ).read_text(encoding="utf-8"))
+        self.assertEqual(outcome["phase"], "protocol_ir")
+        self.assertEqual(outcome["failure_type"], "protocol_ir_error")
+        self.assertIn("invented_init", outcome["error"])
 
     # -- 4. the repaired frame is accepted, and recorded -------------------
 

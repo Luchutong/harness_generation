@@ -52,16 +52,15 @@ import unittest
 from harness_generation.artifacts import ArtifactStore
 from harness_generation.llm import MockLLM
 from harness_generation.protocol_ir import ProtocolIR
-from harness_generation.protocol_ir_helpers import collect_protocol_helpers
 from harness_generation.protocol_plan_validation import (
     protocol_contract_projection,
     validate_plan_contract,
 )
+from harness_generation.protocol_reconciliation import reconcile_protocol_ir
 from harness_generation.stage4 import (
     Stage4Error,
     Stage4Generator,
     _analyze_c,
-    _declared_helpers,
     _load_function_metadata,
     _validate_harness,
     parse_harness_plan,
@@ -122,13 +121,14 @@ class RecordedRunReplayTests(Stage4ProjectTests):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        (cls.function_metadata, cls.project_functions, _context,
-         cls.static_functions) = _load_function_metadata(
+        cls.function_metadata, cls.functions, _context = _load_function_metadata(
             cls.phase1 / "functions.json", cls.triplet
         )
         cls.isf_metadata = cls.function_metadata[cls.triplet.isf.function_id]
-        cls.helpers = collect_protocol_helpers(recorded_ir())
-        cls.declared_helpers = _declared_helpers(cls.helpers, cls.project_functions)
+        cls.reconciliation = reconcile_protocol_ir(
+            recorded_ir(), cls.triplet, cls.functions
+        )
+        cls.declared_helpers = cls.reconciliation.callable_helpers
 
     def audit(self, attempt: str, *, structured_frame: bool):
         """Run the C audit over a recorded harness, returning its connection."""
@@ -138,9 +138,8 @@ class RecordedRunReplayTests(Stage4ProjectTests):
             analysis,
             self.triplet,
             self.isf_metadata,
-            self.project_functions,
-            protocol_helpers=self.helpers,
-            static_project_functions=self.static_functions,
+            self.functions,
+            reconciliation=self.reconciliation,
             structured_frame=structured_frame,
         )
 
@@ -193,19 +192,15 @@ class RecordedRunReplayTests(Stage4ProjectTests):
 
     # -- the plan stage: already fixed, and measured on the real plans --------
 
-    def test_the_recorded_plan_responses_now_clear_both_plan_gates(self):
+    def test_the_recorded_plan_responses_now_clear_the_membership_gate(self):
         """The three ``mp_init`` attempts, on the plan text the model wrote.
 
         ``mp_init`` is a real project function the contract declares and the FT
-        cannot contain, so the membership rule had to admit it (Fix A) and the
-        contract gate had to accept the bindings that go with it.  Both gates are
-        run here over the committed response, which is the only end-to-end
-        evidence that the relaxation reaches a real attempt.
+        cannot contain, so the membership rule had to admit it (Fix A).  The
+        committed responses are the only end-to-end evidence that the
+        relaxation reaches a real attempt.
         """
 
-        projection = protocol_contract_projection(
-            recorded_ir(), project_functions=self.project_functions
-        )
         for attempt in PLAN_ATTEMPTS:
             with self.subTest(attempt=attempt):
                 plan = parse_harness_plan(
@@ -216,6 +211,71 @@ class RecordedRunReplayTests(Stage4ProjectTests):
                 )
                 self.assertIn(
                     "mp_init", [step["function"] for step in plan.call_sequence]
+                )
+
+    def test_those_plans_are_refused_by_the_contract_gate_on_one_name(self):
+        """The other half of the same response, and why refusing it is not a loss.
+
+        The model bound ``helpers: [le16, mp_checksum, mp_destroy, mp_init,
+        mp_parse]`` because the IR's evidence names ``le16`` -- it really is the
+        algorithm behind ``payload_length``.  It is also ``static`` in
+        ``target.c``, so the harness built from this plan could not have linked;
+        the audit says exactly that at attempt_013, one layer later and on the
+        same name.  With the plan gate reading the reconciled set, the response
+        is refused here instead, before any C exists.
+        """
+
+        projection = protocol_contract_projection(
+            recorded_ir(), callable_helpers=self.declared_helpers
+        )
+        for attempt in PLAN_ATTEMPTS:
+            with self.subTest(attempt=attempt):
+                plan = parse_harness_plan(
+                    (FIXTURES / f"{attempt}.plan.txt").read_text(encoding="utf-8"),
+                    triplet=self.triplet,
+                    isf_metadata=self.isf_metadata,
+                    declared_helpers=self.declared_helpers,
+                )
+                conformance = validate_plan_contract(
+                    plan.protocol_contract_bindings,
+                    projection=projection,
+                    input_strategy=plan.input_strategy,
+                )
+                self.assertFalse(conformance.ok)
+                # One name, and it is the one the audit also refused: the two
+                # layers do not merely agree on the allow-set, they disagree
+                # with the same plan for the same reason.
+                self.assertEqual(conformance.violations, (
+                    "the plan binds helpers the contract does not make callable "
+                    "in this project: le16",
+                ))
+
+    def test_dropping_that_one_name_is_all_it_takes_to_clear_the_gate(self):
+        """Fix B still holds for a plan that binds only callable helpers.
+
+        The recorded response, minimally corrected rather than rewritten: the
+        same ``mp_init`` call sequence, the same context, the same frame
+        bindings, with ``le16`` removed.  That it clears is what says the
+        refusal above is about linkage and not about the shape of the plan.
+        """
+
+        projection = protocol_contract_projection(
+            recorded_ir(), callable_helpers=self.declared_helpers
+        )
+        for attempt in PLAN_ATTEMPTS:
+            with self.subTest(attempt=attempt):
+                document = json.loads(
+                    (FIXTURES / f"{attempt}.plan.txt").read_text(encoding="utf-8")
+                )
+                bindings = document["protocol_contract_bindings"]
+                bindings["helpers"] = [
+                    name for name in bindings["helpers"] if name != "le16"
+                ]
+                plan = parse_harness_plan(
+                    json.dumps(document),
+                    triplet=self.triplet,
+                    isf_metadata=self.isf_metadata,
+                    declared_helpers=self.declared_helpers,
                 )
                 conformance = validate_plan_contract(
                     plan.protocol_contract_bindings,

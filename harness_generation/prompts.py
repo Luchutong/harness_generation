@@ -160,7 +160,7 @@ Previous validation feedback (empty on the first attempt):
 
 STAGE4_HARNESS_TRANSFORM = PromptTemplate(
     name="stage4_harness_transform",
-    version="stage4-harness-transform-v6",
+    version="stage4-harness-transform-v7",
     template="""Implement the supplied HarnessPlan as a C++ libFuzzer harness.
 The final harness is a C++ translation unit, but it fuzzes the C target through
 C-compatible declarations. It must include <stddef.h> and <stdint.h> explicitly
@@ -193,6 +193,10 @@ If a protocol contract is supplied, implement its input model directly. For
 framed command protocols, build a bounded multi-frame command loop, keep one
 stateful context alive for the whole libFuzzer iteration, and populate declared
 magic/version/opcode/length/checksum/payload fields exactly.
+When input_model.requires_length_sampling is true, derive each frame's payload
+length from a bounded fuzz-byte expression named by the plan. Use that sampled
+length for the payload copy and the repaired length field; taking all remaining
+input bytes as the payload length can collapse a multi-frame loop to one frame.
 
 HarnessPlan JSON:
 {harness_plan}
@@ -218,7 +222,7 @@ Previous validation feedback (empty on the first attempt):
 
 STAGE4_HARNESS_PLAN = PromptTemplate(
     name="stage4_harness_plan",
-    version="stage4-harness-plan-v7",
+    version="stage4-harness-plan-v8",
     template="""Create a structured HarnessPlan before any final C harness is
 written. Use the rough program, Function Triplet, and exact project declarations
 to decide state objects, fuzzer-input decoding, call order, data/size binding,
@@ -235,7 +239,9 @@ identifiers, not FunctionTriplet ids.
 Return only one strict JSON object with exactly this shape:
 {{"schema_version":1,"triplet_id":"{triplet_id}","entrypoint":"LLVMFuzzerTestOneInput",
 "input_strategy":{{"description":"...","data_identifier":"data",
-"size_identifier":"size","bounded_steps":0,"notes":["..."]}},
+"size_identifier":"size","bounded_steps":0,
+"payload_length_strategy":"fuzz_byte_bounded",
+"payload_length_expression":"data[pos++] % (MAX_PAYLOAD + 1u)","notes":["..."]}},
 "state_objects":[{{"name":"...","type":"...","initialization":"..."}}],
 "call_sequence":[{{"function":"...","roles":["ISF"],"purpose":"...",
 "arguments":["..."],"uses_fuzzer_data":true,"uses_fuzzer_size":true,
@@ -270,6 +276,11 @@ concerns:
 6. stateful opcodes and cleanup: trigger opcodes whose behavior depends on state
    left by an earlier command in order, after the command that establishes that
    state, and clean up within the iteration.
+When input_model.requires_length_sampling is true, declare
+input_strategy.payload_length_strategy as fuzz_byte_bounded and give a concrete
+payload_length_expression that bounds a byte sampled from data. Follow any
+stateful_dependencies pairs in their declared order. These are typed contract
+facts; a description or opcode set cannot replace them.
 protocol_contract_bindings carries the same facts as structured values, and it
 is checked field by field against the contract: every leaf must equal the
 contract's leaf, or the plan is rejected before any C is written.
@@ -318,7 +329,7 @@ Previous validation feedback (empty on the first attempt):
 
 PROTOCOL_CONVENTION_REFINEMENT = PromptTemplate(
     name="protocol_convention_refinement",
-    version="protocol-convention-refinement-v1",
+    version="protocol-convention-refinement-v2",
     template="""Infer the convention block for a structured fuzzing protocol contract.
 Use only the supplied static protocol facts and source context. Do not invent
 project APIs, enum names, helpers, context types, or source evidence. The static
@@ -347,7 +358,9 @@ Guidelines:
   envelope fields should be repaired and which payload bytes should remain
   fuzz-controlled.
 - Stateful operations must name real opcodes/cases from the protocol facts or
-  source context, and each item must include evidence.
+  source context. For context-member reads, writes and guards, cite the exact
+  source statements (for example, `ctx->saved = p;`), not a prose summary.
+  Each item must include evidence; statements absent from source are not evidence.
 - If a fact cannot be inferred, use an empty string/list rather than guessing.
 
 Entry function:

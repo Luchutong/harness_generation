@@ -1,3 +1,4 @@
+from dataclasses import replace
 import json
 from pathlib import Path
 import shutil
@@ -16,6 +17,7 @@ from harness_generation.stage1 import Stage1Result
 from harness_generation.stage2 import Stage2Result, required_processing_units
 from harness_generation.stage3 import Stage3Metadata, Stage3Result
 from harness_generation.stage4 import (
+    Stage4Error,
     Stage4Generator,
     Stage4Result,
     declared_contract_helpers,
@@ -255,11 +257,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     return 0;
 }"""
 
-    def project_functions(self) -> frozenset[str]:
-        document = json.loads(
-            (self.phase1 / "functions.json").read_text(encoding="utf-8")
-        )
-        return frozenset(record["name"] for record in document["functions"])
+    def callable_helpers(self, root: Path) -> frozenset[str]:
+        return declared_contract_helpers(root, self.triplet, self.functions)
 
     def with_ir(self, name: str) -> Path:
         root = self.artifact_root(name)
@@ -285,10 +284,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             functions_json=root / "functions.json",
             artifacts=root,
             stage="stage4_harness",
-            allowed_functions=(
-                declared_contract_helpers(root, self.project_functions())
-                if allow else ()
-            ),
+            allowed_functions=self.callable_helpers(root) if allow else (),
         )
 
     # -- the names themselves -------------------------------------------------
@@ -298,29 +294,53 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         # ``mp_parse`` is the ISF and already expected, so its presence here
         # changes no decision -- it is in the set because the IR's provenance
         # names it too, and the two validators get the same names either way.
+        # ``le16`` is not: it is ``static`` in target.c, so the IR may cite it
+        # as the algorithm behind the checksum but no harness can call it.
         self.assertEqual(
-            declared_contract_helpers(root, self.project_functions()),
-            frozenset({"le16", "mp_checksum", "mp_destroy", "mp_init", "mp_parse"}),
+            self.callable_helpers(root),
+            frozenset({"mp_checksum", "mp_destroy", "mp_init", "mp_parse"}),
         )
         # And the validator's own accessor agrees with the free function, or
         # the two call sites could drift apart the way the first pair did.
         self.assertEqual(self.validator(root).contract_helpers(),
-                         declared_contract_helpers(root, self.project_functions()))
+                         self.callable_helpers(root))
 
     def test_without_an_ir_the_allowance_is_empty(self):
         root = self.artifact_root("revalidation_no_ir_names")
-        self.assertEqual(declared_contract_helpers(root, self.project_functions()),
-                         frozenset())
+        self.assertEqual(self.callable_helpers(root), frozenset())
         self.assertEqual(self.validator(root).contract_helpers(), frozenset())
 
     def test_a_name_the_project_does_not_define_is_not_an_allowance(self):
         """The IR's evidence quotes real source; a ghost name is not a licence."""
 
         root = self.with_ir("revalidation_ghost")
-        self.assertNotIn(
-            "invented_checksum",
-            declared_contract_helpers(root, self.project_functions() | {"invented_checksum"}),
+        self.assertNotIn("invented_checksum", self.callable_helpers(root))
+
+    def test_an_ir_replaced_after_the_attempt_hands_out_nothing(self):
+        """The file is re-read; nothing says it is the file Stage 4 accepted.
+
+        ``protocol_ir.json`` is an artifact on disk, so the document the
+        re-validation reads is not guaranteed to be the one the attempt
+        reconciled -- and an allowance computed from an IR about a *different*
+        function is the whole failure this layer exists to catch.  "The stage
+        that published the harness checked this already" is a fact about a
+        moment, not about this document, so a failed reconciliation fails here
+        too rather than returning the half of it that resolved.
+        """
+
+        root = self.with_ir("revalidation_replaced")
+        self.assertTrue(self.callable_helpers(root))  # as published
+        ArtifactStore(root).write_protocol_ir(
+            replace(recorded_ir(), entry_function="mp_destroy")
         )
+        with self.assertRaisesRegex(
+            Stage4Error, r"protocol_ir\.json no longer reconciles with the FT"
+        ):
+            self.callable_helpers(root)
+        with self.assertRaisesRegex(
+            Stage4Error, r"protocol_ir\.json no longer reconciles with the FT"
+        ):
+            self.validator(root).contract_helpers()
 
     # -- the decision ---------------------------------------------------------
 
@@ -358,7 +378,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             artifacts=root,
             stage="stage4_harness",
             allowed_functions=declared_contract_helpers(
-                root, self.project_functions()
+                root, self.triplet, self.functions
             ),
         )
         self.assertFalse(result.success)

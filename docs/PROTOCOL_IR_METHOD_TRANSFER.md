@@ -149,8 +149,8 @@ payload 来自 fuzz 字节在 `:53-54`、长度字段写回在 `:50-51`、checks
 
 | | 方法 | 来源 | 定位 |
 |---|---|---|---|
-| M1 | 带类型的字段关系 | Peach Pit `Relation` | **下一步**(§5 第 1 步) |
-| M2 | 状态变量 + 转移 | NSFuzz | **下一步**(§5 第 2 步) |
+| M1 | 带类型的字段关系 | Peach Pit `Relation` | **已实现**(§5 第 1 步) |
+| M2 | 状态变量 + 转移 | NSFuzz | **已实现**(§5 第 2 步) |
 | M3 | 单 buffer 内多帧 + 前缀重放 | AFLNet | 概念前置(无独立改动) |
 | M4 | 让 LLM 写采样器,而不是写序列 | LLM4Fuzz | **下一步**(§5 第 4 步) |
 | M5 | 反馈的表示法:注释视图 | SeedMind + SBFT 2026 | 记录;§3 之后那一步的输入 |
@@ -315,9 +315,9 @@ class StatefulOperation:
 **已在录制 IR 上实测**(正则 `\b([A-Za-z_]\w*)->(\w+)\b` 扫 `evidence`,读/写按是否后跟 `=` 区分):
 
 ```
-MP_RELEASE:  writes {ctx->saved, ctx->owns_saved}
+MP_RELEASE:  writes {ctx->owns_saved}; reads {ctx->owns_saved}
 MP_STORE:    writes {ctx->saved, ctx->saved_len, ctx->owns_saved}
-MP_USE:      reads  {ctx->saved, ctx->saved_len, ctx->observation}
+MP_USE:      reads  {ctx->saved, ctx->saved_len}; writes {ctx->observation}
 ```
 
 于是顺序约束**直接可推**:
@@ -328,6 +328,8 @@ MP_USE.reads ∩ MP_STORE.writes = {ctx->saved, ctx->saved_len} ≠ ∅
 ```
 
 **这一条今天算不出来,只是因为没有把这两个集合写下来**——数据早就在 IR 里,连证据字符串都带着。
+这里把 `free(ctx->saved)` 视为释放行为，不视为对 `ctx->saved` 成员的直接赋值；
+`ctx->observation = ...` 则是写入。原表将这两处分类错了，实现按源码语句纠正。
 
 **代价**:中。改 `protocol_conventions.py` 的 dataclass(现有 `evidence` 语义不变)、
 miner 加一步从证据字符串抽取状态变量与读/写、投影与闸门各加一条。抽取本身是一行正则。
@@ -820,6 +822,13 @@ Code Coverage Based Instruction Set Fuzzing (USENIX Sec 2018)"经两次检索确
 | 3 | **§3 判定条款** + 三条守卫 | 1 | **拒掉 `contracted_published.c`** |
 | 4 | **M4** Stage 4 prompt 改成产"序列采样函数" | 3 | 真机重跑,grep 生成物的长度表达式 |
 | 5 | 真机重跑 **N 次独立生成**(见 M9)+ coverage 复测 | 4 | 生成**间**方差 vs 生成**内**方差 |
+
+**进度（2026-09-20）**：第 1–3 步已落地。新 IR 的 size relation 带来源和证据，
+状态读写与顺序进入 plan 闸门；Stage 4 还检查声明的字节采样表达式是否进入
+payload 拷贝长度。已用仓库中的 `contracted_published.c` 验证拒绝、用手写
+`structured.c` 验证采样识别。第 4 步只补了生成提示，尚未用真实模型重跑；
+第 5 步的独立生成与覆盖率复测也未进行。因此目前只证明退化样本会被拒，
+不声称覆盖率已改善。旧 IR 仍按原文加载，不自动补推断关系。
 
 第 1、2 步互不依赖,可并行。**第 3 步是分水岭**:它之前所有改动都不可证伪,它之后才有
 "改对了没有"的判据。**第 5 步之前不要宣称任何覆盖率改善。**

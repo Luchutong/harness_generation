@@ -21,11 +21,15 @@ from .policy import (
     FORBIDDEN_LOGGING_FUNCTIONS,
 )
 from .prompts import stage4_harness_plan, stage4_harness_transform
+from .project_functions import ProjectFunctionIndex
 from .protocol_ir import ProtocolIR, ProtocolIRError
-from .protocol_ir_helpers import ProtocolHelperSet, collect_protocol_helpers
 from .protocol_plan_validation import (
     protocol_contract_projection,
     validate_plan_contract,
+)
+from .protocol_reconciliation import (
+    ProtocolReconciliation,
+    reconcile_protocol_ir,
 )
 from .sfg_adapter import is_null_node
 from .source_paths import SUPPORTED_FUNCTIONS_SCHEMA_VERSIONS
@@ -154,6 +158,7 @@ class _FunctionDefinition:
     #: Names this function binds exactly once, with the identifiers that one
     #: binding mentions.  See :func:`_unique_local_aliases`.
     local_aliases: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    body_source: str = ""
     #: Regions of local buffers this function fills from ``data``.  See
     #: :func:`_copy_regions`.
     copy_regions: tuple[_CopyRegion, ...] = ()
@@ -204,8 +209,7 @@ class Stage4Generator:
         retry_context: Mapping[str, Any] | None = None,
     ) -> Stage4Result:
         rough_source = _load_rough_code(rough_code)
-        (function_metadata, all_project_functions, project_context,
-         static_project_functions) = _load_function_metadata(
+        function_metadata, functions, project_context = _load_function_metadata(
             Path(functions_json), triplet
         )
         isf_metadata = function_metadata[triplet.isf.function_id]
@@ -214,20 +218,45 @@ class Stage4Generator:
             triplet_id=triplet.id,
             unique_isf_function_id=str(isf_metadata.get("id", "")),
         )
+        # Read before the attempt is reserved: a file that will not load is not
+        # an attempt this stage made, and the record it would leave behind is a
+        # directory the miner's own tests read as "Stage 4 ran".
         protocol_ir = load_protocol_ir(artifacts)
-        # The helpers the audit may accept are read out of the IR's own
-        # provenance.  With no IR this is the empty set, so the audit is byte
-        # for byte the FT-only one it was before any of this existed.
-        protocol_helpers = collect_protocol_helpers(protocol_ir)
-        # The same intersection the harness audit uses, so a helper the plan
-        # is allowed to name is exactly one the audit will accept the call to.
-        declared_helpers = _declared_helpers(protocol_helpers, all_project_functions)
+        layout = ArtifactStore(Path(artifacts)).for_triplet(triplet.id)
+        layout.ensure_generation()
+        attempt, attempt_directory = layout.next_attempt("stage4")
+        # The IR and the FT are produced by two stages that never speak to each
+        # other, so they are reconciled here -- before the plan prompt is built
+        # out of either.  A contract that names a function this FT cannot reach
+        # has to fail as an attempt with a reason attached, not as an
+        # unexplained refusal several checks later.
+        reconciliation = reconcile_protocol_ir(protocol_ir, triplet, functions)
+        if not reconciliation.ok:
+            error = Stage4Error(
+                "protocol_ir.json does not reconcile with the FT: "
+                + "; ".join(reconciliation.diagnostics)
+            )
+            layout.write_json(attempt_directory / "metadata.json", _attempt_metadata(
+                triplet.id, attempt, None, rollback_source, retry_reason,
+                retry_context, client=self.llm,
+            ))
+            record_parse_result(layout, attempt_directory, {
+                "status": "failed",
+                "phase": "protocol_ir",
+                "error_type": type(error).__name__,
+                "error": str(error),
+                "protocol_reconciliation": reconciliation.to_dict(),
+            })
+            raise error
+        # Read off the reconciliation rather than recomputed, so a helper the
+        # plan may name is exactly one the audit will accept the call to.
+        declared_helpers = reconciliation.callable_helpers
         protocol = _protocol_contract(artifacts, protocol_ir)
         protocol_contract = None if protocol is None else protocol[0]
         # The typed digest of the IR that the plan has to declare it preserves.
         # ``None`` with no IR, and then no plan carries bindings at all.
         projection = protocol_contract_projection(
-            protocol_ir, project_functions=all_project_functions
+            protocol_ir, callable_helpers=declared_helpers
         )
         plan_prompt = stage4_harness_plan(
             triplet_id=triplet.id,
@@ -254,9 +283,6 @@ class Stage4Generator:
             ),
             validation_feedback=validation_feedback,
         )
-        layout = ArtifactStore(Path(artifacts)).for_triplet(triplet.id)
-        layout.ensure_generation()
-        attempt, attempt_directory = layout.next_attempt("stage4")
         layout.write_text(attempt_directory / "plan_prompt.txt", plan_prompt.content)
         try:
             plan_generation = self.llm.generate(plan_prompt)
@@ -367,13 +393,26 @@ class Stage4Generator:
                 analysis,
                 triplet,
                 isf_metadata,
-                all_project_functions,
-                protocol_helpers=protocol_helpers,
-                static_project_functions=static_project_functions,
+                functions,
+                reconciliation=reconciliation,
                 # An IR is what asks for a frame to be built; without one the
                 # repaired-frame rule stays exactly the rule it always was.
                 structured_frame=protocol_ir is not None,
             )
+            if (
+                projection is not None
+                and projection.bindings["input_model"].get("requires_length_sampling")
+            ):
+                if not _samples_payload_length(analysis):
+                    raise Stage4Error(
+                        "Stage 4 payload length is not sampled from bounded fuzz bytes"
+                    )
+                if not _uses_declared_length_expression(
+                    analysis, harness_plan.input_strategy
+                ):
+                    raise Stage4Error(
+                        "Stage 4 does not use the plan's declared payload length expression"
+                    )
         except Exception as error:
             record_parse_result(layout, attempt_directory, {
                 "status": "failed",
@@ -598,11 +637,11 @@ def parse_harness_plan(
 ) -> HarnessPlan:
     """Parse and validate the strict JSON HarnessPlan returned by the LLM.
 
-    ``declared_helpers`` are the contract-declared helpers the project really
-    defines (see ``_declared_helpers``); they may be planned alongside the FT
-    without being FT members.  The default empty sequence makes every caller
-    that does not supply one behave as it did before the protocol IR could
-    reach this validator at all.
+    ``declared_helpers`` are the reconciled callable helpers -- see
+    :func:`.protocol_reconciliation.reconcile_protocol_ir`; they may be planned
+    alongside the FT without being FT members.  The default empty sequence makes
+    every caller that does not supply one behave as it did before the protocol
+    IR could reach this validator at all.
     """
 
     if not isinstance(content, str) or not content.strip():
@@ -774,7 +813,16 @@ def _isf_requires_stream_size(metadata: Mapping[str, Any]) -> bool:
 def _load_function_metadata(
     path: Path,
     triplet: FunctionTriplet,
-) -> tuple[dict[str, dict[str, Any]], set[str], dict[str, Any], frozenset[str]]:
+) -> tuple[dict[str, dict[str, Any]], ProjectFunctionIndex, dict[str, Any]]:
+    """The FT's own metadata, plus the project's functions as a linkage index.
+
+    The second element used to be a set of names, and three different questions
+    were asked of it: may this helper be called, does this name belong to the
+    project at all, and did the harness redefine it.  Only the second is about
+    names -- see :mod:`.project_functions` -- so the caller now gets the index
+    and asks each question of the part that can answer it.
+    """
+
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
@@ -788,23 +836,12 @@ def _load_function_metadata(
         raise Stage4Error("functions.json functions must be an array of objects")
 
     by_id = {}
-    all_names = set()
-    static_names = set()
     for record in records:
         function_id = _required_string(record, "id", "functions.json")
-        name = _required_string(record, "name", function_id)
+        _required_string(record, "name", function_id)
         if function_id in by_id:
             raise Stage4Error(f"duplicate functions.json function id: {function_id}")
         by_id[function_id] = record
-        all_names.add(name)
-        storage = record.get("storage", [])
-        # Internal linkage, so no other translation unit can call it.  The
-        # miner has always recorded this; only Stage 4 used to drop it, which
-        # is why the audit could promise a call the linker cannot resolve.
-        if isinstance(storage, list) and any(
-            str(item).strip().lower() == "static" for item in storage
-        ):
-            static_names.add(name)
 
     selected = {}
     for function in triplet.functions:
@@ -827,7 +864,11 @@ def _load_function_metadata(
             "file": record.get("file"),
             "start_line": record.get("start_line"),
         }
-    return selected, all_names, project_type_context(document), frozenset(static_names)
+    # The same rows, read once into the linkage index both validators ask their
+    # questions of -- see :mod:`.project_functions` for why a set of names
+    # cannot answer them.
+    functions = ProjectFunctionIndex.from_records(records)
+    return selected, functions, project_type_context(document)
 
 
 def _analyze_c(source: str) -> _HarnessAnalysis:
@@ -890,10 +931,79 @@ def _analyze_c(source: str) -> _HarnessAnalysis:
             })) if body is not None else (),
             local_aliases=(_unique_local_aliases(body, encoded)
                            if body is not None else ()),
+            body_source=_code_only_body(body, encoded) if body is not None else "",
             copy_regions=(_copy_regions(body, encoded, calls)
                           if body is not None else ()),
         ))
     return _HarnessAnalysis(tuple(functions), tuple(all_calls))
+
+
+def _code_only_body(body: Any, source: bytes) -> str:
+    """Keep the entry body while blanking comments and string literals."""
+
+    code = bytearray(source[body.start_byte:body.end_byte])
+    for node in _walk(body):
+        if node.type not in {"comment", "string_literal", "raw_string_literal"}:
+            continue
+        for position in range(node.start_byte - body.start_byte,
+                              node.end_byte - body.start_byte):
+            if code[position] not in (10, 13):
+                code[position] = 32
+    return code.decode("utf-8")
+
+
+_ASSIGNMENT = re.compile(r"\b([A-Za-z_]\w*)\s*(?<![=!<>])=(?!=)\s*([^;]+);")
+_BOUNDED_BYTE = re.compile(r"\b(?:data|Data)\s*\[[^\]]+\]\s*(?:%|&)")
+
+
+def _samples_payload_length(analysis: _HarnessAnalysis) -> bool:
+    """Approximate a sampled byte flowing into a payload-copy length.
+
+    Only a direct assignment and one local assignment hop are recognised.
+    This is a syntax check, not data-flow proof: helper returns and aliases may
+    be missed, and a later overwrite of sampled bytes is outside this check.
+    The copy/ISF connection is checked separately by ``_validate_harness``.
+    """
+
+    for function in analysis.functions:
+        if function.name != "LLVMFuzzerTestOneInput":
+            continue
+        assignments: dict[str, list[str]] = {}
+        for match in _ASSIGNMENT.finditer(function.body_source):
+            assignments.setdefault(match.group(1), []).append(match.group(2))
+        sampled = {
+            name for name, values in assignments.items()
+            if any(_BOUNDED_BYTE.search(value) for value in values)
+        }
+        if not sampled:
+            continue
+        for region in function.copy_regions:
+            for name in region.length.identifiers:
+                if name in sampled:
+                    return True
+                if any(
+                    re.search(rf"\b{re.escape(sample)}\b", value)
+                    for value in assignments.get(name, ())
+                    for sample in sampled
+                ):
+                    return True
+    return False
+
+
+def _uses_declared_length_expression(
+    analysis: _HarnessAnalysis, input_strategy: Mapping[str, Any]
+) -> bool:
+    """Confirm the plan's concrete sampled expression appears in the harness."""
+
+    expression = input_strategy.get("payload_length_expression")
+    if not isinstance(expression, str) or not expression.strip():
+        return False
+    compact = lambda value: re.sub(r"\s+", "", value)
+    return any(
+        compact(expression) in compact(function.body_source)
+        for function in analysis.functions
+        if function.name == "LLVMFuzzerTestOneInput"
+    )
 
 
 def _identifier_names(node: Any, source: bytes) -> tuple[str, ...]:
@@ -1137,79 +1247,69 @@ def _reads_data_element(node: Any, source: bytes, counter_name: str) -> bool:
     return False
 
 
-
-def _declared_helpers(protocol_helpers: ProtocolHelperSet,
-                      all_project_functions: Iterable[str]) -> frozenset[str]:
-    """The contract-declared helpers that really exist in this project.
-
-    An FT is built from the structural edges its ISF shares with other
-    functions, not from its call closure, so a helper the ISF genuinely calls
-    (a checksum, a context constructor) can sit outside it forever.  A helper is
-    allowed only when the mined protocol's own provenance names it -- a name
-    Stage 4 has never heard of stays forbidden, and prose in the IR's
-    requirements or notes (``helpers.weak``) can never authorise anything.
-
-    The declared name must also *exist* in the project.  The IR's evidence
-    quotes real source, so a name with no definition behind it is a broken
-    claim rather than a licence -- and allowing it would silently disable the
-    unknown-API check for that name, which is weaker than the audit this
-    relaxation is required to leave otherwise intact.
-
-    The plan validator and the C audit both widen their allowance by exactly
-    this set, so the two cannot drift apart.
-    """
-
-    return protocol_helpers.allowed & frozenset(all_project_functions)
-
-
 def declared_contract_helpers(
     artifacts: str | Path,
-    all_project_functions: Iterable[str],
+    triplet: FunctionTriplet,
+    functions: ProjectFunctionIndex,
 ) -> frozenset[str]:
-    """The helper names ``<artifacts>/protocol_ir.json`` declares, from the file.
+    """The project functions ``<artifacts>/protocol_ir.json`` lets a harness call.
 
     The audit in :func:`_validate_harness` and the pipeline's own re-validation
     of the published harness both widen their allow-set by these names, and they
     have to widen it by exactly the same ones -- a harness one accepts and the
     other refuses is a run that publishes nothing while reporting a failure
-    about code it already checked.  This is that one intersection, for callers
-    that do not already hold the IR; with no IR it is empty, so the FT-only path
-    is unchanged on both sides.
+    about code it already checked.  Both now read them off the same
+    reconciliation of the same IR against the same FT, so the two cannot drift
+    apart the way the first pair of name sets did.
 
     A ``protocol_ir.json`` that is present but unreadable raises, rather than
     quietly returning nothing: the empty set is the *contract-free* allowance,
     and handing it to a validator is what would let a harness that was built
     from a contract be judged as if it never saw one.
+
+    A reconciliation that came out *not* ``ok`` raises, for the same reason an
+    unreadable file does.  Nothing on disk says the IR Stage 4 accepted is the
+    IR being re-read now -- ``protocol_ir.json`` is a file, and a file can be
+    replaced between the attempt that read it and the validation that follows --
+    so "Stage 4 checked this already" is not a property of this document.  Both
+    halves of a partial reconciliation are unsafe in the same direction: an
+    allowance computed from an IR about a *different* function is the whole
+    failure this layer exists to catch, and it would be handed out silently.
     """
 
     ir = load_protocol_ir(artifacts)
     if ir is None:
         return frozenset()
-    return _declared_helpers(collect_protocol_helpers(ir), all_project_functions)
+    reconciliation = reconcile_protocol_ir(ir, triplet, functions)
+    if not reconciliation.ok:
+        raise Stage4Error(
+            "protocol_ir.json no longer reconciles with the FT: "
+            + "; ".join(reconciliation.diagnostics)
+        )
+    return reconciliation.callable_helpers
 
 
 def _validate_harness(
     analysis: _HarnessAnalysis,
     triplet: FunctionTriplet,
     isf_metadata: Mapping[str, Any],
-    all_project_functions: set[str],
-    protocol_helpers: ProtocolHelperSet = ProtocolHelperSet(),
+    functions: ProjectFunctionIndex,
     *,
-    static_project_functions: frozenset[str] = frozenset(),
+    reconciliation: ProtocolReconciliation = ProtocolReconciliation(),
     structured_frame: bool = False,
 ) -> _InputConnection | None:
     """Raise unless the harness is one Stage 4 may publish.
 
-    ``protocol_helpers`` are the helpers the mined protocol's own provenance
-    declares.  They widen exactly one rule -- which project calls are inside the
-    harness's allowance -- and nothing else in this audit.  The default empty
-    set makes every caller that does not supply one behave as it did before the
-    protocol IR could reach the audit at all.
+    ``functions`` is the project's linkage index.  Only its :attr:`names` are
+    read here, for the two name-shaped rules -- which names the project owns at
+    all, and which of the harness's own definitions collide with them.
 
-    ``static_project_functions`` names the project functions with internal
-    linkage.  A contract may still evidence one (``le16`` decodes the frame's
-    length), but the harness is linked against the target's objects rather than
-    compiled beside them, so a call to it cannot resolve; it widens nothing.
+    ``reconciliation`` is the settled IR-against-FT comparison.  It widens
+    exactly one rule -- which project calls are inside the harness's allowance
+    -- and nothing else in this audit; a helper it refused is not a helper this
+    audit will accept a call to under some other reading.  The default empty
+    reconciliation makes every caller that does not supply one behave as it did
+    before the protocol IR could reach the audit at all.
 
     ``structured_frame`` says a protocol IR is in play, which is what lets
     :func:`_isf_input_connection` recognise the frames that IR asks the harness
@@ -1224,14 +1324,14 @@ def _validate_harness(
         raise Stage4Error(f"Stage 4 requires exactly one {FUZZ_ENTRY} definition")
     if "main" in definitions:
         raise Stage4Error("Stage 4 harness must not contain a demo main")
-    # See _declared_helpers: only a name the IR's own provenance declares *and*
-    # the project actually defines may widen this audit.  The split is computed
-    # here, before any check that mentions a helper, so the order in which this
-    # audit refuses things is unchanged.
-    declared_helpers = _declared_helpers(protocol_helpers, all_project_functions)
-    evidence_only = declared_helpers & static_project_functions
-    callable_helpers = declared_helpers - evidence_only
-    redefined = sorted((set(definitions) - {FUZZ_ENTRY}) & all_project_functions)
+    # Read off the reconciliation, not recomputed: a name is callable here
+    # exactly when the reconciliation said so, and a name it classified as
+    # evidence-only (`le16`) widens nothing even though the contract quotes it.
+    # The split is computed before any check that mentions a helper, so the
+    # order in which this audit refuses things is unchanged.
+    callable_helpers = set(reconciliation.callable_helpers)
+    evidence_only = set(reconciliation.reference_only_helpers)
+    redefined = sorted((set(definitions) - {FUZZ_ENTRY}) & functions.names)
     if redefined:
         message = "Stage 4 redefines project APIs: " + ", ".join(redefined)
         alternatives = sorted(set(redefined) & callable_helpers)
@@ -1262,11 +1362,10 @@ def _validate_harness(
 
     local_functions = set(definitions)
     expected = {function.function for function in triplet.functions}
-    allowed_project_calls = expected | declared_helpers
-    outside_ft = sorted(calls & (all_project_functions - allowed_project_calls))
-    if outside_ft:
-        raise Stage4Error("Stage 4 harness calls project APIs outside the FT: " +
-                          ", ".join(outside_ft))
+    # Asked before the outside-the-FT check, which would otherwise answer it too
+    # and less helpfully: every evidence-only name is a project name the audit
+    # does not allow, so "outside the FT" is true of it and says nothing about
+    # why.  Linking is the reason, and the reason is what the retry loop needs.
     unlinkable = sorted(calls & evidence_only)
     if unlinkable:
         # The contract evidences these for what they compute, and the harness is
@@ -1280,7 +1379,12 @@ def _validate_harness(
             + " (the contract evidences them for their algorithm: reimplement it "
               "under a local name that is not a project API)"
         )
-    allowed = expected | local_functions | DEFAULT_ALLOWED_FUNCTIONS | declared_helpers
+    allowed_project_calls = expected | callable_helpers
+    outside_ft = sorted(calls & (functions.names - allowed_project_calls))
+    if outside_ft:
+        raise Stage4Error("Stage 4 harness calls project APIs outside the FT: " +
+                          ", ".join(outside_ft))
+    allowed = expected | local_functions | DEFAULT_ALLOWED_FUNCTIONS | callable_helpers
     unknown = sorted(calls - allowed)
     if unknown:
         raise Stage4Error("Stage 4 harness calls unknown APIs: " + ", ".join(unknown))

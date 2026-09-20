@@ -257,7 +257,7 @@ if reference_percent is None or candidate_percent is None:
 | **P0-c** | 失败记录覆盖构建期 | 工程债 | `PFM §4.2` 的前置条件 |
 | **P0-d** | **缺测量 ≠ 低于参考** | 工程债 | `PFM §5.3.2` 的缺口 |
 | **P1** | 散文 → 类型化事实 | 表示层 | `MT M1` + `M2`;`PFM §1.4 Tupni` |
-| **P2** | IR ↔ FT 对账 + call-closure 口径 | 表示层 | `PFM §1.3`;`MT M2` |
+| **P2** | IR ↔ FT 对账 | 表示层 | `PFM §5.3.1`;`MT M2` |
 | **P3** | 入口语义统一 + 失败归因取未回滚的那条 | 工程债 | — |
 | **P4** | N 次独立生成,生成间/运行间方差分开报 | 评测口径 | `MT M9 + M8`;`PFM §5.3.2` |
 | **P5** | 模型 ↔ 产物互为 oracle | 终局形态 | `MT M11`(SPAR) |
@@ -325,15 +325,69 @@ ProtocolIR，不应与原 17 次样本合并统计。
 - **方法论**:`MT M1`(Peach Pit `Relation`,带类型的字段关系)+ `MT M2`(NSFuzz 状态变量);
   源头是 `PFM §1.4 Tupni` 的 length 约束。
 
-### P2 · IR ↔ FT 对账 + call-closure 口径
+**实施记录（2026-09-20）**：新挖掘的 IR 在 payload 上写入带来源和证据的
+`FieldRelation(kind="size_of", target="payload", direction="parse")`，原有 `width`
+继续保留；`FrameField.size` 是该关系的只读视图。状态操作另存 `writes`、`reads`、
+`guard_symbols`，并从有证据的成员访问推导状态变量与 plan 的顺序约束。严格挖掘拒绝
+缺乏证据的关系或状态符号。多帧且有 size relation 时，plan 必须声明有界字节采样表达式，
+Stage 4 检查该表达式是否写入 harness，并以语法近似追到 payload 拷贝长度。
+`contracted_published.c` 的 `remaining` 长度被拒；手写 reference 的取模采样通过。
+旧 IR 不自动补写推断字段，以保持历史录制逐字可读与 round-trip。该审计不是数据流证明：
+它只识别直接赋值和一步局部传递，也不跟踪后续覆盖。
+
+### P2 · IR ↔ FT 对账
 
 - **同一句话写在两处、两处都没修**:`protocol_ir_helpers.py:9` 与
   `pipeline_validation.py:245` 都写着 FT 来自共享结构边、**不来自 call closure**。
 - **落点**:让 helper 的 membership 走 `§5.3.1` 已经发明的"**证据 ∩ 项目定义**"算子,
   把同一算子用在 lifecycle 上(`MT §5.3.1` 的 `helpers` 是唯一正确权威)。
-- **替代路线**:不改 IR,改为让 FT 抽取补上 call closure —— 对应
-  `PFM §1.3 Controlled Static Loop Analysis`,而该步在 `PFM §5` 里仍是**待办(步骤 3)**。
-- **方法论**:`PFM §1.3` 提供的正是"从 parser 实现静态抽取调用结构"的路径。
+- **方法论**:`PFM §5.3.1` 的算子,加上一个把"项目定义"读成**链接性**而不是**名字**的
+  索引(`harness_generation/project_functions.py`)。无外部文献可引。
+
+**实施记录（2026-09-20）**：新增 `project_functions.py`（把 `functions.json` 一次性读成
+`linkable` / `internal_linkage` / `declared_only` / `ambiguous` / `absent` 五态索引）与
+`protocol_reconciliation.py`（`reconcile_protocol_ir`），Stage 4、plan 投影、
+`parse_harness_plan`、C 审计与 `PipelineStageValidator.contract_helpers()` 全部改读同一份
+对账结果，`_load_function_metadata` 与 `_target_function_names` 两处"按名字集合判断"
+消失。实测 `mini_parser` 的三类函数各归其位：`mp_init`/`mp_checksum` 在 FT 之外但可链接、
+`le16` 是 `static` 因而是**证据而非许可**（`helpers` binding 从 4 个名字减为 3 个），
+`mp_parse` 的 IR 与 triplet 入口一致。lifecycle 与 helper 的口径刻意不同：helper 是**可选许可**，缺失
+（libc 的 `free`/`memset`）只是"不是本项目函数"，沿用旧行为；lifecycle 是契约**要求**的
+调用，不可执行就整轮失败。对账失败发生在任何 LLM 调用之前，写入 `outcome.json` 的
+`phase: "protocol_ir"`，`failure_type: "protocol_ir_error"`。
+
+**审查修正（第二轮，2026-09-20）**：上面那版把三处判据留得太松，均由最小反例暴露，
+已收窄并各自补了反例测试。
+
+1. **表达式不能自证其名。** `context.init`/`destroy` 从 provenance 里彻底移除
+   （`_strong_sources` 只读 `context.evidence`），槽位文本另由一个读者
+   `read_lifecycle_expression` 读成四种形状之一：单个调用、单个裸名、类型化声明、
+   无效。只有前两种带出函数名，而名字还要 `context.evidence` 佐证——原先
+   `_CALL_PATTERN.findall` 扫整个表达式，`"mp_init(&ctx); invented(&ctx)"` 会让一个
+   槽位同时授权两个名字。契约的断言不再是自己调用的许可。
+2. **两种许可分开核验。** 项目调用按 `ProjectFunctionIndex` 的**唯一可链接定义**
+   核验；标准库调用（`malloc`/`free`，即 `policy.py` 的 `DEFAULT_ALLOWED_FUNCTIONS`）
+   按其自身许可核验——项目索引无权裁决 libc 名字（同 TU 内的 `static` 定义在此不可见，
+   外部同名则是项目自己的冲突），记入对账结果的 `standard_library_names` 而**不进**
+   `callable_helpers`；类型化声明由 harness 自己的 C 完成，无需授权；无效表达式
+   （散文）**拒绝**而非原样透传成 `context.init` binding。这样"生命周期必须可执行"
+   才与 plan 投影一致：gate 与许可读同一个读者，不会再就一个槽位说的是什么产生分歧。
+3. **二次校验失败即拒绝。** `declared_contract_helpers()` 原先重读 `protocol_ir.json`
+   后不看 `ok` 就交出 `callable_helpers`；`protocol_ir.json` 是发布后可被替换的文件，
+   "Stage 4 曾拒绝过"不是该文档的性质，所以现在对账不成立即 `Stage4Error`（已测入口被
+   换过的 IR）。缺失的 helper 仍只损失一条授权，这个不对称没有改变。
+4. **索引对 `storage` 的形状严格。** `from_records()` 遇到 `storage="static"` 这类
+   非"字符串列表"的形状原先读成空存储类，从而误判 `LINKABLE`；`storage` 是索引里唯一
+   **误读即 fail-open** 的字段（空 ≡ 外部链接），故形状不对直接 `ValueError`。
+   `defined` 仍按 `is True` 读，本来就是 fail-closed。本节原先把"不改 IR、改为让 FT 抽取
+补上 call closure"这条替代路线挂在 `PFM §1.3 Controlled Static Loop Analysis` 名下，并
+据此说该步在 `PFM §5` 里仍是待办步骤 3。**该引用是错的**：`PFM §1.3`（及其 §5 步骤 3、
+§4.1 第 3 行的 `command_loop`）讲的是**把解析循环的每次迭代建模成状态、迭代依赖建模成
+转移**，从而反推消息格式，与"函数调用闭包"没有关系。因此：
+
+- 这条替代路线**不再是 P2 的备选**，也**不得**作为改动 FT 抽取器的理由。P2 选的是
+  在 IR 与 FT 之上加一层对账，FT 的"共享结构边、非 call closure"定义原样保留。
+- `§6.1` 映射表里 P2 那一行的"§1.3 / §5 步骤 3（路线）"随之删除（见该表）。
 
 ### P3 · 入口语义统一 + 失败归因
 
@@ -372,7 +426,7 @@ ProtocolIR，不应与原 17 次样本合并统计。
 | §4.1 | 输入哈希不校验 | **§5.3.2** | **只部分成立**:"重算每一个判定"成立,"输入被固定"不成立 |
 | §4.4 | 证据含绝对路径 / 指针指向 gitignore | **§5.3.2** | 同上 |
 | **P1** | 散文 → 类型化 | **§2 映射表** + **§5.3.1** | **因果关系**:§5.3.1 的"刻意不查"清单(描述性字段值 / `requirements`/`notes` 散文 / `limitations`)**不是设计选择,是表示层的直接后果** |
-| **P2** | IR ↔ FT 对账 | **§5.3.1**(算子)+ **§1.3 / §5 步骤 3**(路线) | §5.3.1 已发明"证据 ∩ 项目定义",只是**只用在 `helpers` 一行** |
+| **P2** | IR ↔ FT 对账 | **§5.3.1**(算子) | §5.3.1 已发明"证据 ∩ 项目定义",只是**只用在 `helpers` 一行**;算子里的"项目定义"要读成**链接性**而不只是名字,是本文新增。原写作"§1.3 / §5 步骤 3（路线）"是**误引**,§1.3 讲的是解析循环的状态机建模,与 call closure 无关,已在 §5 P2 更正 |
 | **P4** | 生成方差 | **§5.3.2** | **同一错误的另一个轴**:该段已纠正 seed 轴,未检查 generation 轴 |
 | — | §1.1 覆盖率缺口的来源 | **§1.6 + §4.1 第 2 条** | 见 §6.2(本文要求回写该文的地方) |
 

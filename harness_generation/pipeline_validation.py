@@ -14,6 +14,7 @@ from .fuzzer_build import DEFAULT_HARNESS_COMPILER, FuzzerBuildValidator
 from .fuzz_smoke import (LibFuzzerSmokeConfig, LibFuzzerSmokeValidator,
                          Runner as FuzzRunner)
 from .runtime_validation import RuntimeValidationResult, RuntimeValidator
+from .project_functions import ProjectFunctionIndex
 from .source_paths import SourcePathResolver
 from .stage1 import Stage1Result
 from .stage2 import Stage2Result, required_processing_units
@@ -70,7 +71,15 @@ class PipelineStageValidator:
         self.project_root = _resolve_project_root(
             self.functions_json, project_root
         )
-        self.target_functions = _target_function_names(self.functions_json)
+        # The same reading of functions.json Stage 4 makes, so the two
+        # validators cannot disagree about what the project defines.
+        self.functions = ProjectFunctionIndex.from_document(
+            _load_json(self.functions_json)
+        )
+        #: The name set the unknown-API check reads.  A name, not a linkage: a
+        #: harness may not define a function the project owns even when that
+        #: function is static and the two symbols would never collide.
+        self.target_functions = self.functions.names
         self.target_build = self.config.target_build
         if self.target_build is None and self.config.compiler is None:
             self.target_build = _discover_target_build(self.project_root)
@@ -251,7 +260,9 @@ class PipelineStageValidator:
         allowance this class always had.
         """
 
-        return declared_contract_helpers(self.artifacts, self.target_functions)
+        return declared_contract_helpers(
+            self.artifacts, self.triplet, self.functions
+        )
 
     def validate_stage4(self, result: Stage4Result) -> ValidationResult:
         """Validate a Stage 4 harness and write the attempt's final outcome.
@@ -625,18 +636,6 @@ def _resolve_project_root(
         functions_json,
         project_root=project_root,
     ).project_root
-
-
-def _target_function_names(functions_json: Path) -> frozenset[str]:
-    document = _load_json(functions_json)
-    records = document.get("functions", [])
-    if not isinstance(records, list):
-        return frozenset()
-    return frozenset(
-        record["name"]
-        for record in records
-        if isinstance(record, Mapping) and isinstance(record.get("name"), str)
-    )
 
 
 def _default_compiler_config(project_root: Path) -> CompilerConfig:

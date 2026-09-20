@@ -46,7 +46,6 @@ from harness_generation.protocol_plan_validation import (
 from harness_generation.stage4 import Stage4Error, Stage4Generator
 from tests.test_stage4_protocol_ir import (
     CONTRACT_BINDINGS,
-    PROJECT_FUNCTIONS,
     SOURCE,
     Stage4ProjectTests,
     mined_ir,
@@ -75,8 +74,9 @@ class ProjectionTests(Stage4ProjectTests):
     """What a plan is held to, and what it deliberately is not."""
 
     def projection(self):
+        ir = mined_ir()
         return protocol_contract_projection(
-            mined_ir(), project_functions=PROJECT_FUNCTIONS
+            ir, callable_helpers=self.callable_helpers_for(ir)
         )
 
     def test_the_literal_fixture_is_exactly_the_projection(self):
@@ -123,33 +123,72 @@ class ProjectionTests(Stage4ProjectTests):
         ir = mined_ir()
         rebuilt = replace(ir, context=replace(ir.context, lifetime="rebuilt per frame"))
         projection = protocol_contract_projection(
-            rebuilt, project_functions=PROJECT_FUNCTIONS
+            rebuilt, callable_helpers=self.callable_helpers_for(rebuilt)
         )
         self.assertEqual(
             projection.renderable()["context"]["lifetime"], LIFETIME_PER_FRAME
         )
 
-    def test_helpers_are_intersected_with_the_project(self):
-        """A name the IR evidences but the project does not define is not a licence."""
+    def test_helpers_are_exactly_the_reconciled_callable_set(self):
+        """The projection projects the names it is given, and no others.
+
+        It cannot tell callable from merely-evidenced -- that is the whole
+        reason the reconciliation exists -- so it takes the reconciled set as
+        given.  ``le16`` is the measured consequence: the IR's evidence names
+        it (pinned by ``DECLARED_HELPERS`` in tests/test_stage4_protocol_ir_audit.py),
+        ``target.c`` declares it ``static``, and it is therefore absent from
+        the contract a plan is held to.
+        """
 
         ir = mined_ir()
-        ghost = protocol_contract_projection(ir, project_functions={"mp_parse"})
-        self.assertEqual(ghost.renderable()["helpers"], [])
+        self.assertNotIn("le16", self.callable_helpers_for(ir))
         self.assertEqual(
             self.projection().renderable()["helpers"],
-            ["le16", "mp_checksum", "mp_destroy", "mp_init"],
+            ["mp_checksum", "mp_destroy", "mp_init"],
         )
+        # Given nothing callable, the contract declares nothing callable.  This
+        # is the shape an FT-only caller gets from the default.
+        self.assertEqual(
+            protocol_contract_projection(
+                ir, callable_helpers=()
+            ).renderable()["helpers"],
+            [],
+        )
+
+    def test_a_slot_is_read_the_way_the_reconciliation_reads_it(self):
+        """One reader for both, or the gate and the licence disagree.
+
+        The projection used to fall back to the slot's own text whenever it was
+        not a call, so ``init: "rebuilt for every frame"`` reached the plan
+        prompt as a binding the model had to echo and the comparison then judged
+        as if it were a declaration.  A slot that names no function binds none
+        here either -- and a slot the reconciliation refuses never reaches a
+        plan at all, so this is the gate agreeing about the reading, not the
+        gate doing the refusing.
+        """
+
+        ir = mined_ir()
+        for expression in ("rebuilt for every frame", "mp_context ctx = {0}"):
+            with self.subTest(expression=expression):
+                stated = replace(
+                    ir, context=replace(ir.context, init=expression)
+                )
+                projection = protocol_contract_projection(
+                    stated, callable_helpers=self.callable_helpers_for(stated)
+                )
+                self.assertIsNone(projection.renderable()["context"]["init"])
 
     def test_no_ir_projects_to_nothing(self):
         self.assertIsNone(protocol_contract_projection(None))
 
 
-class ValidatorTests(unittest.TestCase):
-    """The comparison itself, without a project or an LLM in the way."""
+class ValidatorTests(Stage4ProjectTests):
+    """The comparison itself: no LLM, and the fixture's own mined IR."""
 
     def projection(self):
+        ir = mined_ir()
         return protocol_contract_projection(
-            mined_ir(), project_functions=PROJECT_FUNCTIONS
+            ir, callable_helpers=self.callable_helpers_for(ir)
         )
 
     def test_the_same_inputs_give_the_same_verdict(self):
@@ -158,10 +197,18 @@ class ValidatorTests(unittest.TestCase):
         projection = self.projection()
         bindings = deep_copy(projection.renderable())
         first = validate_plan_contract(
-            bindings, projection=projection, input_strategy={"bounded_steps": 32}
+            bindings, projection=projection, input_strategy={
+                "bounded_steps": 32,
+                "payload_length_strategy": "fuzz_byte_bounded",
+                "payload_length_expression": "data[pos++] % (MP_MAX_PAYLOAD + 1u)",
+            }
         )
         second = validate_plan_contract(
-            bindings, projection=projection, input_strategy={"bounded_steps": 32}
+            bindings, projection=projection, input_strategy={
+                "bounded_steps": 32,
+                "payload_length_strategy": "fuzz_byte_bounded",
+                "payload_length_expression": "data[pos++] % (MP_MAX_PAYLOAD + 1u)",
+            }
         )
         self.assertEqual(first.to_dict(), second.to_dict())
         self.assertTrue(first.ok)
@@ -170,7 +217,11 @@ class ValidatorTests(unittest.TestCase):
         conformance = validate_plan_contract(
             deep_copy(self.projection().renderable()),
             projection=self.projection(),
-            input_strategy={"bounded_steps": 32},
+            input_strategy={
+                "bounded_steps": 32,
+                "payload_length_strategy": "fuzz_byte_bounded",
+                "payload_length_expression": "data[pos++] % (MP_MAX_PAYLOAD + 1u)",
+            },
         )
         self.assertTrue(conformance.warnings)
         self.assertEqual(conformance.violations, ())
@@ -193,7 +244,8 @@ class ValidatorTests(unittest.TestCase):
         """An A/B-only contract states no lifecycle; a plan may not supply one."""
 
         projection = protocol_contract_projection(
-            convention_free_ir(), project_functions=PROJECT_FUNCTIONS
+            convention_free_ir(),
+            callable_helpers=self.callable_helpers_for(convention_free_ir()),
         )
         self.assertIsNone(projection.renderable()["context"])
         bindings = deep_copy(projection.renderable())
@@ -268,7 +320,7 @@ class ContractGateTests(Stage4ProjectTests):
         return llm, str(caught.exception)
 
     def accepted(self, root: Path, bindings):
-        llm = MockLLM([self.harness_plan(bindings=bindings), self.harness_code()])
+        llm = MockLLM([self.harness_plan(bindings=bindings), self.harness_for(root)])
         return llm, Stage4Generator(llm).run(
             self.triplet,
             rough_code=self.rough_code(),
@@ -437,12 +489,21 @@ class ContractGateTests(Stage4ProjectTests):
 
         self.refused(root, bindings, r"does not name: MP_FORMAT")
 
-    def test_an_unevidenced_helper_is_refused(self):
+    def test_a_helper_the_project_cannot_call_is_refused(self):
+        """Evidence is not enough, and a name with none is not either.
+
+        ``le16`` is the harder case -- evidenced, defined, and unlinkable -- and
+        ``test_helpers_are_exactly_the_reconciled_callable_set`` covers it.  This
+        is the easier one: a name the contract never mentions at all.
+        """
+
         root = self.ir_root("gate_invented_helper")
         bindings = self.faithful(root)
         bindings["helpers"].append("invented_checksum")
 
-        _, message = self.refused(root, bindings, r"does not evidence as project functions")
+        _, message = self.refused(
+            root, bindings, r"does not make callable in this project"
+        )
         self.assertIn("invented_checksum", message)
 
     def test_the_gate_refuses_before_the_transform_prompt_is_rendered(self):

@@ -49,6 +49,7 @@ Typical use::
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field as dataclass_field
 from typing import Any, Iterable, Mapping
 
@@ -64,6 +65,7 @@ from .protocol_miner import (
     Evidence,
     FieldFact,
     ProtocolFacts,
+    ProtocolMinerError,
 )
 from .protocol_spec import PROTOCOL_SPEC_SCHEMA_VERSION
 
@@ -174,6 +176,67 @@ class ProtocolEvidence:
 
 
 @dataclass(frozen=True)
+class StateVariable:
+    """A context member named by typed operation evidence."""
+
+    name: str
+    owner: str
+    evidence: tuple[ProtocolEvidence, ...]
+
+
+@dataclass(frozen=True)
+class FieldRelation:
+    """A source-backed relation between a length field and its payload.
+
+    ``parse`` describes the measured on-wire dependency.  ``construct`` is a
+    harness policy and must never be inferred merely from a parser load.
+    """
+
+    kind: str
+    target: str
+    direction: str
+    source: str = SOURCE_STATIC
+    confidence: float = 1.0
+    evidence: tuple[ProtocolEvidence, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"size_of", "count_of", "offset_of"} or self.direction not in {
+            "parse", "construct"
+        }:
+            raise ProtocolIRError("unsupported field relation")
+        if not self.target or self.source not in SOURCES:
+            raise ProtocolIRError("field relation requires a target and provenance")
+        if not self.evidence:
+            raise ProtocolIRError("field relation requires source evidence")
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind, "target": self.target, "direction": self.direction,
+            "source": self.source, "confidence": self.confidence,
+            "evidence": [item.to_json() for item in self.evidence],
+        }
+
+    def to_contract_block(self) -> dict[str, str]:
+        return {"kind": self.kind, "target": self.target, "direction": self.direction}
+
+    @classmethod
+    def from_json(cls, document: Mapping[str, Any], owner: str) -> FieldRelation:
+        document = _document_object(document, owner)
+        return cls(
+            kind=_required_string(document, "kind", owner),
+            target=_required_string(document, "target", owner),
+            direction=_required_string(document, "direction", owner),
+            source=_required_string(document, "source", owner),
+            confidence=_required_number(document, "confidence", owner),
+            evidence=_evidence_tuple(_required(document, "evidence", owner), owner),
+        )
+
+
+# P1's size relation is the size_of member of the general field-relation model.
+SizeRelation = FieldRelation
+
+
+@dataclass(frozen=True)
 class FrameField:
     """One field of the frame, with its provenance intact.
 
@@ -190,6 +253,7 @@ class FrameField:
     evidence: tuple[ProtocolEvidence, ...] = ()
     source: str = SOURCE_STATIC
     confidence: float = 1.0
+    relation: FieldRelation | None = None
 
     def __post_init__(self) -> None:
         if self.source not in SOURCES:
@@ -202,6 +266,11 @@ class FrameField:
     @property
     def is_variable_width(self) -> bool:
         return not isinstance(self.width, int)
+
+    @property
+    def size(self) -> SizeRelation | None:
+        """The typed size relation, when this field has one."""
+        return self.relation if self.relation and self.relation.kind == "size_of" else None
 
     def to_json(self) -> dict[str, Any]:
         document: dict[str, Any] = {
@@ -216,6 +285,8 @@ class FrameField:
         document["source"] = self.source
         document["confidence"] = self.confidence
         document["evidence"] = [item.to_json() for item in self.evidence]
+        if self.relation is not None:
+            document["relation"] = self.relation.to_json()
         return document
 
     def to_contract_block(self) -> dict[str, Any]:
@@ -229,6 +300,8 @@ class FrameField:
         }
         if self.endianness:
             document["endianness"] = self.endianness
+        if self.relation is not None:
+            document["relation"] = self.relation.to_contract_block()
         return document
 
     @classmethod
@@ -261,6 +334,10 @@ class FrameField:
             evidence=_evidence_tuple(_required(document, "evidence", owner), owner),
             source=source,
             confidence=_required_number(document, "confidence", owner),
+            relation=(
+                FieldRelation.from_json(document["relation"], f"{owner}.relation")
+                if "relation" in document else None
+            ),
         )
 
 
@@ -279,6 +356,13 @@ class FrameModel:
         offsets = [item.offset for item in self.fields]
         if len(set(offsets)) != len(offsets):
             raise ProtocolIRError("frame fields must not share an offset")
+        names = {item.name for item in self.fields}
+        for item in self.fields:
+            if item.relation is not None and item.relation.target not in names:
+                raise ProtocolIRError(
+                    f"field {item.name!r} relation targets unknown field "
+                    f"{item.relation.target!r}"
+                )
         if (
             self.payload_offset is not None
             and self.header_size is not None
@@ -360,6 +444,7 @@ class ProtocolIR:
         conventions: ProtocolConventions | None = None,
         *,
         default_max_steps: int | None = None,
+        strict: bool = False,
     ) -> ProtocolIR:
         """Merge the two halves.
 
@@ -376,7 +461,33 @@ class ProtocolIR:
             )
 
         limitations = list(facts.limitations)
+        if strict:
+            unsupported = facts.fields_without_evidence()
+            if unsupported:
+                raise ProtocolMinerError(
+                    "fields without source evidence: " + ", ".join(sorted(unsupported))
+                )
+            length = next(
+                (item for item in facts.fields if item.role == ROLE_PAYLOAD_LENGTH), None
+            )
+            if length is not None and any(item.width < 0 for item in facts.fields):
+                if not length.evidence:
+                    raise ProtocolMinerError("size relation has no length-field evidence")
+                for item in facts.fields:
+                    if item.width < 0 and not item.evidence:
+                        raise ProtocolMinerError(
+                            f"size relation for {item.name} has no payload evidence"
+                        )
         frame = _frame_model(facts, limitations)
+        if strict and conventions is not None:
+            for operation in conventions.stateful_operations:
+                for symbol in (
+                    *operation.writes, *operation.reads, *operation.guard_symbols
+                ):
+                    if not any(_has_symbol(line, symbol) for line in operation.evidence):
+                        raise ProtocolMinerError(
+                            f"state symbol {symbol} for {operation.opcode} has no evidence"
+                        )
 
         if conventions is None:
             limitations.append(
@@ -464,7 +575,7 @@ class ProtocolIR:
         if not isinstance(operations, list):
             raise ProtocolIRError("protocol IR.stateful_operations must be an array")
 
-        return cls(
+        ir = cls(
             entry_function=_required_string(document, "entry_function", "protocol IR"),
             frame=FrameModel.from_json(_required(document, "frame", "protocol IR")),
             sequence=sequence,
@@ -480,6 +591,15 @@ class ProtocolIR:
             llm_confidence=_confidence(document, "protocol IR"),
             metadata=_metadata_from_document(_required(document, "metadata", "protocol IR")),
         )
+        if "state_variables" in document and document["state_variables"] != [
+            {"name": item.name, "owner": item.owner,
+             "evidence": [entry.to_json() for entry in item.evidence]}
+            for item in ir.state_variables
+        ]:
+            raise ProtocolIRError(
+                "protocol IR.state_variables must match evidenced stateful operations"
+            )
+        return ir
 
     # -- views -------------------------------------------------------------
 
@@ -491,6 +611,28 @@ class ProtocolIR:
 
     def fields_by_role(self, role: str) -> tuple[FrameField, ...]:
         return tuple(item for item in self.frame.fields if item.role == role)
+
+    @property
+    def state_variables(self) -> tuple[StateVariable, ...]:
+        """Context members supported by stateful-operation evidence."""
+
+        names = sorted({
+            symbol
+            for operation in self.stateful_operations
+            for symbol in (*operation.writes, *operation.reads, *operation.guard_symbols)
+        })
+        owner = self.context.type if self.context is not None else ""
+        return tuple(StateVariable(
+            name=name,
+            owner=owner,
+            evidence=tuple(
+                ProtocolEvidence.from_convention_text(line)
+                for line in dict.fromkeys(
+                    line for operation in self.stateful_operations
+                    for line in operation.evidence if _has_symbol(line, name)
+                )
+            ),
+        ) for name in names)
 
     def evidence_index(self) -> tuple[ProtocolEvidence, ...]:
         """Every justification in the IR, from both halves, in one sequence.
@@ -575,6 +717,12 @@ class ProtocolIR:
             }
             for item in self.stateful_operations
         ]
+        if self.state_variables:
+            document["state_variables"] = [
+                {"name": item.name, "owner": item.owner,
+                 "evidence": [entry.to_json() for entry in item.evidence]}
+                for item in self.state_variables
+            ]
         return document
 
     def to_protocol_contract(self) -> dict[str, Any]:
@@ -627,6 +775,9 @@ def _frame_model(facts: ProtocolFacts, limitations: list[str]) -> FrameModel:
     """Project the miner's facts onto :class:`FrameModel`."""
 
     length_name = _length_field_name(facts)
+    length_fact = next(
+        (item for item in facts.fields if item.role == ROLE_PAYLOAD_LENGTH), None
+    )
     fields: list[FrameField] = []
     for item in facts.fields:
         evidence = tuple(
@@ -638,6 +789,16 @@ def _frame_model(facts: ProtocolFacts, limitations: list[str]) -> FrameModel:
             width = length_name or VARIABLE_WIDTH
         name = item.suggested_name or item.name
         source = SOURCE_STATIC if evidence else SOURCE_UNKNOWN
+        relation = None
+        if item.width < 0 and length_name and length_fact is not None:
+            relation_evidence = tuple(
+                ProtocolEvidence.from_miner_evidence(entry, facts.filename)
+                for entry in (*length_fact.evidence, *item.evidence)
+            )
+            if relation_evidence:
+                relation = FieldRelation(
+                    "size_of", name, "parse", evidence=relation_evidence
+                )
         fields.append(FrameField(
             name=name,
             offset=item.offset,
@@ -648,6 +809,7 @@ def _frame_model(facts: ProtocolFacts, limitations: list[str]) -> FrameModel:
             evidence=evidence,
             source=source,
             confidence=_CONFIDENCE_BY_SOURCE[source],
+            relation=relation,
         ))
 
     evidence: list[ProtocolEvidence] = []
@@ -961,11 +1123,27 @@ def _stateful_operation_from_document(
     document: Any, owner: str = "stateful operation",
 ) -> StatefulOperation:
     document = _document_object(document, owner)
-    return StatefulOperation(
+    operation = StatefulOperation(
         opcode=_required_string(document, "opcode", owner),
         reason=_required_string(document, "reason", owner),
         evidence=_string_list(document, "evidence", owner),
+        writes=_optional_string_list(document, "writes", owner),
+        reads=_optional_string_list(document, "reads", owner),
+        guard_symbols=_optional_string_list(document, "guard_symbols", owner),
     )
+    for symbol in (*operation.writes, *operation.reads, *operation.guard_symbols):
+        if not any(_has_symbol(line, symbol) for line in operation.evidence):
+            raise ProtocolIRError(f"{owner} state symbol {symbol!r} has no evidence")
+    return operation
+
+
+def _has_symbol(line: str, symbol: str) -> bool:
+    return bool(re.search(rf"(?<!\w){re.escape(symbol)}(?!\w)", line))
+
+
+def _optional_string_list(document: Mapping[str, Any], key: str,
+                          owner: str) -> tuple[str, ...]:
+    return _string_list(document, key, owner) if key in document else ()
 
 
 __all__ = [
@@ -981,7 +1159,10 @@ __all__ = [
     "ContextModel",
     "SequenceModel",
     "StatefulOperation",
+    "StateVariable",
     "FrameField",
+    "FieldRelation",
+    "SizeRelation",
     "FrameModel",
     "ProtocolEvidence",
     "ProtocolIR",

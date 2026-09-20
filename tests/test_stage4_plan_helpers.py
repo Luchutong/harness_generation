@@ -29,15 +29,11 @@ import tempfile
 from pathlib import Path
 import unittest
 
-from harness_generation.protocol_ir_helpers import (
-    ProtocolHelper,
-    ProtocolHelperSet,
-    collect_protocol_helpers,
-)
+from harness_generation.project_functions import ProjectFunctionIndex
+from harness_generation.protocol_reconciliation import reconcile_protocol_ir
 from harness_generation.sfg_adapter import load_sfg_artifacts
 from harness_generation.stage4 import (
     Stage4Error,
-    _declared_helpers,
     parse_harness_plan,
 )
 from harness_generation.triplet import FunctionTriplet, TripletFunction
@@ -107,33 +103,6 @@ def plan_json(triplet: FunctionTriplet, *,
         "constraints": [],
         "notes": [],
     })
-
-
-class DeclaredHelperIntersectionTests(unittest.TestCase):
-    """``_declared_helpers`` is the single place both validators get their set."""
-
-    @staticmethod
-    def helper_set(*names: str) -> ProtocolHelperSet:
-        return ProtocolHelperSet(helpers=tuple(
-            ProtocolHelper(name=name, origin="test", evidence=f"{name}(...) call")
-            for name in names
-        ))
-
-    def test_a_declared_name_the_project_does_not_define_is_dropped(self):
-        # The IR's evidence quotes real source, so a name with no definition
-        # behind it is a broken claim rather than a licence.  Keeping it would
-        # silently disable the unknown-API check for that name in the audit.
-        declared = _declared_helpers(
-            self.helper_set("mp_init", "ghost_helper"), {"mp_init", "mp_parse"}
-        )
-        self.assertEqual(declared, frozenset({"mp_init"}))
-
-    def test_a_project_function_the_contract_does_not_declare_is_not_admitted(self):
-        declared = _declared_helpers(self.helper_set("mp_init"), {"mp_init", "mp_parse"})
-        self.assertNotIn("mp_parse", declared)
-
-    def test_no_ir_means_no_helpers(self):
-        self.assertEqual(_declared_helpers(ProtocolHelperSet(), {"mp_init"}), frozenset())
 
 
 class PlanHelperMembershipTests(unittest.TestCase):
@@ -257,15 +226,14 @@ class MinedMiniParserHelperTests(unittest.TestCase):
             for triplet in extract_function_triplets(load_sfg_artifacts(cls.phase1))
             if triplet.isf.function == "mp_parse"
         )
-        cls.project_functions = frozenset(
-            function["name"]
-            for function in json.loads(
-                (cls.phase1 / "functions.json").read_text(encoding="utf-8")
-            )["functions"]
+        cls.functions = ProjectFunctionIndex.from_document(
+            json.loads((cls.phase1 / "functions.json").read_text(encoding="utf-8"))
         )
-        cls.declared_helpers = _declared_helpers(
-            collect_protocol_helpers(mined_ir()), cls.project_functions
+        cls.project_functions = cls.functions.names
+        cls.reconciliation = reconcile_protocol_ir(
+            mined_ir(), cls.triplet, cls.functions
         )
+        cls.declared_helpers = cls.reconciliation.callable_helpers
 
     def test_mp_init_is_a_project_function_outside_the_ft_that_the_contract_declares(self):
         # This is why the plan validator and the C audit had to be brought into
@@ -297,6 +265,35 @@ class MinedMiniParserHelperTests(unittest.TestCase):
 
     def test_the_declared_set_never_exceeds_the_project_functions(self):
         self.assertLessEqual(self.declared_helpers, self.project_functions)
+
+    def test_a_static_helper_the_contract_evidences_is_not_callable(self):
+        """``le16`` is evidence, not an allowance: the call would not link.
+
+        The contract's ``payload_length`` field says its value comes from
+        ``le16() load``, which is true -- and ``le16`` is ``static`` in
+        ``target.c``, so a plan that took the IR at its word and bound the name
+        produced a harness the link step refused.  The name stays in the record
+        as the algorithm behind the contract, and out of the allowance.
+        """
+
+        self.assertIn("le16", self.project_functions)
+        self.assertIn("le16", self.reconciliation.reference_only_helpers)
+        self.assertNotIn("le16", self.reconciliation.callable_helpers)
+        # Refused for membership, not for linkage -- see the audit's own,
+        # differently worded refusal in tests/test_stage4_structured_input.py.
+        # The plan validator has no C to read, so "outside the FT" is as
+        # specific as it can be, and the exempt list names the way out.
+        with self.assertRaisesRegex(
+            Stage4Error,
+            r"outside the FT: le16 \(declared helpers are exempt: "
+            r"mp_checksum, mp_destroy, mp_init\)$",
+        ):
+            parse_harness_plan(
+                plan_json(self.triplet, calls=("mp_parse", "le16")),
+                triplet=self.triplet,
+                isf_metadata={},
+                declared_helpers=self.declared_helpers,
+            )
 
 
 if __name__ == "__main__":

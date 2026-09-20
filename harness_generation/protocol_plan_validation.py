@@ -12,7 +12,8 @@ without reading its prose.  It works in three steps:
 1. **Typed projection.**  :func:`protocol_contract_projection` reduces the mined
    :class:`~harness_generation.protocol_ir.ProtocolIR` to the exact facts a plan
    has to preserve -- frame layout, input-construction policy, context lifetime,
-   stateful opcodes and evidenced helpers.  Only those facts are ever compared.
+   stateful opcodes and the helpers the reconciliation found callable.  Only
+   those facts are ever compared.
 
 2. **Structured binding.**  The plan returns a ``protocol_contract_bindings``
    object with the same shape.  It is a declaration, not a description: every
@@ -38,7 +39,10 @@ Comparison is one-directional where the contract can only require behaviour: a
 contract that repairs a checksum makes ``repair_checksum: false`` a failure, but
 a plan that repairs more than the contract demands is not thereby wrong.  The
 checks that catch *invention* -- extra frame fields, unlisted stateful opcodes,
-unevidenced helpers -- are set comparisons and are two-directional.
+helpers outside the callable set -- are set comparisons and are two-directional.
+That last one is the reconciliation's answer rather than the IR's: a name the
+contract merely *evidences* is not a name a harness may bind, and a plan that
+binds one is refused for the same reason the C audit refuses to call it.
 """
 
 from __future__ import annotations
@@ -48,7 +52,7 @@ import json
 import re
 from typing import Any, Iterable, Mapping, Sequence
 
-from .protocol_ir_helpers import collect_protocol_helpers
+from .protocol_ir_helpers import read_lifecycle_expression
 
 
 #: The miner's role vocabulary for the three fields that carry a protocol
@@ -86,11 +90,6 @@ _LIFETIME_VOCABULARY = {
 #: in ``FrameField.value`` describes how the field is loaded, and comparing a
 #: description would be comparing prose.
 _CONSTANT = re.compile(r"^(?:'(?:\\.|[^'\\])'|0[xX][0-9A-Fa-f]+|-?\d+)$")
-
-#: ``mp_init(&ctx)`` -> ``mp_init``.  The contract stores a convention
-#: expression; a binding stores the function name, which is the part the harness
-#: audit can check.
-_CALL_NAME = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
 
 @dataclass(frozen=True)
@@ -152,13 +151,22 @@ class PlanContractConformance:
 def protocol_contract_projection(
     ir: Any,
     *,
-    project_functions: Iterable[str] = (),
+    callable_helpers: Iterable[str] = (),
 ) -> ProtocolContractProjection | None:
     """Project a mined IR onto the facts a plan must preserve, or ``None``.
 
     ``None`` means "no protocol_ir.json", which is the FT-only run: the plan
     must then carry no bindings at all, and the projection cannot be invented
     from anything else.
+
+    ``callable_helpers`` is the reconciled helper set -- see
+    :func:`.protocol_reconciliation.reconcile_protocol_ir`.  This function used
+    to intersect the IR's own provenance against a set of project *names*, which
+    authorized ``le16``: a real definition, correctly evidenced, and ``static``
+    in the target's translation unit, so that a plan binding it produced a
+    harness the link step refused.  The names that survive reconciliation are
+    the ones a call can actually reach, and that decision is made in one place
+    rather than here.
     """
 
     if ir is None:
@@ -187,12 +195,18 @@ def protocol_contract_projection(
         "repair_length": ROLE_PAYLOAD_LENGTH in roles,
         "repair_checksum": ROLE_CHECKSUM in roles,
     }
+    if multi_frame and any(
+        getattr(field, "relation", None) is not None
+        and field.relation.kind == "size_of"
+        for field in frame.fields
+    ):
+        input_model["requires_length_sampling"] = True
     if multi_frame and step_cap is not None:
         input_model["bounded_steps"] = step_cap
     if step_source:
         input_model["bounded_steps_source"] = step_source
 
-    helpers = collect_protocol_helpers(ir).allowed & frozenset(project_functions)
+    helpers = frozenset(callable_helpers)
     bindings = {
         "frame": frame_block,
         "input_model": input_model,
@@ -202,6 +216,9 @@ def protocol_contract_projection(
         ),
         "helpers": sorted(helpers),
     }
+    dependencies = _stateful_dependencies(getattr(ir, "stateful_operations", ()))
+    if dependencies:
+        bindings["stateful_dependencies"] = [list(pair) for pair in dependencies]
     return ProtocolContractProjection(
         bindings=bindings, warnings=_projection_warnings(ir, input_model, fields)
     )
@@ -262,6 +279,8 @@ def validate_plan_contract(
     violations += _stateful_violations(
         bindings.get("stateful_operations"),
         projection.bindings["stateful_operations"],
+        projection.bindings.get("stateful_dependencies", ()),
+        bindings.get("stateful_dependencies"),
     )
     violations += _helper_violations(
         bindings.get("helpers"), projection.bindings["helpers"]
@@ -283,6 +302,8 @@ def _field_projection(field: Any) -> dict[str, Any]:
     }
     if getattr(field, "endianness", None):
         entry["endianness"] = field.endianness
+    if getattr(field, "relation", None) is not None:
+        entry["relation"] = field.relation.to_contract_block()
     constant = _constant_value(field)
     if constant is not None:
         entry["value"] = constant
@@ -330,10 +351,16 @@ def _context_projection(context: Any) -> dict[str, Any] | None:
 
 
 def _function_name(expression: Any) -> Any:
-    if not isinstance(expression, str):
-        return expression
-    match = _CALL_NAME.match(expression)
-    return match.group(1) if match else expression.strip()
+    """The function a lifecycle expression names, or ``None``.
+
+    Read with the same reader the reconciliation uses, so the gate cannot
+    disagree with the authorization about what a slot says.  An expression that
+    names no function -- a declaration, or a sentence -- binds nothing: requiring
+    a plan to echo prose back is the comparison this module exists to avoid, and
+    a slot the reconciliation refuses never reaches a plan at all.
+    """
+
+    return read_lifecycle_expression(expression).function
 
 
 def _lifetime(text: Any) -> str:
@@ -422,7 +449,7 @@ def _frame_violations(bindings: Any, expected: Mapping[str, Any]) -> list[str]:
                 violations.append(
                     f"{where}.{key} is {actual.get(key)!r}, the contract says {want[key]!r}"
                 )
-        for key in ("endianness", "value"):
+        for key in ("endianness", "value", "relation"):
             # Only stated where the contract states it: a missing literal is a
             # dropped repair, but an unstated one is not a requirement.
             if key in want and actual.get(key) != want[key]:
@@ -477,7 +504,31 @@ def _input_model_violations(
     for key, message in _POLICY_MESSAGES.items():
         if expected.get(key) and bindings.get(key) is not True:
             violations.append(message)
+    if expected.get("requires_length_sampling"):
+        if bindings.get("requires_length_sampling") is not True:
+            violations.append(
+                "protocol_contract_bindings.input_model.requires_length_sampling "
+                "must be true for a multi-frame size relation"
+            )
+        strategy = (input_strategy or {}).get("payload_length_strategy")
+        expression = (input_strategy or {}).get("payload_length_expression")
+        if strategy != "fuzz_byte_bounded" or not _length_sample_expression(expression):
+            violations.append(
+                "input_strategy must declare fuzz_byte_bounded and a bounded "
+                "payload_length_expression sampled from data bytes"
+            )
     return violations
+
+
+_LENGTH_SAMPLE = re.compile(
+    r"\bdata\s*\[[^\]]+\]\s*(?:%|&)", re.I
+)
+
+
+def _length_sample_expression(expression: Any) -> bool:
+    """Syntax check only: a byte subscript followed by a bounded operation."""
+
+    return isinstance(expression, str) and bool(_LENGTH_SAMPLE.search(expression))
 
 
 _POLICY_MESSAGES = {
@@ -527,7 +578,10 @@ def _context_violations(bindings: Any, expected: Mapping[str, Any] | None) -> li
     return violations
 
 
-def _stateful_violations(bindings: Any, expected: Sequence[str]) -> list[str]:
+def _stateful_violations(
+    bindings: Any, expected: Sequence[str],
+    dependencies: Sequence[Sequence[str]] = (), declared_dependencies: Any = None,
+) -> list[str]:
     actual, error = _name_list(bindings, "stateful_operations")
     if error:
         return [error]
@@ -543,7 +597,37 @@ def _stateful_violations(bindings: Any, expected: Sequence[str]) -> list[str]:
             "the plan binds stateful opcodes the contract does not name: "
             + ", ".join(invented)
         )
+    if dependencies:
+        wanted = [list(pair) for pair in dependencies]
+        if declared_dependencies != wanted:
+            violations.append(
+                "protocol_contract_bindings.stateful_dependencies does not "
+                "preserve the contract's state transitions"
+            )
+        positions = {name: index for index, name in enumerate(actual)}
+        for before, after in dependencies:
+            if before in positions and after in positions and positions[before] >= positions[after]:
+                violations.append(
+                    f"stateful opcode {after} must follow {before} because it "
+                    "reads state that operation writes"
+                )
     return violations
+
+
+def _stateful_dependencies(operations: Sequence[Any]) -> tuple[tuple[str, str], ...]:
+    """Order only reads of state written by another opcode.
+
+    A read of a member the same operation also writes is not a prerequisite:
+    STORE may inspect and replace existing state in either initial state.
+    """
+
+    pairs = {
+        (writer.opcode, reader.opcode)
+        for writer in operations for reader in operations
+        if writer.opcode != reader.opcode
+        and (set(writer.writes) & (set(reader.reads) - set(reader.writes)))
+    }
+    return tuple(sorted(pairs))
 
 
 def _helper_violations(bindings: Any, expected: Sequence[str]) -> list[str]:
@@ -553,9 +637,14 @@ def _helper_violations(bindings: Any, expected: Sequence[str]) -> list[str]:
     invented = sorted(set(actual) - set(expected))
     if not invented:
         return []
+    # Not "not evidenced": the contract may well evidence the name -- ``le16``
+    # is the algorithm behind ``payload_length`` -- and evidence is not a
+    # licence to call it.  What a plan may bind is what the reconciliation
+    # found callable, which is why the message names the call and not the
+    # contract's knowledge of it.
     return [
-        "the plan binds helpers the mined protocol does not evidence as project "
-        "functions: " + ", ".join(invented)
+        "the plan binds helpers the contract does not make callable in this "
+        "project: " + ", ".join(invented)
     ]
 
 

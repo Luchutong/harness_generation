@@ -766,6 +766,11 @@ class ContractStaysCleanTests(unittest.TestCase):
                 {
                     "name": "payload",
                     "offset": 8,
+                    "relation": {
+                        "direction": "parse",
+                        "kind": "size_of",
+                        "target": "payload"
+                    },
                     "value": "fuzzer-controlled bytes",
                     "width": "payload_length"
                 }

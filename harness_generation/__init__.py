@@ -41,7 +41,8 @@ from .protocol_conventions import (
     parse_convention_response)
 from .protocol_ir import (DEFAULT_LLM_CONFIDENCE, PROTOCOL_IR_SCHEMA_VERSION,
                           SOURCES, SOURCE_ENGINEERING, SOURCE_LLM, SOURCE_STATIC,
-                          SOURCE_UNKNOWN, VARIABLE_WIDTH, FrameField, FrameModel,
+                          SOURCE_UNKNOWN, VARIABLE_WIDTH, FieldRelation, SizeRelation,
+                          FrameField, FrameModel, StateVariable,
                           ProtocolEvidence, ProtocolIR, ProtocolIRError)
 from .protocol_miner import (PROTOCOL_MINER_SCHEMA_VERSION, ConstantFact,
                              Evidence, FieldFact, OpcodeFact, ProtocolFacts,
@@ -157,6 +158,9 @@ __all__ = [
     "SOURCE_UNKNOWN",
     "VARIABLE_WIDTH",
     "FrameField",
+    "FieldRelation",
+    "SizeRelation",
+    "StateVariable",
     "FrameModel",
     "ProtocolEvidence",
     "ProtocolIR",
