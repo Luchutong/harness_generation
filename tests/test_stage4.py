@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from harness_generation.llm import MockLLM
+from harness_generation.policy import FORBIDDEN_LOGGING_FUNCTIONS
 from harness_generation.sfg_adapter import load_sfg_artifacts
 from harness_generation.stage4 import (
     Stage4Error,
@@ -149,6 +150,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             attempt = artifacts / "generation" / self.triplet.id / "stage4" / "attempt_001"
             attempt_files = {path.name for path in attempt.iterdir()}
             attempt_metadata = json.loads((attempt / "metadata.json").read_text())
+            attempt_outcome = json.loads((attempt / "outcome.json").read_text())
             plan = json.loads((attempt / "plan.json").read_text())
 
         expected = self.harness_code() + "\n"
@@ -185,10 +187,11 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             attempt_files,
             {
                 "plan_prompt.txt", "plan_response.txt", "plan.json",
-                "prompt.txt", "response.txt", "parsed.json", "harness.c",
+                "prompt.txt", "response.txt", "parsed.json", "outcome.json", "harness.c",
                 "metadata.json",
             },
         )
+        self.assertEqual(attempt_outcome["status"], "pending_validation")
         self.assertEqual(attempt_metadata["stage"], "stage4")
         self.assertEqual(attempt_metadata["attempt"], 1)
         self.assertEqual(attempt_metadata["provider"], "mock")
@@ -228,9 +231,14 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             stage = artifacts / "generation" / self.triplet.id / "stage4"
             first = json.loads((stage / "attempt_001" / "parsed.json").read_text())
             second = json.loads((stage / "attempt_002" / "parsed.json").read_text())
+            first_outcome = json.loads((stage / "attempt_001" / "outcome.json").read_text())
+            second_outcome = json.loads((stage / "attempt_002" / "outcome.json").read_text())
 
         self.assertEqual(first["status"], "failed")
         self.assertEqual(second["status"], "passed")
+        self.assertEqual(first_outcome["status"], "failed")
+        self.assertEqual(first_outcome["phase"], "harness_code")
+        self.assertEqual(second_outcome["status"], "pending_validation")
         self.assertEqual(result.harness_code, self.harness_code())
 
     def test_normalizes_missing_headers_and_c_linkage_for_cpp_harness(self):
@@ -406,6 +414,42 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
                         artifacts=Path(temporary),
                     )
 
+    def test_rejects_every_forbidden_logging_function(self):
+        insertion = "    parser_free(&parser);\n"
+        for name in sorted(FORBIDDEN_LOGGING_FUNCTIONS):
+            code = self.harness_code().replace(
+                insertion, f"    {name}(0);\n" + insertion,
+            )
+            with self.subTest(function=name), tempfile.TemporaryDirectory() as temporary:
+                with self.assertRaisesRegex(Stage4Error, f"logging calls: {name}"):
+                    Stage4Generator(MockLLM([self.harness_plan(), code])).run(
+                        self.triplet,
+                        rough_code=self.rough_code(),
+                        functions_json=self.phase1_artifacts / "functions.json",
+                        artifacts=Path(temporary),
+                    )
+
+    def test_accepts_cpp_harness_with_standard_library_and_constexpr(self):
+        code = self.harness_code().replace(
+            "#include <stdint.h>",
+            "#include <stdint.h>\n#include <algorithm>\n#include <vector>",
+        ).replace(
+            "    Parser parser = {0};",
+            "    constexpr size_t max_bytes = 32;\n"
+            "    std::vector<uint8_t> bytes(data, data + std::min(size, max_bytes));\n"
+            "    Parser parser = {0};",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            result = Stage4Generator(MockLLM([self.harness_plan(), code])).run(
+                self.triplet,
+                rough_code=self.rough_code(),
+                functions_json=self.phase1_artifacts / "functions.json",
+                artifacts=Path(temporary),
+                publish=False,
+            )
+            self.assertIn("std::vector<uint8_t>", result.harness_code)
+            self.assertIn("constexpr size_t", result.harness_code)
+
     def test_rejects_cleanup_before_isf(self):
         code = self.harness_code().replace(
             "    Parser parser = {0};\n",
@@ -454,7 +498,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
                 "stage4" / "attempt_001"
             )
             parsed = json.loads((attempt / "parsed.json").read_text())
+            outcome = json.loads((attempt / "outcome.json").read_text())
             self.assertEqual(parsed["phase"], "harness_plan")
+            self.assertEqual(outcome["phase"], "harness_plan")
+            self.assertEqual(outcome["status"], "failed")
 
     def test_parse_harness_plan_rejects_embedded_final_c(self):
         invalid = json.loads(self.harness_plan())

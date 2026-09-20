@@ -1,4 +1,4 @@
-"""Stage 4: transform Stage 3 rough code into an audited libFuzzer harness."""
+"""Stage 4: transform Stage 3 rough code into an audited C++ libFuzzer harness."""
 
 from __future__ import annotations
 
@@ -14,14 +14,15 @@ from .generation_output import normalize_c_response
 from .generation_context import (bounded_validation_feedback,
                                  project_type_context)
 from .llm import LLMClient, LLMGeneration
+from .policy import FORBIDDEN_LOGGING_FUNCTIONS
 from .prompts import stage4_harness_plan, stage4_harness_transform
 from .sfg_adapter import is_null_node
 from .source_paths import SUPPORTED_FUNCTIONS_SCHEMA_VERSIONS
+from .stage4_outcome import record_parse_result
 from .triplet import FunctionTriplet
 
 
 FUZZ_ENTRY = "LLVMFuzzerTestOneInput"
-_LOGGING_CALLS = {"printf", "fprintf"}
 _FILE_IO_CALLS = {
     "fopen", "freopen", "fdopen", "fclose", "fread", "fwrite",
     "fseek", "ftell", "fgetpos", "fsetpos", "rewind", "tmpfile",
@@ -39,7 +40,7 @@ class Stage4Error(ValueError):
 
 @dataclass(frozen=True)
 class HarnessPlan:
-    """Structured Stage 4 plan that constrains final C harness generation."""
+    """Structured Stage 4 plan that constrains final C++ harness generation."""
 
     triplet_id: str
     entrypoint: str
@@ -191,7 +192,7 @@ class Stage4Generator:
                 prompt_version=plan_prompt.prompt_version,
                 plan_prompt_version=plan_prompt.prompt_version,
             ))
-            layout.write_json(attempt_directory / "parsed.json", {
+            record_parse_result(attempt_directory, {
                 "status": "failed",
                 "phase": "harness_plan",
                 "error_type": type(error).__name__,
@@ -232,7 +233,7 @@ class Stage4Generator:
                 prompt_version=prompt.prompt_version,
                 plan_prompt_version=plan_prompt.prompt_version,
             ))
-            layout.write_json(attempt_directory / "parsed.json", {
+            record_parse_result(attempt_directory, {
                 "status": "failed",
                 "phase": "harness_code",
                 "error_type": type(error).__name__,
@@ -248,7 +249,7 @@ class Stage4Generator:
             plan_generation=plan_generation,
         ))
         try:
-            analysis = _analyze_c(harness)
+            analysis = _analyze_cpp(harness)
             _validate_harness(
                 analysis,
                 triplet,
@@ -256,7 +257,7 @@ class Stage4Generator:
                 all_project_functions,
             )
         except Exception as error:
-            layout.write_json(attempt_directory / "parsed.json", {
+            record_parse_result(attempt_directory, {
                 "status": "failed",
                 "phase": "harness_code",
                 "error_type": type(error).__name__,
@@ -272,7 +273,7 @@ class Stage4Generator:
         if publish:
             stable_path = layout.harness
             layout.write_text(stable_path, persisted)
-        layout.write_json(attempt_directory / "parsed.json", {
+        record_parse_result(attempt_directory, {
             "status": "passed",
             "harness_plan": harness_plan.to_dict(),
             "definitions": [function.name for function in analysis.functions],
@@ -597,18 +598,18 @@ def _load_function_metadata(
     return selected, all_names, project_type_context(document)
 
 
-def _analyze_c(source: str) -> _HarnessAnalysis:
+def _analyze_cpp(source: str) -> _HarnessAnalysis:
     if not source:
         raise Stage4Error("LLM returned an empty Stage 4 harness")
     if "```" in source:
         raise Stage4Error("Stage 4 harness must not contain Markdown fences")
     try:
         import tree_sitter
-        import tree_sitter_c
+        import tree_sitter_cpp
     except ImportError as error:
-        raise Stage4Error("tree-sitter C dependencies are required for Stage 4") from error
+        raise Stage4Error("tree-sitter C++ dependencies are required for Stage 4") from error
 
-    language_value = tree_sitter_c.language()
+    language_value = tree_sitter_cpp.language()
     language = (language_value if isinstance(language_value, tree_sitter.Language)
                 else tree_sitter.Language(language_value))
     try:
@@ -622,7 +623,7 @@ def _analyze_c(source: str) -> _HarnessAnalysis:
     encoded = source.encode("utf-8")
     tree = parser.parse(encoded)
     if tree.root_node.has_error:
-        raise Stage4Error("LLM returned invalid C syntax")
+        raise Stage4Error("LLM returned invalid C++ syntax")
 
     functions = []
     all_calls = []
@@ -672,7 +673,7 @@ def _validate_harness(
         raise Stage4Error("Stage 4 harness must use both external data and size")
 
     calls = {call.name for call in analysis.calls}
-    forbidden_logging = sorted(calls & _LOGGING_CALLS)
+    forbidden_logging = sorted(calls & FORBIDDEN_LOGGING_FUNCTIONS)
     if forbidden_logging:
         raise Stage4Error("Stage 4 harness contains logging calls: " +
                           ", ".join(forbidden_logging))

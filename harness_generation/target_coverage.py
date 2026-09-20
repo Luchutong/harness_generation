@@ -14,7 +14,9 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .artifacts import ArtifactStore
 from .compiler_validation import BuildAdapter, CommandResult, CompilerConfig
-from .fuzzer_build import DEFAULT_FUZZER_COMPILE_FLAGS, DEFAULT_FUZZER_LINK_FLAGS
+from .fuzzer_build import (DEFAULT_FUZZER_COMPILE_FLAGS,
+                           DEFAULT_FUZZER_LINK_FLAGS,
+                           DEFAULT_HARNESS_COMPILE_FLAGS)
 from .records import write_json
 from .target_build import TargetBuildConfig
 
@@ -40,6 +42,9 @@ class TargetCoverageConfig:
     runs: int = 64
     timeout: float = 30.0
     compiler_flags: tuple[str, ...] = DEFAULT_FUZZER_COMPILE_FLAGS
+    harness_language: str = "c++"
+    harness_compile_flags: tuple[str, ...] = DEFAULT_HARNESS_COMPILE_FLAGS
+    harness_compiler: str = "clang++"
     link_flags: tuple[str, ...] = DEFAULT_FUZZER_LINK_FLAGS
     llvm_profdata: str = "llvm-profdata"
     llvm_cov: str = "llvm-cov"
@@ -48,6 +53,8 @@ class TargetCoverageConfig:
     def __post_init__(self) -> None:
         if type(self.runs) is not int or self.runs < 1:
             raise ValueError("runs must be a positive integer")
+        if self.harness_language not in {"c", "c++"}:
+            raise ValueError("harness_language must be 'c' or 'c++'")
         if (
             isinstance(self.timeout, bool)
             or not isinstance(self.timeout, (int, float))
@@ -55,7 +62,7 @@ class TargetCoverageConfig:
             or self.timeout <= 0
         ):
             raise ValueError("timeout must be positive")
-        for field in ("compiler_flags", "link_flags"):
+        for field in ("compiler_flags", "harness_compile_flags", "link_flags"):
             values = getattr(self, field)
             if isinstance(values, (str, bytes)) or any(
                 not isinstance(value, str) or not value for value in values
@@ -66,6 +73,8 @@ class TargetCoverageConfig:
             value = getattr(self, field)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{field} must be non-empty text")
+        if not isinstance(self.harness_compiler, str) or not self.harness_compiler.strip():
+            raise ValueError("harness_compiler must be non-empty text")
 
 
 @dataclass(frozen=True)
@@ -123,11 +132,17 @@ class TargetCoverageCollector:
         errors: list[str] = []
         warnings: list[str] = []
         compiler = _tool_path(target.compiler)
+        harness_compiler_name = (
+            target.compiler if self.config.harness_language == "c"
+            else self.config.harness_compiler
+        )
+        harness_compiler = _tool_path(harness_compiler_name)
         profdata_tool = _tool_path(self.config.llvm_profdata)
         cov_tool = _tool_path(self.config.llvm_cov)
         missing = [
             name for name, path in (
                 (target.compiler, compiler),
+                (harness_compiler_name, harness_compiler),
                 (self.config.llvm_profdata, profdata_tool),
                 (self.config.llvm_cov, cov_tool),
             ) if path is None
@@ -146,7 +161,7 @@ class TargetCoverageCollector:
                 "unavailable", directory, summary, (), warnings=(tool_error,)
             )
 
-        compile_config = CompilerConfig(
+        target_compile_config = CompilerConfig(
             compiler=target.compiler,
             include_paths=target.include_paths,
             compiler_flags=_unique_flags(
@@ -161,7 +176,7 @@ class TargetCoverageCollector:
                 output = objects / source.relative_to(target.project_root).with_suffix(".o")
                 output.parent.mkdir(parents=True, exist_ok=True)
                 result = self._run(
-                    self.build_adapter.object_command(source, output, compile_config),
+                    self.build_adapter.object_command(source, output, target_compile_config),
                     cwd=target.project_root,
                 )
                 commands.append(result)
@@ -173,9 +188,21 @@ class TargetCoverageCollector:
         harness_path = Path(harness).resolve()
         harness_object = objects / "harness.o"
         if not errors:
+            harness_flags = (
+                _unique_flags(target.compiler_flags, self.config.compiler_flags, _PROFILE_FLAGS)
+                if self.config.harness_language == "c" else
+                _unique_flags(self.config.harness_compile_flags, _PROFILE_FLAGS)
+            )
+            harness_compile_config = CompilerConfig(
+                compiler=harness_compiler_name,
+                include_paths=target.include_paths,
+                compiler_flags=harness_flags,
+                working_directory=target.project_root,
+                timeout=self.config.timeout,
+            )
             result = self._run(
                 self.build_adapter.object_command(
-                    harness_path, harness_object, compile_config
+                    harness_path, harness_object, harness_compile_config
                 ),
                 cwd=target.project_root,
             )
@@ -188,7 +215,7 @@ class TargetCoverageCollector:
         executable = directory / "coverage_fuzzer"
         if not errors:
             link_config = CompilerConfig(
-                compiler=target.compiler,
+                compiler=harness_compiler_name,
                 link_flags=_unique_flags(self.config.link_flags, _PROFILE_FLAGS),
                 working_directory=target.project_root,
                 timeout=self.config.timeout,

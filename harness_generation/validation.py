@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from .artifacts import ArtifactStore
+from .policy import FORBIDDEN_LOGGING_FUNCTIONS
 from .records import write_json
 from .source_paths import SUPPORTED_FUNCTIONS_SCHEMA_VERSIONS
 from .triplet import FunctionTriplet
@@ -24,9 +25,6 @@ DEFAULT_ALLOWED_FUNCTIONS = frozenset({
     "abort", "assert", "calloc", "free", "malloc", "memcmp", "memcpy",
     "memmove", "memset", "realloc", "strchr", "strcmp", "strlen",
     "strncmp", "strnlen", "strrchr",
-})
-FORBIDDEN_LOGGING_FUNCTIONS = frozenset({
-    "fprintf", "perror", "printf", "putchar", "puts", "vfprintf", "vprintf",
 })
 FORBIDDEN_IO_FUNCTIONS = frozenset({
     "fclose", "fdopen", "fgetpos", "fopen", "fread", "freopen", "fseek",

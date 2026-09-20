@@ -31,8 +31,10 @@ MINI_PARSER = ROOT / "benchmarks" / "mini_parser"
 
 VALID_HARNESS = """#include <stddef.h>
 #include <stdint.h>
+extern "C" {
 #include "parser.h"
-int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+}
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     Parser parser = {0};
     parser_from_memory(&parser, data, (unsigned long)size);
     Node node = parser_next(&parser);
@@ -154,6 +156,38 @@ class TargetCoverageTests(unittest.TestCase):
         self.assertNotIn("harness.c", json.dumps(summary["target_only"]))
 
     @unittest.skipUnless(LLVM_COVERAGE_AVAILABLE, LLVM_COVERAGE_SKIP_REASON)
+    def test_cpp_standard_library_harness_compiles_links_and_runs(self):
+        harness = self.directory / "harness.c"
+        harness.write_text(VALID_HARNESS.replace(
+            "#include <stdint.h>",
+            "#include <stdint.h>\n#include <vector>",
+        ).replace(
+            "    Parser parser = {0};",
+            "    std::vector<uint8_t> bytes(data, data + size);\n"
+            "    volatile size_t copied = bytes.size();\n"
+            "    (void)copied;\n"
+            "    Parser parser = {0};",
+        ), encoding="utf-8")
+        result = TargetCoverageCollector(TargetCoverageConfig(runs=1)).measure(
+            harness,
+            TargetBuildConfig.for_simple_project(SIMPLE_PROJECT),
+            artifacts=self.directory / "artifacts",
+            ft_id="ft_cpp_coverage",
+        )
+
+        self.assertEqual(result.status, "passed", result.errors)
+        commands = [item.command for item in result.commands]
+        harness_compile = next(command for command in commands if
+                               str(harness) in command)
+        link = next(command for command in commands if
+                    command[-1].endswith("coverage_fuzzer"))
+        self.assertEqual(Path(harness_compile[0]).name, "clang++")
+        self.assertIn("-std=c++17", harness_compile)
+        self.assertEqual(Path(link[0]).name, "clang++")
+        self.assertIn("parser_from_memory",
+                      result.summary["target_only"]["entered_functions"])
+
+    @unittest.skipUnless(LLVM_COVERAGE_AVAILABLE, LLVM_COVERAGE_SKIP_REASON)
     def test_cli_can_measure_mini_parser_harness_that_includes_target(self):
         artifacts = self.directory / "artifacts"
         ft_id = "ft_mini_parser_structured"
@@ -169,6 +203,7 @@ class TargetCoverageTests(unittest.TestCase):
                 "--include", str(MINI_PARSER.relative_to(ROOT)),
                 "--corpus", str((MINI_PARSER / "corpus" / "structured").relative_to(ROOT)),
                 "--runs", "8",
+                "--harness-language", "c",
                 "--harness-includes-target",
             ])
 

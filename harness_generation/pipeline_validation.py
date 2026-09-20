@@ -19,6 +19,7 @@ from .stage1 import Stage1Result
 from .stage2 import Stage2Result, required_processing_units
 from .stage3 import Stage3Result
 from .stage4 import Stage4Result
+from .stage4_outcome import record_validation_exception, record_validation_result
 from .target_build import TargetBuildConfig
 from .triplet import FunctionTriplet
 from .validation import (
@@ -236,6 +237,15 @@ class PipelineStageValidator:
         return _with_failure_type(validation, "stage3_validation")
 
     def validate_stage4(self, result: Stage4Result) -> ValidationResult:
+        try:
+            validation = self._validate_stage4(result)
+        except Exception as error:
+            record_validation_exception(result.attempt_directory, error)
+            raise
+        record_validation_result(result.attempt_directory, validation)
+        return validation
+
+    def _validate_stage4(self, result: Stage4Result) -> ValidationResult:
         attempt = result.attempt_directory
         intermediate = IntermediateValidator().validate_triplet(
             result.harness_path,

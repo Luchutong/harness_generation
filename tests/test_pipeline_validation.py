@@ -186,6 +186,13 @@ void rough_sequence(Parser *parser, const unsigned char *data) {
             self.assertEqual(
                 result.metadata["failure_type"], "intermediate_validation"
             )
+            outcome = json.loads((attempt / "outcome.json").read_text())
+            self.assertEqual(outcome["status"], "failed")
+            self.assertEqual(outcome["phase"], "intermediate")
+            self.assertEqual(outcome["parsed_status"], "not_recorded")
+            self.assertEqual(outcome["validation_artifacts"], {
+                "intermediate": "validation/intermediate.json",
+            })
             self.assertFalse((artifacts / "build" / triplet.id).exists())
             self.assertFalse((
                 attempt / "validation" / "compiler.json"

@@ -201,11 +201,21 @@ class ValidatorRollbackIntegrationTests(unittest.TestCase):
 
             first_result = json.loads(first_compiler.read_text(encoding="utf-8"))
             second_result = json.loads(second_compiler.read_text(encoding="utf-8"))
+            first_parsed = json.loads((first_attempt / "parsed.json").read_text())
+            first_outcome = json.loads((first_attempt / "outcome.json").read_text())
+            second_outcome = json.loads((second_attempt / "outcome.json").read_text())
             state = json.loads(
                 (generation / "pipeline_state.json").read_text(encoding="utf-8")
             )
 
             self.assertEqual(first_result["validator"], "compiler")
+            self.assertEqual(first_parsed["status"], "passed")
+            self.assertEqual(first_outcome["status"], "failed")
+            self.assertEqual(first_outcome["phase"], "harness_compile")
+            self.assertEqual(first_outcome["failure_type"], "compile_error")
+            self.assertEqual(first_outcome["validation_artifacts"]["compiler"],
+                             "validation/compiler.json")
+            self.assertEqual(second_outcome["status"], "passed")
             self.assertEqual(first_result["status"], "failed")
             self.assertFalse(first_result["metadata"]["syntax_valid"])
             self.assertNotEqual(first_result["return_code"], 0)
@@ -281,6 +291,7 @@ class ValidatorRollbackIntegrationTests(unittest.TestCase):
             first_linker = json.loads((
                 first / "linker.json"
             ).read_text(encoding="utf-8"))
+            first_outcome = json.loads((first.parent / "outcome.json").read_text())
             second_linker = json.loads((
                 second / "linker.json"
             ).read_text(encoding="utf-8"))
@@ -295,6 +306,11 @@ class ValidatorRollbackIntegrationTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertEqual(first_compiler["status"], "passed")
             self.assertEqual(first_linker["status"], "failed")
+            self.assertEqual(first_outcome["status"], "failed")
+            self.assertEqual(first_outcome["phase"], "link")
+            self.assertEqual(first_outcome["failure_type"], "link_error")
+            self.assertEqual(first_outcome["validation_artifacts"]["linker"],
+                             "validation/linker.json")
             self.assertNotEqual(first_linker["return_code"], 0)
             self.assertIn("undefined_function", first_linker["stderr"])
             self.assertEqual(rollback["validator"], "linker")

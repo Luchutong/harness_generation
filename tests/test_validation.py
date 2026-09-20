@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from harness_generation.sfg_adapter import load_sfg_artifacts
+from harness_generation.policy import FORBIDDEN_LOGGING_FUNCTIONS
 from harness_generation.triplet_extractor import extract_function_triplets
 from harness_generation.validation import (
     IntermediateValidator,
@@ -177,6 +178,23 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         self.assertEqual(result.metadata["forbidden_io_calls"], ["fopen"])
         self.assertTrue(any("forbidden logging" in error for error in result.errors))
         self.assertTrue(any("forbidden I/O" in error for error in result.errors))
+
+    def test_rejects_every_forbidden_logging_function(self):
+        self.assertEqual(FORBIDDEN_LOGGING_FUNCTIONS, frozenset({
+            "fprintf", "perror", "printf", "putchar", "puts", "vfprintf", "vprintf",
+        }))
+        for name in sorted(FORBIDDEN_LOGGING_FUNCTIONS):
+            source = f"void generated(void) {{ parse_input(); {name}(0); }}"
+            with self.subTest(function=name), tempfile.TemporaryDirectory() as temporary:
+                result = validate_intermediate(
+                    source,
+                    expected_functions=("parse_input",),
+                    target_functions=("parse_input",),
+                    validation_path=Path(temporary) / "validation.json",
+                )
+                self.assertEqual(result.metadata["forbidden_logging_calls"], [name])
+                self.assertTrue(any("forbidden logging calls" in error
+                                    for error in result.errors))
 
     def test_validate_triplet_uses_real_functions_and_artifact_path(self):
         with tempfile.TemporaryDirectory() as temporary:

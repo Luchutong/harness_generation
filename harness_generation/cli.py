@@ -135,6 +135,10 @@ def _measure_target_main(argv: list[str]) -> int:
     parser.add_argument("--corpus", type=Path)
     parser.add_argument("--runs", type=int, default=64)
     parser.add_argument(
+        "--harness-language", choices=("c++", "c"), default="c++",
+        help="Language of the harness source; use c for legacy C reference harnesses.",
+    )
+    parser.add_argument(
         "--harness-includes-target",
         action="store_true",
         help="Do not separately compile target sources; use them only as coverage filters.",
@@ -165,6 +169,7 @@ def _measure_target_main(argv: list[str]) -> int:
             )
         result = TargetCoverageCollector(TargetCoverageConfig(
             runs=args.runs,
+            harness_language=args.harness_language,
             compile_target_sources=not args.harness_includes_target,
         )).measure(
             harness,
