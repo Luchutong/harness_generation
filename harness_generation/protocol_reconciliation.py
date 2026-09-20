@@ -300,10 +300,19 @@ def _links_from_the_c_library(name: str, resolution: FunctionResolution) -> bool
     ``init: "malloc(sizeof(mp_context))"`` asks for a lifecycle the harness can
     perform, and the project's rows are the wrong thing to judge it by: a
     ``static`` definition of the name lives inside the target's own translation
-    unit and is invisible here.  Two external project definitions are still
-    ambiguous; the library's name must not turn that broken project claim into
-    permission.  What permits an otherwise absent call is the audit's
-    standard-C allow-list, the same list every other ``memset`` runs on.
+    unit and is invisible here.  What permits an otherwise absent call is the
+    audit's standard-C allow-list, the same list every other ``memset`` runs on.
+
+    That allow-list is why a name merely declared, or defined only ``static``,
+    is not disqualifying: it says the harness may *write* the call.  It does not
+    say what the linker binds it to, which is why two linkable project
+    definitions of a library's name are still refused.  The ambiguity is not
+    resolved by the name being a familiar one -- it is the one case where the
+    project's own rows decide the target and cannot, and reading it as
+    "the library's, then" would be this module answering a question the project
+    left open.  A helper pays for that with its authorization; the asymmetry
+    with a lifecycle (see the module docstring) does not extend to it, because
+    a broken claim is not the same finding as an optional one.
 
     A name the project defines *and* links is not this case: it is a project
     function, and the project's verdict is the interesting one.

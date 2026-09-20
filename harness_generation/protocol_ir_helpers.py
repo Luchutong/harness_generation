@@ -82,9 +82,15 @@ _BARE_NAME = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*$")
 _AFTER_CALL = re.compile(r"\s*;?\s*$")
 
 #: A declaration rather than a call: ``mp_context ctx = {0}``, ``struct
-#: mp_context ctx;``.  What separates it from prose is the *shape* -- a type,
-#: the name it declares, then an initializer, a terminator or an array -- and a
-#: sentence has no such shape however many words it uses.
+#: mp_context ctx;``.  What separates it from prose is the *shape*, and the
+#: shape has to be a whole one: an optional sequence of specifiers, the type,
+#: the name it declares, then exactly one of an initializer, an array bound or a
+#: terminator, and nothing after it.  A bare type and name is a fragment, and
+#: the initializer is restricted to the forms this module can read without
+#: parsing C -- a braced list, one name, one number.  The restrictions are what
+#: keep the match from being a fiction: a slot that half-declares something has
+#: not said how the context comes to exist, and ``mp_context ctx; free(ctx)``
+#: would otherwise be read as a declaration that silently drops a call.
 _DECLARATION = re.compile(
     r"^\s*(?:(?:auto|const|enum|extern|long|register|short|signed|static|struct"
     r"|union|unsigned|volatile)\s+)*"

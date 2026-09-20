@@ -383,7 +383,10 @@ Stage 4 检查该表达式是否写入 harness，并以语法近似追到 payloa
 
 **收尾守卫（2026-09-20）**：类型化声明必须是完整的单条声明，只能用于 `context.init`，
 且声明的基础类型须与 `context.type` 相符；未完成的赋值和后接第二条调用均被拒绝。
-标准库名称也不能遮盖项目中两个同名外部定义造成的歧义。
+标准库名称也不能遮盖项目中两个同名外部定义造成的歧义——`DEFAULT_ALLOWED_FUNCTIONS`
+允许 harness **写出**这个调用，并不证明链接时它会绑到 libc；两个同名可链接定义并存时调用目标
+不可判定，这一歧义不能读作"只丢了一条可选授权"，因此该角落保持 `standard_library=False`
+并发出诊断，与非 libc 名字的 `AMBIGUOUS` 处理一致。
 
 **关于 call closure 的一处更正（本次改动同时修正）**：本节原先把"不改 IR、改为让 FT 抽取
 补上 call closure"这条替代路线挂在 `PFM §1.3 Controlled Static Loop Analysis` 名下，并
