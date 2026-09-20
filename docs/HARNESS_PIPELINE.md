@@ -124,7 +124,7 @@ null 表示由独立 adapter 统一识别，包括 `null`、`NULL`、`(null)`、
 | Stage 1 | FT、相关 `functions.json` records、相关函数真实源码 | 为 FT 内每个函数生成严格 JSON 文档；不会发送整个项目源码 | `stage1_docs.json`、`raw/stage1_*.txt` |
 | Stage 2 | FT、Stage 1 docs、structural edges | 建立 processing units，为每个局部结构转换生成 snippet；同端点函数不会丢失 | `stage2_snippets.json`、`snippets/unit_*.c`、Stage 2 prompts/raw |
 | Stage 3 | snippets、依赖、函数 metadata、FT structures | 由 LLM 做 dependency-aware rough assembly，并用 tree-sitter 审计调用 | `stage3_rough.c`、`stage3_metadata.json`、`stage3/attempt_NNN/` |
-| Stage 4 | rough code、唯一 ISF、函数 metadata、HarnessPlan | 先生成并校验严格 JSON `HarnessPlan`，再按 plan 转换为 C 语言 `LLVMFuzzerTestOneInput`，检查 data/size 接入、目标 API、cleanup 和禁用 I/O/logging | `stage4_harness_plan.json`、`stage4_harness.c`、`harnesses/<ft_id>.c`、`stage4/attempt_NNN/` |
+| Stage 4 | rough code、唯一 ISF、函数 metadata、HarnessPlan | 先生成并校验严格 JSON `HarnessPlan`，再按 plan 转换为 C++ `LLVMFuzzerTestOneInput`，检查 data/size 接入、目标 API、cleanup 和禁用 I/O/logging | `stage4_harness_plan.json`、`stage4_harness.c`、`harnesses/<ft_id>.c`、`stage4/attempt_NNN/` |
 
 Stage 4 被刻意拆成 plan 与 code 两次 LLM invocation。第一次只能返回 JSON 计划，
 必须覆盖 FT 全部函数，唯一 ISF 必须绑定 `data` 和 `size`，PRF+HPF 函数按
@@ -254,6 +254,7 @@ artifacts/<project>/
 │       │       ├── prompt.txt
 │       │       ├── response.txt
 │       │       ├── parsed.json
+│       │       ├── outcome.json
 │       │       ├── harness.c
 │       │       └── metadata.json
 │       └── validation/
@@ -403,6 +404,11 @@ probe 确认 clang、ar、libFuzzer、ASan、UBSan 可用时，测试会执行�
   `stage4_harness.c` 只在校验通过后更新。Metadata 保存 stage、attempt、FT、prompt version、model/provider、UTC
   timestamp，以及可获得时的 temperature、max tokens、rollback source/retry reason，
   从不保存 API key。
+- Stage 4 的 `parsed.json` 只记录 plan/code 解析结果。每个 attempt 的
+  `outcome.json` 汇总最终状态、失败阶段与类型，并指向同目录的
+  `validation/*.json`。单独运行 Stage 4 时状态为 `pending_validation`；流水线
+  验证结束后更新。统计 attempt 失败类型应读取 `outcome.json`，不能只读
+  `parsed.json`。
 - 当前真实 LLM provider 是 OpenAI-compatible endpoint。没有同时配置
   `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL` 时会在 Stage 1 前明确失败，不会静默
   fallback 到 Mock。

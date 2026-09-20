@@ -73,7 +73,7 @@ python3 -m harness_generation measure-target \
   --runs 64
 ```
 
-如果 benchmark harness 已经直接 `#include` 目标实现文件，例如 `benchmarks/mini_parser/harnesses/structured.c`，使用 `--harness-includes-target`，让目标源码只作为 coverage 过滤范围而不重复编译：
+如果 C 参考 harness 已经直接 `#include` 目标实现文件，例如 `benchmarks/mini_parser/harnesses/structured.c`，使用 `--harness-language c` 和 `--harness-includes-target`，让目标源码只作为 coverage 过滤范围而不重复编译。生成的 Harness 默认按 C++17 编译和链接：
 
 ```bash
 python3 -m harness_generation measure-target \
@@ -84,6 +84,7 @@ python3 -m harness_generation measure-target \
   --target-source benchmarks/mini_parser/target.c \
   --include benchmarks/mini_parser \
   --corpus benchmarks/mini_parser/corpus/structured \
+  --harness-language c \
   --harness-includes-target \
   --runs 64
 ```
