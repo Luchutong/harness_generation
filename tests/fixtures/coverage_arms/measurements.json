@@ -2561,7 +2561,8 @@
             "min_ratio": 0.833333,
             "max_ratio": 0.935897,
             "passes_strict": false,
-            "passes_tolerance": false
+            "passes_tolerance": false,
+            "unmeasured": false
           },
           "regions": {
             "per_seed": [
@@ -2593,7 +2594,8 @@
             "min_ratio": 0.8,
             "max_ratio": 0.871429,
             "passes_strict": false,
-            "passes_tolerance": false
+            "passes_tolerance": false,
+            "unmeasured": false
           },
           "branches": {
             "per_seed": [
@@ -2625,7 +2627,8 @@
             "min_ratio": 0.767858,
             "max_ratio": 0.875,
             "passes_strict": false,
-            "passes_tolerance": false
+            "passes_tolerance": false,
+            "unmeasured": false
           }
         },
         "verdict": "below_reference"
@@ -2693,7 +2696,8 @@
         "min_ratio": 1.0,
         "max_ratio": 1.0,
         "passes_strict": true,
-        "passes_tolerance": true
+        "passes_tolerance": true,
+        "unmeasured": false
       },
       "regions": {
         "per_seed": [
@@ -2725,7 +2729,8 @@
         "min_ratio": 0.957143,
         "max_ratio": 0.957143,
         "passes_strict": false,
-        "passes_tolerance": true
+        "passes_tolerance": true,
+        "unmeasured": false
       },
       "branches": {
         "per_seed": [
@@ -2757,7 +2762,8 @@
         "min_ratio": 0.946429,
         "max_ratio": 0.946429,
         "passes_strict": false,
-        "passes_tolerance": false
+        "passes_tolerance": false,
+        "unmeasured": false
       }
     },
     "verdict": "below_reference"

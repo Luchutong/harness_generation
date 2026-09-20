@@ -10,7 +10,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from .artifacts import ArtifactStore, TripletArtifacts
 from .compiler_validation import CompilerConfig, CompilerValidator
-from .fuzzer_build import FuzzerBuildValidator
+from .fuzzer_build import DEFAULT_HARNESS_COMPILER, FuzzerBuildValidator
 from .fuzz_smoke import (LibFuzzerSmokeConfig, LibFuzzerSmokeValidator,
                          Runner as FuzzRunner)
 from .runtime_validation import RuntimeValidationResult, RuntimeValidator
@@ -19,6 +19,7 @@ from .stage1 import Stage1Result
 from .stage2 import Stage2Result, required_processing_units
 from .stage3 import Stage3Result
 from .stage4 import Stage4Result, declared_contract_helpers
+from .stage4_outcome import record_validation_exception, record_validation_result
 from .target_build import TargetBuildConfig
 from .triplet import FunctionTriplet
 from .validation import (
@@ -253,6 +254,22 @@ class PipelineStageValidator:
         return declared_contract_helpers(self.artifacts, self.target_functions)
 
     def validate_stage4(self, result: Stage4Result) -> ValidationResult:
+        """Validate a Stage 4 harness and write the attempt's final outcome.
+
+        The outcome is recorded here rather than inside :meth:`_validate_stage4`
+        because every way out of that method -- six returns and a raise -- has to
+        record one, and a wrapper is the only shape that cannot forget a path.
+        """
+
+        try:
+            validation = self._validate_stage4(result)
+        except Exception as error:
+            record_validation_exception(self.layout, result.attempt_directory, error)
+            raise
+        record_validation_result(self.layout, result.attempt_directory, validation)
+        return validation
+
+    def _validate_stage4(self, result: Stage4Result) -> ValidationResult:
         attempt = result.attempt_directory
         intermediate = IntermediateValidator().validate_triplet(
             result.harness_path,
@@ -627,7 +644,7 @@ def _default_compiler_config(project_root: Path) -> CompilerConfig:
         path for path in (project_root, project_root / "include") if path.is_dir()
     )
     return CompilerConfig(
-        compiler="clang++",
+        compiler=DEFAULT_HARNESS_COMPILER,
         include_paths=include_paths,
         compiler_flags=("-x", "c++", "-std=c++17"),
     )

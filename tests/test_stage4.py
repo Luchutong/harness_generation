@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from harness_generation.llm import MockLLM
+from harness_generation.policy import FORBIDDEN_LOGGING_FUNCTIONS
 from harness_generation.sfg_adapter import load_sfg_artifacts
 from harness_generation.stage4 import (
     Stage4Error,
@@ -186,7 +187,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             {
                 "plan_prompt.txt", "plan_response.txt", "plan.json",
                 "prompt.txt", "response.txt", "parsed.json", "harness.c",
-                "metadata.json",
+                "metadata.json", "outcome.json",
             },
         )
         self.assertEqual(attempt_metadata["stage"], "stage4")
@@ -406,6 +407,28 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
                         artifacts=Path(temporary),
                     )
 
+    def test_rejects_every_forbidden_logging_function(self):
+        """All seven names, not the two the Stage 4 copy happened to list.
+
+        ``puts`` and ``perror`` are the interesting ones: they were refused by
+        the intermediate validator and accepted here, so a harness reached the
+        published artifact depending on which audit ran.
+        """
+
+        insertion = "    parser_free(&parser);\n"
+        for name in sorted(FORBIDDEN_LOGGING_FUNCTIONS):
+            with self.subTest(function=name), tempfile.TemporaryDirectory() as temporary:
+                code = self.harness_code().replace(
+                    insertion, f'    {name}(0, "x");\n' + insertion,
+                )
+                with self.assertRaisesRegex(Stage4Error, "logging calls"):
+                    Stage4Generator(MockLLM([self.harness_plan(), code])).run(
+                        self.triplet,
+                        rough_code=self.rough_code(),
+                        functions_json=self.phase1_artifacts / "functions.json",
+                        artifacts=Path(temporary),
+                    )
+
     def test_rejects_cleanup_before_isf(self):
         code = self.harness_code().replace(
             "    Parser parser = {0};\n",
@@ -419,6 +442,43 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
                     functions_json=self.phase1_artifacts / "functions.json",
                     artifacts=Path(temporary),
                 )
+
+    def test_a_refused_harness_leaves_its_attempt_an_outcome(self):
+        """A refusal raises, so the attempt has to record itself on the way out.
+
+        The attempt directory is written before the audit runs, and the audit's
+        refusal propagates as an exception -- nothing after it executes.  Without
+        an outcome written at the refusal, the attempt is a directory with a
+        ``harness.c`` and no statement about why it was not published.
+        """
+
+        code = self.harness_code().replace(
+            "    Parser parser = {0};\n",
+            "    Parser parser = {0};\n    parser_free(&parser);\n",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(Stage4Error, "cleanup occurs before ISF"):
+                Stage4Generator(MockLLM([self.harness_plan(), code])).run(
+                    self.triplet,
+                    rough_code=self.rough_code(),
+                    functions_json=self.phase1_artifacts / "functions.json",
+                    artifacts=Path(temporary),
+                )
+            attempt = (
+                Path(temporary) / "generation" / self.triplet.id
+                / "stage4" / "attempt_001"
+            )
+            parsed = json.loads((attempt / "parsed.json").read_text(encoding="utf-8"))
+            outcome = json.loads((attempt / "outcome.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(parsed["status"], "failed")
+        self.assertEqual(parsed["phase"], "harness_code")
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["phase"], "harness_code")
+        self.assertEqual(outcome["failure_type"], "harness_code_error")
+        self.assertEqual(outcome["error_type"], "Stage4Error")
+        self.assertIn("cleanup occurs before ISF", outcome["error"])
+        self.assertEqual(outcome["parsed_status"], "failed")
 
     def test_rejects_cleanup_before_downstream_processing(self):
         code = self.harness_code()

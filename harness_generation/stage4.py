@@ -14,6 +14,12 @@ from .generation_output import normalize_c_response
 from .generation_context import (bounded_validation_feedback,
                                  project_type_context)
 from .llm import LLMClient, LLMGeneration
+# The policy sets live in one place; see :mod:`harness_generation.policy`.
+from .policy import (
+    DEFAULT_ALLOWED_FUNCTIONS,
+    FORBIDDEN_IO_FUNCTIONS,
+    FORBIDDEN_LOGGING_FUNCTIONS,
+)
 from .prompts import stage4_harness_plan, stage4_harness_transform
 from .protocol_ir import ProtocolIR, ProtocolIRError
 from .protocol_ir_helpers import ProtocolHelperSet, collect_protocol_helpers
@@ -23,20 +29,12 @@ from .protocol_plan_validation import (
 )
 from .sfg_adapter import is_null_node
 from .source_paths import SUPPORTED_FUNCTIONS_SCHEMA_VERSIONS
+from .stage4_outcome import record_parse_result
 from .triplet import FunctionTriplet
+from .validation import select_language
 
 
 FUZZ_ENTRY = "LLVMFuzzerTestOneInput"
-_LOGGING_CALLS = {"printf", "fprintf"}
-_FILE_IO_CALLS = {
-    "fopen", "freopen", "fdopen", "fclose", "fread", "fwrite",
-    "fseek", "ftell", "fgetpos", "fsetpos", "rewind", "tmpfile",
-}
-_STANDARD_C_CALLS = {
-    "abort", "assert", "calloc", "free", "malloc", "memcmp", "memcpy",
-    "memmove", "memset", "realloc", "strchr", "strcmp", "strlen",
-    "strncmp", "strnlen", "strrchr",
-}
 #: The only copies the repaired-frame connection recognises, and it recognises
 #: them by the callee name alone -- see :func:`_isf_input_connection`.
 _COPY_CALLS = {"memcpy", "memmove"}
@@ -306,7 +304,7 @@ class Stage4Generator:
                 prompt_version=plan_prompt.prompt_version,
                 plan_prompt_version=plan_prompt.prompt_version,
             ))
-            layout.write_json(attempt_directory / "parsed.json", {
+            record_parse_result(layout, attempt_directory, {
                 "status": "failed",
                 "phase": "harness_plan",
                 "error_type": type(error).__name__,
@@ -348,7 +346,7 @@ class Stage4Generator:
                 prompt_version=prompt.prompt_version,
                 plan_prompt_version=plan_prompt.prompt_version,
             ))
-            layout.write_json(attempt_directory / "parsed.json", {
+            record_parse_result(layout, attempt_directory, {
                 "status": "failed",
                 "phase": "harness_code",
                 "error_type": type(error).__name__,
@@ -377,7 +375,7 @@ class Stage4Generator:
                 structured_frame=protocol_ir is not None,
             )
         except Exception as error:
-            layout.write_json(attempt_directory / "parsed.json", {
+            record_parse_result(layout, attempt_directory, {
                 "status": "failed",
                 "phase": "harness_code",
                 "error_type": type(error).__name__,
@@ -408,7 +406,7 @@ class Stage4Generator:
             # deliberately could not decide.  Absent without an IR, so an
             # FT-only attempt record stays exactly what it was.
             passed_record["protocol_contract_conformance"] = conformance.to_dict()
-        layout.write_json(attempt_directory / "parsed.json", passed_record)
+        record_parse_result(layout, attempt_directory, passed_record)
         return Stage4Result(
             triplet_id=triplet.id,
             harness_code=harness,
@@ -767,9 +765,7 @@ def _isf_requires_stream_size(metadata: Mapping[str, Any]) -> bool:
     has_length = any(
         isinstance(parameter, Mapping)
         and parameter.get("is_pointer") is not True
-        and str(parameter.get("name", "")).lower() in {
-            "size", "len", "length", "n", "data_size", "buffer_size"
-        }
+        and str(parameter.get("name", "")).lower() in _LENGTH_PARAMETER_NAMES
         for parameter in parameters
     )
     return has_stream and has_length
@@ -841,13 +837,21 @@ def _analyze_c(source: str) -> _HarnessAnalysis:
         raise Stage4Error("Stage 4 harness must not contain Markdown fences")
     try:
         import tree_sitter
-        import tree_sitter_c
     except ImportError as error:
         raise Stage4Error("tree-sitter C dependencies are required for Stage 4") from error
 
-    language_value = tree_sitter_c.language()
-    language = (language_value if isinstance(language_value, tree_sitter.Language)
-                else tree_sitter.Language(language_value))
+    # The harness is a C++ translation unit -- Stage 4 normalized it that way --
+    # so it is parsed as one.  Reading it as C is what reported ``std::vector``
+    # as "invalid C syntax" and filed a well-formed harness under a parse
+    # failure.  The same chooser the intermediate validator uses, so the two
+    # audits cannot disagree about what language a harness is written in.
+    try:
+        parser_name, language = select_language(source, tree_sitter)
+    except ImportError as error:
+        raise Stage4Error(
+            "tree-sitter grammar dependencies are required for Stage 4"
+        ) from error
+
     try:
         parser = tree_sitter.Parser(language)
     except TypeError:
@@ -859,7 +863,7 @@ def _analyze_c(source: str) -> _HarnessAnalysis:
     encoded = source.encode("utf-8")
     tree = parser.parse(encoded)
     if tree.root_node.has_error:
-        raise Stage4Error("LLM returned invalid C syntax")
+        raise Stage4Error(f"LLM returned invalid {parser_name} syntax")
 
     functions = []
     all_calls = []
@@ -1063,7 +1067,7 @@ def _loop_copy_region(node: Any, source: bytes) -> _CopyRegion | None:
         if target is None or value is None or target.type != "subscript_expression":
             continue
         base = target.child_by_field_name("argument")
-        index = target.child_by_field_name("index")
+        index = _subscript_index(target)
         if base is None or base.type != "identifier" or index is None:
             continue
         if counter_name not in _identifier_names(index, source):
@@ -1086,6 +1090,27 @@ def _loop_copy_region(node: Any, source: bytes) -> _CopyRegion | None:
     return None
 
 
+def _subscript_index(node: Any) -> Any | None:
+    """The index expression of a ``subscript_expression``, in either grammar.
+
+    The two grammars spell it differently: tree-sitter-c puts it in an
+    ``index`` field, and tree-sitter-cpp wraps it in a ``subscript_argument_list``
+    reachable through ``indices``.  Asking only for ``index`` does not raise --
+    the caller gets ``None`` and stops matching -- which is the dangerous shape:
+    a harness that copies its payload byte by byte stops being recognised as a
+    copy at all, and the audit blames the connection instead of the grammar.
+    """
+
+    index = node.child_by_field_name("index")
+    if index is not None:
+        return index
+    indices = node.child_by_field_name("indices")
+    if indices is None:
+        return None
+    named = [child for child in indices.children if child.is_named]
+    return named[0] if named else None
+
+
 def _reads_data_element(node: Any, source: bytes, counter_name: str) -> bool:
     """Whether ``node`` reads a byte of ``data`` at the counter's own index.
 
@@ -1102,7 +1127,7 @@ def _reads_data_element(node: Any, source: bytes, counter_name: str) -> bool:
         if current.type != "subscript_expression":
             continue
         base = current.child_by_field_name("argument")
-        index = current.child_by_field_name("index")
+        index = _subscript_index(current)
         if base is None or index is None:
             continue
         if "data" not in _identifier_names(base, source):
@@ -1226,11 +1251,11 @@ def _validate_harness(
         raise Stage4Error("Stage 4 harness must use both external data and size")
 
     calls = {call.name for call in analysis.calls}
-    forbidden_logging = sorted(calls & _LOGGING_CALLS)
+    forbidden_logging = sorted(calls & FORBIDDEN_LOGGING_FUNCTIONS)
     if forbidden_logging:
         raise Stage4Error("Stage 4 harness contains logging calls: " +
                           ", ".join(forbidden_logging))
-    forbidden_file_io = sorted(calls & _FILE_IO_CALLS)
+    forbidden_file_io = sorted(calls & FORBIDDEN_IO_FUNCTIONS)
     if forbidden_file_io:
         raise Stage4Error("Stage 4 harness contains unnecessary file I/O: " +
                           ", ".join(forbidden_file_io))
@@ -1255,7 +1280,7 @@ def _validate_harness(
             + " (the contract evidences them for their algorithm: reimplement it "
               "under a local name that is not a project API)"
         )
-    allowed = expected | local_functions | _STANDARD_C_CALLS | declared_helpers
+    allowed = expected | local_functions | DEFAULT_ALLOWED_FUNCTIONS | declared_helpers
     unknown = sorted(calls - allowed)
     if unknown:
         raise Stage4Error("Stage 4 harness calls unknown APIs: " + ", ".join(unknown))

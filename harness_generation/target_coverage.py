@@ -14,7 +14,12 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .artifacts import ArtifactStore
 from .compiler_validation import BuildAdapter, CommandResult, CompilerConfig
-from .fuzzer_build import DEFAULT_FUZZER_COMPILE_FLAGS, DEFAULT_FUZZER_LINK_FLAGS
+from .fuzzer_build import (
+    DEFAULT_FUZZER_COMPILE_FLAGS,
+    DEFAULT_FUZZER_LINK_FLAGS,
+    DEFAULT_HARNESS_COMPILE_FLAGS,
+    DEFAULT_HARNESS_COMPILER,
+)
 from .records import write_json
 from .target_build import TargetBuildConfig
 
@@ -40,17 +45,32 @@ class TargetCoverageConfig:
     harness is described fine by the default; comparing harnesses wants
     several seeds, because one seed replayed is one sample.
 
-    ``harness_compiler`` and ``harness_compiler_flags`` default to ``None``,
-    which compiles the harness exactly like the target -- the behaviour this
-    always had, and the right one when the harness is C.  Setting them is how
-    a C++ harness gets measured, because one file cannot be both: compiled as
-    C, ``extern "C"`` is a syntax error, and compiled as C++ without it,
+    ``harness_compiler`` and ``harness_compiler_flags`` default to the C++
+    toolchain, because that is what the pipeline emits: Stage 4 normalizes
+    every harness to a C++ translation unit with ``extern "C"`` on the entry
+    point.  One file cannot be both languages -- compiled as C, ``extern "C"``
+    is a syntax error, and compiled as C++ without it,
     ``LLVMFuzzerTestOneInput`` is mangled away and the link has no entrypoint.
-    When set, the harness is compiled with ``harness_compiler`` and
-    ``harness_compiler_flags`` plus the profile flags -- deliberately *not*
-    ``compiler_flags``, which describes the target (``-std=c11``).  The two
-    are set together: neither the language standard nor the sanitizer set of a
-    harness can be derived from the target's, so this takes both or neither.
+
+    Setting both to ``None`` is the other valid answer, and the one a C
+    reference harness wants: the harness is then compiled and linked exactly
+    like the target.  The two move together -- neither the language standard
+    nor the sanitizer set of a harness can be derived from the target's, so
+    this takes both or neither.  When set, the harness is compiled with
+    ``harness_compiler`` and ``harness_compiler_flags`` plus the profile flags
+    -- deliberately *not* ``compiler_flags``, which describes the target
+    (``-std=c11``) -- and linked with ``harness_compiler`` as well, so that one
+    toolchain builds the harness end to end.
+
+    That last part is consistency, not a repair, and it is worth being exact
+    about why.  A C driver *can* finish the link here: the default
+    ``link_flags`` carry ``-fsanitize=fuzzer``, and the clang driver adds
+    ``-lstdc++`` whenever that sanitizer is on, so the C++ runtime arrives
+    whether or not anyone asked for it.  Mixing clang++ at the compile with
+    clang at the link works today by that accident.  Choosing the link driver
+    from the same field as the compile driver means the harness does not depend
+    on the accident -- and it is the only choice that stays correct if
+    ``link_flags`` is ever configured without that sanitizer.
     """
 
     runs: int = 64
@@ -61,8 +81,8 @@ class TargetCoverageConfig:
     llvm_profdata: str = "llvm-profdata"
     llvm_cov: str = "llvm-cov"
     compile_target_sources: bool = True
-    harness_compiler: str | None = None
-    harness_compiler_flags: tuple[str, ...] | None = None
+    harness_compiler: str | None = DEFAULT_HARNESS_COMPILER
+    harness_compiler_flags: tuple[str, ...] | None = DEFAULT_HARNESS_COMPILE_FLAGS
 
     def __post_init__(self) -> None:
         if type(self.runs) is not int or self.runs < 1:
@@ -212,7 +232,8 @@ class TargetCoverageCollector:
                 object_files.append(output)
 
         # The harness gets its own config, so a C++ harness can be measured
-        # against a C target.  Unset, this is ``compile_config`` verbatim.
+        # against a C target.  With both fields ``None``, this is
+        # ``compile_config`` verbatim -- the C reference harness's answer.
         harness_config = compile_config
         if self.config.harness_compiler is not None:
             harness_config = CompilerConfig(
@@ -241,8 +262,15 @@ class TargetCoverageCollector:
 
         executable = directory / "coverage_fuzzer"
         if not errors:
+            # The link is driven by the harness's compiler, not the target's:
+            # one toolchain builds the harness end to end.  Measured, this
+            # changes nothing today -- ``-fsanitize=fuzzer`` in ``link_flags``
+            # makes the clang driver add ``-lstdc++``, so a C driver links a
+            # C++ harness that uses ``std::vector`` quite happily.  It is kept
+            # because that is an accident of the flag set, and the pairing
+            # should not depend on it.
             link_config = CompilerConfig(
-                compiler=target.compiler,
+                compiler=harness_compiler or target.compiler,
                 link_flags=_unique_flags(self.config.link_flags, _PROFILE_FLAGS),
                 working_directory=target.project_root,
                 timeout=self.config.timeout,

@@ -102,6 +102,10 @@ def main(
 
 def _measure_target_main(argv: list[str]) -> int:
     from .artifacts import ArtifactStore
+    from .fuzzer_build import (
+        DEFAULT_HARNESS_COMPILE_FLAGS,
+        DEFAULT_HARNESS_COMPILER,
+    )
     from .target_build import TargetBuildConfig
     from .target_coverage import TargetCoverageCollector, TargetCoverageConfig
 
@@ -151,6 +155,23 @@ def _measure_target_main(argv: list[str]) -> int:
         action="store_true",
         help="Do not separately compile target sources; use them only as coverage filters.",
     )
+    parser.add_argument(
+        "--harness-as-target",
+        action="store_true",
+        help="Compile and link the harness exactly like the target, for a C "
+             "reference harness. Default: the C++ toolchain the pipeline emits.",
+    )
+    parser.add_argument(
+        "--harness-compiler",
+        default=DEFAULT_HARNESS_COMPILER,
+        help="Compiler that builds the harness (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--harness-compiler-flags",
+        nargs="+",
+        default=list(DEFAULT_HARNESS_COMPILE_FLAGS),
+        help="Flags for --harness-compiler; replaces the defaults.",
+    )
     args = parser.parse_args(argv)
     try:
         store = ArtifactStore(args.artifacts)
@@ -175,10 +196,24 @@ def _measure_target_main(argv: list[str]) -> int:
                 compiler_flags=target.compiler_flags,
                 archive_name=target.archive_name,
             )
+        # ``--harness-as-target`` is the ``(None, None)`` pair, which the
+        # collector reads as "the harness is built like the target".  Passing
+        # the target's toolchain explicitly would not be the same thing: the
+        # target's flags include its language standard, which is the whole
+        # point of the distinction.
+        harness_compiler: str | None = args.harness_compiler
+        harness_compiler_flags: tuple[str, ...] | None = tuple(
+            args.harness_compiler_flags
+        )
+        if args.harness_as_target:
+            harness_compiler = None
+            harness_compiler_flags = None
         result = TargetCoverageCollector(TargetCoverageConfig(
             runs=args.runs,
             seed=args.seed,
             compile_target_sources=not args.harness_includes_target,
+            harness_compiler=harness_compiler,
+            harness_compiler_flags=harness_compiler_flags,
         )).measure(
             harness,
             target,

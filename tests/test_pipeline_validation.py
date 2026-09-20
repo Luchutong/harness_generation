@@ -3,8 +3,10 @@ from pathlib import Path
 import shutil
 import tempfile
 import unittest
+import unittest.mock
 
 from harness_generation.artifacts import ArtifactStore
+from harness_generation.compiler_validation import CompilerConfig
 from harness_generation.llm import MockLLM
 from harness_generation.pipeline_validation import (
     PipelineStageValidator,
@@ -408,6 +410,138 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             self.HARNESS,
         )
         self.assertEqual(published.harness_path.read_bytes(), layout.harness.read_bytes())
+
+
+class AttemptOutcomeTests(ContractHelperAllowanceTests):
+    """The attempt's own record has to survive the stages after the parse.
+
+    ``parsed.json`` is written while Stage 4 is still parsing, and the build runs
+    after it.  So a harness that parsed cleanly and then failed to compile left an
+    attempt whose ``parsed.json`` said ``passed`` and whose failure lived only in
+    ``validation/compiler.json`` -- a reader had to know which of four files to
+    distrust.  ``outcome.json`` is written once provisionally and again by
+    :meth:`PipelineStageValidator.validate_stage4`, so the attempt's own record
+    carries the build's verdict.
+    """
+
+    def published_attempt(self, name: str) -> tuple[Path, Stage4Result]:
+        root = self.with_ir(name)
+        published = Stage4Generator(MockLLM([self.plan_for(root), self.HARNESS])).run(
+            self.triplet,
+            rough_code=self.rough_code(),
+            functions_json=root / "functions.json",
+            artifacts=root,
+        )
+        return root, published
+
+    def building_validator(
+        self,
+        root: Path,
+        compiler: CompilerConfig | None = None,
+    ) -> PipelineStageValidator:
+        """A validator that really builds.
+
+        ``compiler=None`` leaves the pipeline's own compiler configuration in
+        place -- the one ``generate`` uses -- so the success case is a real
+        build of the published harness rather than a second configuration that
+        happens to agree with it.
+        """
+
+        return PipelineStageValidator(
+            self.triplet,
+            artifacts=root,
+            functions_json=root / "functions.json",
+            project_root=self.phase1.parent / "project",
+            config=PipelineValidationConfig(compiler=compiler, fuzz_smoke=None),
+        )
+
+    def outcome_in(self, published: Stage4Result) -> dict:
+        return json.loads(
+            (published.attempt_directory / "outcome.json").read_text(encoding="utf-8")
+        )
+
+    def test_a_clean_parse_is_recorded_as_pending_until_validation_runs(self):
+        """The provisional record, and the reason it is not simply absent.
+
+        ``Stage4Generator.run`` does not validate -- ``generate`` calls the
+        validator afterwards -- so the attempt must say "not decided yet" rather
+        than claim a verdict it has not been given.
+        """
+
+        _root, published = self.published_attempt("outcome_pending")
+
+        outcome = self.outcome_in(published)
+        self.assertEqual(outcome["status"], "pending_validation")
+        self.assertEqual(outcome["phase"], "awaiting_validation")
+        self.assertIsNone(outcome["failure_type"])
+        self.assertEqual(outcome["parsed_status"], "passed")
+        self.assertEqual(outcome["parsed_artifact"], "parsed.json")
+        self.assertTrue((published.attempt_directory / "parsed.json").is_file())
+
+    def test_a_build_failure_is_the_attempts_outcome_not_just_a_side_file(self):
+        """The case the record exists for: parsed ``passed``, built nothing.
+
+        ``/bin/false`` is the compiler, so the intermediate audit passes and the
+        build is what fails.  The assertion that matters is the pair: the parse
+        says ``passed`` and the outcome says ``failed``, in the same directory,
+        so the disagreement is visible in the attempt's own record.
+        """
+
+        root, published = self.published_attempt("outcome_build_failure")
+
+        result = self.building_validator(
+            root, CompilerConfig(compiler="/bin/false")
+        ).validate_stage4(published)
+
+        self.assertEqual(result.status, "failed", result.errors)
+        outcome = self.outcome_in(published)
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["parsed_status"], "passed")
+        self.assertNotEqual(outcome["phase"], "validated")
+        self.assertTrue(outcome["failure_type"], outcome)
+        self.assertTrue(outcome["error"], outcome)
+        self.assertIn("compiler", outcome["validation_artifacts"])
+        self.assertEqual(
+            outcome["validation_result"]["status"], result.status,
+        )
+
+    def test_a_successful_validation_is_recorded_as_validated(self):
+        root, published = self.published_attempt("outcome_validated")
+
+        result = self.building_validator(root).validate_stage4(published)
+
+        self.assertTrue(result.accepted, result.errors)
+        outcome = self.outcome_in(published)
+        self.assertEqual(outcome["status"], result.status)
+        self.assertEqual(outcome["phase"], "validated")
+        self.assertIsNone(outcome["failure_type"])
+        self.assertIsNone(outcome["error"])
+
+    def test_a_validator_that_raises_still_leaves_an_outcome(self):
+        """The exception is the case most likely to leave no record at all.
+
+        Nothing wrote a failure, because the thing that would have written one
+        is the thing that broke.  The wrapper records first and re-raises, so
+        the attempt is not left looking pending.
+        """
+
+        root, published = self.published_attempt("outcome_exception")
+
+        def explode(_self, _result):
+            raise RuntimeError("validator fell over")
+
+        with unittest.mock.patch.object(
+            PipelineStageValidator, "_validate_stage4", explode
+        ):
+            with self.assertRaisesRegex(RuntimeError, "fell over"):
+                self.building_validator(root).validate_stage4(published)
+
+        outcome = self.outcome_in(published)
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["phase"], "validation_exception")
+        self.assertEqual(outcome["failure_type"], "validation_exception")
+        self.assertEqual(outcome["error_type"], "RuntimeError")
+        self.assertEqual(outcome["parsed_status"], "passed")
 
 
 if __name__ == "__main__":

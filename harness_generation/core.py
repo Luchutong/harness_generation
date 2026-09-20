@@ -7,6 +7,8 @@ import subprocess
 from typing import Any
 from pathlib import Path
 
+from .fuzzer_build import DEFAULT_HARNESS_COMPILER
+
 DEFAULT_MODEL = "deepseek-v4-flash"
 PROMPT_VERSION = "5"
 API_TIMEOUT = 120
@@ -193,7 +195,8 @@ def compile_harness(output: Path) -> dict:
         )
     except (OSError, UnicodeError):
         pass
-    command = ["clang++", "-x", "c++", "-std=c++17", "-g", "-O1", "-Wall", "-Wextra", "-Wpedantic",
+    command = [DEFAULT_HARNESS_COMPILER,
+               "-x", "c++", "-std=c++17", "-g", "-O1", "-Wall", "-Wextra", "-Wpedantic",
                "-fsanitize=fuzzer,address,undefined",
                "-fno-sanitize-recover=all",
                "harness.c", "-o", "fuzz_target"]

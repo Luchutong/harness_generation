@@ -129,6 +129,138 @@ class CommittedEvidenceTests(unittest.TestCase):
     def test_the_gate_verdict_is_recomputed_not_trusted(self):
         self.assertEqual(evaluate_gate(self.document), self.document["gate"])
 
+    def test_a_missing_measurement_is_not_reported_as_a_shortfall(self):
+        """An arm whose coverage was never taken has not fallen short of it.
+
+        Removing the candidate's ``totals`` is the real shape of the failure:
+        the run happened, the number was not recorded.  Every metric then has no
+        candidate percentage, so every ratio is ``None`` -- and a gate that
+        reduces ``None`` as false calls that ``below_reference``, which is a
+        claim about the candidate made from evidence nobody collected.
+        """
+
+        document = evidence()
+        runs = document["layers"][TARGET_LAYER]["runs"]
+        stripped = 0
+        for run in runs:
+            if run["arm"] == "contracted" and "totals" in run:
+                del run["totals"]
+                stripped += 1
+        self.assertTrue(stripped, "the fixture has no candidate totals to remove")
+
+        gate = evaluate_gate(document)
+
+        self.assertEqual(gate["verdict"], "unmeasured")
+        for metric in GATE_METRICS:
+            with self.subTest(metric=metric):
+                report = gate["metrics"][metric]
+                self.assertTrue(report["unmeasured"])
+                self.assertIsNone(report["passes_strict"])
+                self.assertIsNone(report["min_ratio"])
+                for item in report["per_seed"]:
+                    self.assertIsNone(item["candidate_percent"])
+                    self.assertIsNone(item["passes_strict"])
+
+        # The reference side is untouched, so this is not a broken document --
+        # only the comparison has nothing to compare.
+        self.assertEqual(gate["metrics"]["lines"]["per_seed"][0]["reference_percent"],
+                         document["gate"]["metrics"]["lines"]["per_seed"][0]["reference_percent"])
+
+    def test_one_unmeasured_seed_is_enough_to_withhold_the_verdict(self):
+        """The rule is "every seed measured", so a single gap is not averaged in.
+
+        The seeds that *were* measured still reduce among themselves and are
+        still readable -- the metric is reported as short of a measurement, not
+        blanked out.
+        """
+
+        document = evidence()
+        delta = document["gate"]["metrics"]["regions"]["min_ratio"]
+        for run in document["layers"][TARGET_LAYER]["runs"]:
+            if run["arm"] == "contracted" and run["seed"] == 1:
+                del run["totals"]
+
+        gate = evaluate_gate(document)
+
+        self.assertEqual(gate["verdict"], "unmeasured")
+        self.assertTrue(gate["metrics"]["regions"]["unmeasured"])
+        # Seeds 2 and 3 are measured, and they still reduce among themselves:
+        # the metric is marked short of a measurement, not blanked out.
+        self.assertEqual(gate["metrics"]["regions"]["min_ratio"], delta)
+        self.assertIs(gate["metrics"]["regions"]["passes_tolerance"], True)
+        self.assertIsNone(
+            gate["metrics"]["regions"]["per_seed"][0]["passes_strict"]
+        )
+        self.assertIs(
+            gate["metrics"]["regions"]["per_seed"][1]["passes_strict"], False
+        )
+        # The reference side is complete, so the gap is the candidate's alone.
+        for metric in GATE_METRICS:
+            with self.subTest(metric=metric):
+                self.assertIsNotNone(
+                    gate["metrics"][metric]["per_seed"][0]["reference_percent"]
+                )
+
+    def test_the_unmeasured_verdict_reaches_the_report_as_a_word(self):
+        """``None`` is not a rendering.  The table has to say what is missing."""
+
+        document = evidence()
+        for run in document["layers"][TARGET_LAYER]["runs"]:
+            if run["arm"] == "contracted":
+                del run["totals"]
+        document["gate"] = evaluate_gate(document)
+
+        report = render_report(document)
+
+        self.assertIn("unmeasured", report)
+        self.assertIn("an absent measurement is not a low one", report)
+        self.assertNotIn(
+            "has not reached the hand-written reference", report,
+        )
+
+    def test_an_incomplete_report_still_names_the_metric_that_did_fall_short(self):
+        """``unmeasured`` outranks ``below_reference``; it does not erase it.
+
+        One metric with a gap and one measured-and-short is the case where the
+        ranking could hide something: the headline is about the pair, and the
+        measured shortfall is a finding about the candidate that survives it.
+        """
+
+        document = evidence()
+        for run in document["layers"][TARGET_LAYER]["runs"]:
+            if run["arm"] == "contracted" and run["seed"] == 3:
+                del run["totals"]
+        document["gate"] = evaluate_gate(document)
+
+        # ``branches`` and ``regions`` are short of the reference on the seeds
+        # that were measured; before this change the pair read as below it.
+        self.assertEqual(document["gate"]["verdict"], "unmeasured")
+        report = render_report(document)
+
+        self.assertIn("the measurement is incomplete", report)
+        self.assertIn("Separately, and on the metrics that were measured", report)
+        self.assertIn("`branches`", report)
+
+    def test_a_fully_measured_fixture_never_reads_as_unmeasured(self):
+        """The other direction: the committed evidence must not gain the word.
+
+        Every side of every metric in this fixture was measured, so the report
+        is the one it always was -- same verdict, no new vocabulary.  That is
+        what makes the change safe to make against recorded evidence.
+        """
+
+        document = evidence()
+        gate = evaluate_gate(document)
+
+        self.assertEqual(gate["verdict"], "below_reference")
+        self.assertFalse(any(m["unmeasured"] for m in gate["metrics"].values()))
+        # Named rather than left to be inferred from a null in the two maps
+        # beside it -- and empty, because this fixture measured every side.
+        self.assertEqual(conclusion(document)["unmeasured"], [])
+        report = render_report(document)
+        self.assertNotIn("unmeasured", report)
+        self.assertIn("has not reached the hand-written reference", report)
+
     def test_a_rejected_arm_cannot_be_the_gate_subject(self):
         """The negative half: the refusal has to bind on the measurement too."""
 
@@ -638,6 +770,11 @@ class CampaignWiringTests(unittest.TestCase):
         A generated harness declares ``extern "C"`` and its libFuzzer entry
         point; compiled as C that is a syntax error, and compiled as C++
         without the declaration the link has no entry point.
+
+        The two arms below are the two answers, and the default is the C++ one
+        because that is what the pipeline emits.  Asking for the target's own
+        toolchain -- both fields ``None`` -- is what a C reference harness
+        wants, and it is the arm that fails here.
         """
 
         from harness_generation.target_build import TargetBuildConfig
@@ -662,9 +799,9 @@ class CampaignWiringTests(unittest.TestCase):
             compiler_flags=("-std=c11",),
         )
 
-        without = TargetCoverageCollector(
-            TargetCoverageConfig(runs=8)
-        ).measure(
+        without = TargetCoverageCollector(TargetCoverageConfig(
+            runs=8, harness_compiler=None, harness_compiler_flags=None,
+        )).measure(
             work / "harness.c", target,
             artifacts=work / "without", ft_id="ft_without_cpp",
         )
@@ -672,10 +809,6 @@ class CampaignWiringTests(unittest.TestCase):
 
         with_cpp = TargetCoverageCollector(TargetCoverageConfig(
             runs=8,
-            harness_compiler="clang++",
-            harness_compiler_flags=(
-                "-x", "c++", "-std=c++17", "-g", "-O1", "-fsanitize=fuzzer-no-link",
-            ),
         )).measure(
             work / "harness.c", target,
             artifacts=work / "with", ft_id="ft_with_cpp",

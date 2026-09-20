@@ -26,10 +26,16 @@ What each bucket needs, and what these tests pin:
   assembles-a-frame-then-parses-it harnesses and are now published; the seventh
   (013) calls ``le16``, which is ``static`` in the target, so B1 refuses it on
   purpose -- see ``test_the_static_helper_attempt_is_refused_rather_than_linked``.
-* the four syntax attempts are **not** this task: they are C++ harnesses
-  (``std::``, ``constexpr``, anonymous namespaces) that ``_analyze_c`` parses as
-  C.  They are pinned here as still-refused so the boundary is visible rather
-  than assumed.
+* the four syntax attempts are C++ harnesses (``std::``, ``constexpr``,
+  anonymous namespaces) that used to be read with the C grammar, which filed
+  them under a parse failure that was never true of them.  They are now parsed
+  as the C++ they are: three assemble no frame, one redefines project APIs, and
+  none is any longer a syntax verdict.  See
+  ``test_the_syntax_attempts_are_now_audited_as_cpp``.
+
+The table above is the **run's** buckets and stays as recorded -- read it as
+history, not as today's behaviour.  Where the two differ is the whole point of
+the four syntax attempts.
 
 The negatives are the load-bearing half.  ``StructuredFrameNegativeTests`` and
 ``HelperCallabilityTests`` each state a rule the relaxation must *not* have
@@ -305,27 +311,33 @@ class RecordedRunReplayTests(Stage4ProjectTests):
                 else:
                     self.assertIn(hint, message)
 
-    def test_the_syntax_attempts_are_still_refused_by_the_parser(self):
-        """These four are C++ written into a C parser -- a different task.
+    def test_the_syntax_attempts_are_now_audited_as_cpp(self):
+        """Four harnesses filed under a parse failure, re-measured.
 
-        ``std::``, ``constexpr`` and anonymous namespaces are all legal in the
-        C++ translation unit the harness is really compiled as, and illegal in
-        the C grammar ``_analyze_c`` uses.  Fixing that is a parser change, not
-        a change to the input model, so the refusal is pinned rather than
-        relaxed -- and pinned with the marker it is really about.
+        ``std::``, ``constexpr`` and anonymous namespaces are legal in the C++
+        translation unit the harness is really compiled as, so the run's
+        ``invalid C syntax`` was a statement about the parser and not about the
+        harness.  Parsed as what it is, every one of the four reads cleanly.
+
+        None of them becomes publishable, and that is the honest result: three
+        assemble no frame and one redefines project APIs.  What changed is what
+        the refusal *says* -- a fact about the harness rather than a fact about
+        the tool.  A verdict of "invalid syntax" here would mean the grammar
+        switch had silently stopped reaching these attempts.
         """
 
-        for attempt, marker in (
-            ("attempt_006", "std::memset"),
-            ("attempt_010", "std::vector"),
-            ("attempt_014", "std::vector"),
-            ("attempt_015", "constexpr"),
+        for attempt, marker, expected in (
+            ("attempt_006", "std::memset", r"Stage 4 ISF call is not connected"),
+            ("attempt_010", "std::vector", r"Stage 4 ISF call is not connected"),
+            ("attempt_014", "std::vector", r"Stage 4 ISF call is not connected"),
+            ("attempt_015", "constexpr",
+             r"Stage 4 redefines project APIs: le16, mp_checksum"),
         ):
             with self.subTest(attempt=attempt):
                 self.assertIn(marker, harness_source(attempt))
-                self.assertEqual(
-                    self.refusal(attempt), "LLM returned invalid C syntax"
-                )
+                message = self.refusal(attempt)
+                self.assertRegex(message, expected)
+                self.assertNotIn("syntax", message)
 
 
 class StructuredFrameNegativeTests(Stage4ProjectTests):

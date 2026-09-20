@@ -54,6 +54,7 @@ from .fuzz import run_fuzzer
 from .fuzzer_build import (
     DEFAULT_FUZZER_COMPILE_FLAGS,
     DEFAULT_FUZZER_LINK_FLAGS,
+    DEFAULT_HARNESS_COMPILER,
     FuzzerBuildValidator,
 )
 from .target_build import TargetBuildConfig
@@ -326,7 +327,7 @@ class CoverageArmsConfig:
     seeds: tuple[int, ...] = (1, 2, 3)
     seconds_cap: int = 300
     timeout: float = 300.0
-    harness_compiler: str = "clang++"
+    harness_compiler: str = DEFAULT_HARNESS_COMPILER
     determinism_check: bool = True
     #: Extra budgets for the coverage layer only, because "equivalent" is a
     #: claim at a budget and the honest question is whether it survives one.
@@ -841,6 +842,21 @@ def _percent(run: Mapping[str, Any] | None, metric: str) -> float | None:
     return value if isinstance(value, (int, float)) else None
 
 
+def _measured_text(value: Any) -> str:
+    """Render a three-valued cell for the report.
+
+    A gate cell is ``True``, ``False`` or "there was nothing to decide", and the
+    last one must not print as Python's ``None``: a reader of the document has no
+    way to read that as a measurement that was never taken, and "missing
+    measurement showing up as a strange value" is the failure this table is
+    supposed to make visible rather than commit.
+    """
+
+    if value is None:
+        return "unmeasured"
+    return str(value)
+
+
 def seed_spread(
     records: Sequence[Mapping[str, Any]],
     metrics: Sequence[str] = GATE_METRICS,
@@ -997,6 +1013,15 @@ def conclusion(document: Mapping[str, Any]) -> dict[str, Any]:
             metric: report.get("passes_tolerance")
             for metric, report in (gate.get("metrics") or {}).items()
         },
+        # Which metrics the two maps above are answering about.  ``None`` in
+        # either of them means "no measurement", and a reader that takes it for
+        # "no" is reading a shortfall into an absent number -- so the metrics
+        # that are short of a measurement are named rather than left to be
+        # inferred from a null.
+        "unmeasured": sorted(
+            metric for metric, report in (gate.get("metrics") or {}).items()
+            if report.get("unmeasured")
+        ),
         # What "the path ran" means, measured rather than asserted.
         "published": roles.get(candidate) == ROLE_CONTRACTED,
         "built": bool(candidate_engine) and all(
@@ -1050,6 +1075,12 @@ def evaluate_gate(
     arm-level verdict requires every seed to pass, because a metric that holds
     at one seed and not another has not been shown to hold.
 
+    A seed with no measurement on either side is a third state and not a
+    failure: the verdict is ``unmeasured``, which outranks ``below_reference``.
+    An arm whose target coverage was never taken used to be reported as an arm
+    that fell short, which is a claim about the candidate made from evidence
+    that was never collected.
+
     The verdict is scoped to a budget, so the budget is in the result: the
     same pair of harnesses can be level at one execution count and not at
     another, and a verdict that does not say which one it is cannot be read.
@@ -1096,19 +1127,33 @@ def evaluate_gate(
                 )
             per_seed.append(entry)
         ratios = [item["ratio"] for item in per_seed if item["ratio"] is not None]
+        # A seed whose ratio is ``None`` is one where a side has no measurement
+        # at all -- not a seed the candidate lost.  Reducing over every entry
+        # would read that ``None`` as ``False`` and turn an absent measurement
+        # into a deficit, so the reduction runs over the measures that exist and
+        # the metric says separately whether any are missing.
+        measured = [item for item in per_seed if item["passes_strict"] is not None]
+        complete = bool(per_seed) and len(measured) == len(per_seed)
         metrics_report[metric] = {
             "per_seed": per_seed,
             "min_ratio": min(ratios) if ratios else None,
             "max_ratio": max(ratios) if ratios else None,
-            "passes_strict": all(
-                item["passes_strict"] for item in per_seed
-            ) and bool(per_seed),
-            "passes_tolerance": all(
-                item["passes_tolerance"] for item in per_seed
-            ) and bool(per_seed),
+            # ``None``, not ``False``, when nothing was measured: the difference
+            # between "it did not reach the reference" and "nobody looked" is the
+            # whole reason this field is three-valued.
+            "passes_strict": (
+                all(item["passes_strict"] for item in measured) if measured else None
+            ),
+            "passes_tolerance": (
+                all(item["passes_tolerance"] for item in measured) if measured else None
+            ),
+            "unmeasured": not complete,
         }
-    strict = all(metrics_report[metric]["passes_strict"] for metric in metrics)
-    within = all(metrics_report[metric]["passes_tolerance"] for metric in metrics)
+    strict = all(metrics_report[metric]["passes_strict"] is True for metric in metrics)
+    within = all(
+        metrics_report[metric]["passes_tolerance"] is True for metric in metrics
+    )
+    unmeasured = any(metrics_report[metric]["unmeasured"] for metric in metrics)
     return {
         "reference": reference,
         "candidate": candidate,
@@ -1117,9 +1162,16 @@ def evaluate_gate(
         "budget": budget,
         "tolerance": tolerance,
         "metrics": metrics_report,
+        # ``unmeasured`` ranks above ``below_reference``: a comparison missing a
+        # side is not a comparison the candidate lost, and calling it one is the
+        # misreading this verdict exists to stop.  Nothing is hidden by that --
+        # each metric still carries its own verdict, so a metric that really is
+        # below reference is readable in the table under an incomplete headline.
         "verdict": (
             "not_admissible"
             if not admissible
+            else "unmeasured"
+            if unmeasured
             else "equivalent_strict"
             if strict
             else "equivalent_within_tolerance"
@@ -1410,15 +1462,20 @@ def render_report(measurements: Mapping[str, Any]) -> str:
     def at_ratio(metric):
         return f"`{metric}` at ratio {report_of(metric).get('min_ratio')}"
 
-    strict_pass = [m for m in GATE_METRICS if report_of(m).get("passes_strict")]
+    strict_pass = [m for m in GATE_METRICS if report_of(m).get("passes_strict") is True]
     tolerance_only = [
         m for m in GATE_METRICS
-        if report_of(m).get("passes_tolerance") and not report_of(m).get("passes_strict")
+        if report_of(m).get("passes_tolerance") is True
+        and report_of(m).get("passes_strict") is not True
     ]
     short = [
         at_ratio(m) for m in GATE_METRICS
         if report_of(m).get("passes_tolerance") is False
     ]
+    # Named separately from ``short``: a metric nobody measured has no ratio to
+    # print, and listing it among the ones that fell short would put a number
+    # next to a metric that does not have one.
+    missing = [m for m in GATE_METRICS if report_of(m).get("unmeasured")]
     verdict = answers.get("verdict")
     # The headline follows the verdict, because a report that hard-codes
     # "not equivalent" would go on saying it after a campaign that came out
@@ -1443,9 +1500,30 @@ def render_report(measurements: Mapping[str, Any]) -> str:
             f"reads **`{verdict}`**: the subject is not a published arm, so "
             f"there is nothing here to compare."
         ),
+        "unmeasured": (
+            f"**2. No equivalence claim is readable for this pair, because the "
+            f"measurement is incomplete.** The gate reads **`{verdict}`**."
+        ),
     }
     parts = [headlines.get(verdict, f"**2. The gate reads `{verdict}`.**")]
-    if verdict != "not_admissible":
+    if verdict == "unmeasured":
+        parts.append(
+            " No measurement was recorded on at least one side of "
+            + ", ".join(f"`{metric}`" for metric in missing)
+            + ", so neither reading of ≈ applies to it. This is not a "
+            "shortfall: an absent measurement is not a low one."
+        )
+        if short:
+            # Said anyway, because the incomplete headline outranks the
+            # metric-level ones but does not replace them: a metric that was
+            # measured and did fall short is a finding, and withholding it
+            # because a different metric is missing would be the same mistake
+            # in the other direction.
+            parts.append(
+                " Separately, and on the metrics that were measured, it falls "
+                "below " + floor + " on " + ", ".join(short) + "."
+            )
+    if verdict not in ("not_admissible", "unmeasured"):
         if strict_pass:
             parts.append(
                 " It is level on "
@@ -1487,6 +1565,13 @@ def render_report(measurements: Mapping[str, Any]) -> str:
                 "The question this measurement was built to answer was "
                 f"equivalence with `{reference}`; the answer is no, and this "
                 "document does not round it up to yes."
+            ),
+            "unmeasured": (
+                "The question this measurement was built to answer was "
+                f"equivalence with `{reference}`, and it does not answer it: "
+                "with a side missing there is no ratio to read, so this "
+                "document reports the gap instead of a verdict about the "
+                "candidate."
             ),
         }.get(
             verdict,
@@ -1716,9 +1801,12 @@ def render_report(measurements: Mapping[str, Any]) -> str:
     for metric, report in sorted(gate.get("metrics", {}).items()):
         for item in report.get("per_seed", ()):
             add(
-                f"| `{metric}` | {item.get('seed')} | {item.get('reference_percent')} | "
-                f"{item.get('candidate_percent')} | {item.get('ratio')} | "
-                f"{item.get('passes_strict')} | {item.get('passes_tolerance')} |"
+                f"| `{metric}` | {item.get('seed')} | "
+                f"{_measured_text(item.get('reference_percent'))} | "
+                f"{_measured_text(item.get('candidate_percent'))} | "
+                f"{_measured_text(item.get('ratio'))} | "
+                f"{_measured_text(item.get('passes_strict'))} | "
+                f"{_measured_text(item.get('passes_tolerance'))} |"
             )
     add("")
     add(
@@ -1916,8 +2004,8 @@ def _run_main(args: argparse.Namespace) -> int:
     for metric, report in sorted(gate["metrics"].items()):
         print(
             f"{metric}: min ratio {report['min_ratio']} "
-            f"(strict {report['passes_strict']}, "
-            f"within tolerance {report['passes_tolerance']})"
+            f"(strict {_measured_text(report['passes_strict'])}, "
+            f"within tolerance {_measured_text(report['passes_tolerance'])})"
         )
     print(f"Verdict: {gate['verdict']}")
     if args.record is not None:

@@ -10,6 +10,12 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from .artifacts import ArtifactStore
+# The policy sets live in one place; see :mod:`harness_generation.policy`.
+from .policy import (
+    DEFAULT_ALLOWED_FUNCTIONS,
+    FORBIDDEN_IO_FUNCTIONS,
+    FORBIDDEN_LOGGING_FUNCTIONS,
+)
 from .records import write_json
 from .source_paths import SUPPORTED_FUNCTIONS_SCHEMA_VERSIONS
 from .triplet import FunctionTriplet
@@ -18,19 +24,6 @@ from .triplet import FunctionTriplet
 VALIDATION_SCHEMA_VERSION = 1
 VALIDATION_STATUSES = frozenset({
     "passed", "failed", "skipped", "unavailable", "passed_with_limitations",
-})
-
-DEFAULT_ALLOWED_FUNCTIONS = frozenset({
-    "abort", "assert", "calloc", "free", "malloc", "memcmp", "memcpy",
-    "memmove", "memset", "realloc", "strchr", "strcmp", "strlen",
-    "strncmp", "strnlen", "strrchr",
-})
-FORBIDDEN_LOGGING_FUNCTIONS = frozenset({
-    "fprintf", "perror", "printf", "putchar", "puts", "vfprintf", "vprintf",
-})
-FORBIDDEN_IO_FUNCTIONS = frozenset({
-    "fclose", "fdopen", "fgetpos", "fopen", "fread", "freopen", "fseek",
-    "fsetpos", "ftell", "fwrite", "rewind", "tmpfile",
 })
 
 _CPP_EVIDENCE = re.compile(
@@ -302,7 +295,7 @@ def validate_intermediate(
 def _syntax_facts(source: str) -> _SyntaxFacts:
     import tree_sitter
 
-    parser_name, language = _select_language(source, tree_sitter)
+    parser_name, language = select_language(source, tree_sitter)
     parser = _make_parser(tree_sitter, language)
     encoded = source.encode("utf-8")
     tree = parser.parse(encoded)
@@ -402,7 +395,18 @@ def _syntax_facts(source: str) -> _SyntaxFacts:
     )
 
 
-def _select_language(source: str, tree_sitter: Any) -> tuple[str, Any]:
+def select_language(source: str, tree_sitter: Any) -> tuple[str, Any]:
+    """The grammar a source file is parsed with, and its name.
+
+    Public because Stage 4 has to parse the same text the same way.  Two
+    callers choosing a grammar independently is how one of them ends up
+    auditing C++ with the C grammar and reporting "invalid syntax" about a
+    harness that is not malformed at all.
+
+    The choice is a hint, not a judgement: a source with no C++ markers is
+    read as C, which is what a C reference harness wants.
+    """
+
     if _looks_like_cpp(source):
         try:
             import tree_sitter_cpp

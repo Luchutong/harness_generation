@@ -33,6 +33,12 @@ DEFAULT_FUZZER_LINK_FLAGS = (
     "-O1",
     "-fsanitize=fuzzer,address,undefined",
 )
+#: What compiles and links a harness.  The pipeline emits a C++ translation
+#: unit (see :func:`harness_generation.stage4.normalize_cpp_harness`), and a C
+#: driver cannot finish the link: ``extern "C"`` is not C and the entry point
+#: is mangled without it.  One name, so a caller that changes it changes every
+#: path that builds a harness rather than the one it happened to edit.
+DEFAULT_HARNESS_COMPILER = "clang++"
 
 
 @dataclass(frozen=True)
@@ -42,8 +48,8 @@ class FuzzerBuildConfig:
     compile_flags: tuple[str, ...] = DEFAULT_FUZZER_COMPILE_FLAGS
     harness_compile_flags: tuple[str, ...] = DEFAULT_HARNESS_COMPILE_FLAGS
     link_flags: tuple[str, ...] = DEFAULT_FUZZER_LINK_FLAGS
-    harness_compiler: str = "clang++"
-    link_compiler: str = "clang++"
+    harness_compiler: str = DEFAULT_HARNESS_COMPILER
+    link_compiler: str = DEFAULT_HARNESS_COMPILER
     stderr_tail_lines: int = 20
     stderr_tail_chars: int = 4000
 
