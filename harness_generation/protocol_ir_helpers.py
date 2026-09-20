@@ -88,9 +88,11 @@ _AFTER_CALL = re.compile(r"\s*;?\s*$")
 _DECLARATION = re.compile(
     r"^\s*(?:(?:auto|const|enum|extern|long|register|short|signed|static|struct"
     r"|union|unsigned|volatile)\s+)*"
-    r"[A-Za-z_][A-Za-z0-9_]*\s*\**\s*"   # the type
+    r"(?P<type>[A-Za-z_][A-Za-z0-9_]*)\s*\**\s*"
     r"[A-Za-z_][A-Za-z0-9_]*\s*"         # the name it declares
-    r"(?:=|;|\[)"
+    r"(?:=\s*(?:\{[^{};]*\}|[A-Za-z_][A-Za-z0-9_]*|[0-9]+)\s*;?"
+    r"|\[[0-9]+\]\s*;?"
+    r"|;)\s*$"
 )
 
 #: The shapes a ``context`` slot can take.
@@ -112,6 +114,7 @@ class LifecycleExpression:
     text: str
     kind: str
     function: str | None = None
+    declared_type: str | None = None
 
 
 def read_lifecycle_expression(expression: Any) -> LifecycleExpression:
@@ -148,8 +151,12 @@ def read_lifecycle_expression(expression: Any) -> LifecycleExpression:
             return LifecycleExpression(expression, LIFECYCLE_INVALID)
         return LifecycleExpression(expression, LIFECYCLE_NAME, name)
 
-    if _DECLARATION.match(expression):
-        return LifecycleExpression(expression, LIFECYCLE_INITIALIZATION)
+    declaration = _DECLARATION.fullmatch(expression)
+    if declaration is not None:
+        return LifecycleExpression(
+            expression, LIFECYCLE_INITIALIZATION,
+            declared_type=declaration.group("type"),
+        )
     return LifecycleExpression(expression, LIFECYCLE_INVALID)
 
 

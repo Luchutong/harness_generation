@@ -379,7 +379,13 @@ Stage 4 检查该表达式是否写入 harness，并以语法近似追到 payloa
 4. **索引对 `storage` 的形状严格。** `from_records()` 遇到 `storage="static"` 这类
    非"字符串列表"的形状原先读成空存储类，从而误判 `LINKABLE`；`storage` 是索引里唯一
    **误读即 fail-open** 的字段（空 ≡ 外部链接），故形状不对直接 `ValueError`。
-   `defined` 仍按 `is True` 读，本来就是 fail-closed。本节原先把"不改 IR、改为让 FT 抽取
+   `defined` 仍按 `is True` 读，本来就是 fail-closed。
+
+**收尾守卫（2026-09-20）**：类型化声明必须是完整的单条声明，只能用于 `context.init`，
+且声明的基础类型须与 `context.type` 相符；未完成的赋值和后接第二条调用均被拒绝。
+标准库名称也不能遮盖项目中两个同名外部定义造成的歧义。
+
+本节原先把"不改 IR、改为让 FT 抽取
 补上 call closure"这条替代路线挂在 `PFM §1.3 Controlled Static Loop Analysis` 名下，并
 据此说该步在 `PFM §5` 里仍是待办步骤 3。**该引用是错的**：`PFM §1.3`（及其 §5 步骤 3、
 §4.1 第 3 行的 `command_loop`）讲的是**把解析循环的每次迭代建模成状态、迭代依赖建模成

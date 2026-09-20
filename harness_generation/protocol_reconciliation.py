@@ -300,16 +300,18 @@ def _links_from_the_c_library(name: str, resolution: FunctionResolution) -> bool
     ``init: "malloc(sizeof(mp_context))"`` asks for a lifecycle the harness can
     perform, and the project's rows are the wrong thing to judge it by: a
     ``static`` definition of the name lives inside the target's own translation
-    unit and is invisible here, and an external one would collide with the
-    library's, which is the project's problem and not the harness's.  What
-    permits the call is the audit's standard-C allow-list, the same list every
-    other ``memset`` in a harness already runs on.
+    unit and is invisible here.  Two external project definitions are still
+    ambiguous; the library's name must not turn that broken project claim into
+    permission.  What permits an otherwise absent call is the audit's
+    standard-C allow-list, the same list every other ``memset`` runs on.
 
     A name the project defines *and* links is not this case: it is a project
     function, and the project's verdict is the interesting one.
     """
 
-    return resolution.status != LINKABLE and name in DEFAULT_ALLOWED_FUNCTIONS
+    return resolution.status in {
+        ABSENT, DECLARED_ONLY, INTERNAL_LINKAGE,
+    } and name in DEFAULT_ALLOWED_FUNCTIONS
 
 
 def _reconcile_helper(
@@ -365,11 +367,26 @@ def _reconcile_lifecycle(
             )
             continue
         if parsed.kind == LIFECYCLE_INITIALIZATION:
-            # A declaration is already performed by the harness's own C; there
-            # is no call for the contract to authorize.
+            # A declaration is performed by the harness's own C and names no
+            # helper.  It can initialize the context only when it declares the
+            # context's type; it cannot stand in for destruction.
+            type_names = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", context.type)
+            expected_type = type_names[-1] if type_names else ""
+            valid_declaration = role == "init" and parsed.declared_type == expected_type
             reconciled.append(ReconciledLifecycle(
-                role, expression, parsed.kind,
+                role, expression,
+                parsed.kind if valid_declaration else LIFECYCLE_INVALID,
             ))
+            if role != "init":
+                diagnostics.append(
+                    f"context.{role} declaration {expression!r} cannot destroy "
+                    "the context"
+                )
+            elif not valid_declaration:
+                diagnostics.append(
+                    f"context.{role} declaration {expression!r} does not initialize "
+                    f"the declared context type {context.type!r}"
+                )
             continue
         name = parsed.function
         corroboration = tuple(

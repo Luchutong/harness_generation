@@ -496,6 +496,32 @@ class LifecycleReconciliationTests(Stage4ProjectTests):
         self.assertTrue(reconciliation.lifecycle[0].performable)
         self.assertNotIn("ctx", reconciliation.callable_helpers)
 
+    def test_a_declaration_must_initialize_the_context_type(self):
+        reconciliation = self.reconciled(init="int unrelated = 0")
+        self.assertFalse(reconciliation.ok)
+        self.assertFalse(reconciliation.lifecycle[0].performable)
+        self.assertIn("does not initialize the declared context type",
+                      " ".join(reconciliation.diagnostics))
+
+    def test_a_pointer_context_declaration_uses_the_base_type(self):
+        ir = mined_ir()
+        context = replace(
+            ir.context, type="struct mp_context *", init="mp_context *ctx = NULL",
+        )
+        reconciliation = reconcile_protocol_ir(
+            replace(ir, context=context), self.triplet, self.functions,
+        )
+        self.assertTrue(reconciliation.ok, reconciliation.diagnostics)
+
+    def test_a_declaration_cannot_replace_context_destruction(self):
+        reconciliation = self.reconciled(
+            init="mp_context ctx = {0}", destroy="mp_context another = {0}",
+        )
+        self.assertFalse(reconciliation.ok)
+        self.assertFalse(reconciliation.lifecycle[1].performable)
+        self.assertIn("cannot destroy the context",
+                      " ".join(reconciliation.diagnostics))
+
     def test_a_library_allocator_is_a_lifecycle_by_its_own_permission(self):
         """``init: "malloc(...)"`` is performable, and not a project function.
 
@@ -537,6 +563,23 @@ class LifecycleReconciliationTests(Stage4ProjectTests):
         self.assertFalse(reconciliation.ok)
         self.assertIn("no context.evidence backs that name",
                       "; ".join(reconciliation.diagnostics))
+
+    def test_ambiguous_project_definitions_do_not_become_library_calls(self):
+        functions = ProjectFunctionIndex.from_document({"functions": [
+            function("mp_init"), function("mp_destroy"),
+            function("mp_parse"), function("mp_checksum"),
+            function("malloc", file="first.c"),
+            function("malloc", file="second.c"),
+        ]})
+        reconciliation = self.reconciled(
+            init="malloc(sizeof(mp_context))",
+            evidence=("malloc(sizeof(mp_context))", "mp_destroy(&ctx)"),
+            functions=functions,
+        )
+        self.assertFalse(reconciliation.ok)
+        self.assertFalse(reconciliation.lifecycle[0].standard_library)
+        self.assertIn("2 linkable definitions",
+                      " ".join(reconciliation.diagnostics))
 
     def test_a_context_the_ir_does_not_declare_reconciles_to_nothing(self):
         reconciliation = reconcile_protocol_ir(
@@ -581,6 +624,17 @@ class LifecycleExpressionTests(unittest.TestCase):
                 parsed = self.read(expression)
                 self.assertEqual(parsed.kind, LIFECYCLE_INITIALIZATION)
                 self.assertIsNone(parsed.function)
+
+    def test_a_declaration_must_be_complete_and_single(self):
+        for expression in (
+            "mp_context ctx =",
+            "mp_context ctx = {0}; invented(&ctx)",
+            "mp_context ctx = malloc(sizeof(mp_context))",
+        ):
+            with self.subTest(expression=expression):
+                self.assertEqual(
+                    self.read(expression).kind, LIFECYCLE_INVALID,
+                )
 
     def test_a_second_statement_makes_the_slot_unreadable(self):
         """The counterexample: one slot must not authorize two calls.
