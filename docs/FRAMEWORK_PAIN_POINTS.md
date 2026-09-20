@@ -294,6 +294,14 @@ if reference_percent is None or candidate_percent is None:
 - **注意**:这**不等于**"去追那 4 次 invalid C syntax"。§3.1 指出的是
   **看错了文件**,不是"漏了一类样本"。
 
+**实施记录（2026-09-20）**：新 attempt 的 `outcome.json` 已将解析结果与验证结果关联。
+原 17 次 ProtocolIR 录制在构建前全部失败，不能凭空补出构建期分桶，因此保留其
+`parsed.json` 原始分桶。另从仓库跟踪的 `artifacts/deepseek_real` 录制建立
+`tests/fixtures/stage4_build_attempts/manifest.json`：15 次解析均通过，其中 13 次
+在 `harness_compile` 失败；测试逐项从原始 `parsed.json`、`validation/compiler.json`
+及 `validation/runtime.json` 复算，证明构建期失败进入分桶。这组历史录制没有
+ProtocolIR，不应与原 17 次样本合并统计。
+
 ### P0-d · 缺测量 ≠ 低于参考
 
 最小、最独立、且是其余各条的前提。

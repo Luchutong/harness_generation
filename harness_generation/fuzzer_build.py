@@ -34,10 +34,12 @@ DEFAULT_FUZZER_LINK_FLAGS = (
     "-fsanitize=fuzzer,address,undefined",
 )
 #: What compiles and links a harness.  The pipeline emits a C++ translation
-#: unit (see :func:`harness_generation.stage4.normalize_cpp_harness`), and a C
-#: driver cannot finish the link: ``extern "C"`` is not C and the entry point
-#: is mangled without it.  One name, so a caller that changes it changes every
-#: path that builds a harness rather than the one it happened to edit.
+#: unit (see :func:`harness_generation.stage4.normalize_cpp_harness`).  The
+#: compile step needs C++ syntax; using the same driver for the link keeps the
+#: toolchain consistent.  With the current ``-fsanitize=fuzzer`` link flags,
+#: clang also links the C++ runtime, so this is an invariant rather than a
+#: repair for a reproduced link failure.  One name lets callers change every
+#: path that builds a harness together.
 DEFAULT_HARNESS_COMPILER = "clang++"
 
 

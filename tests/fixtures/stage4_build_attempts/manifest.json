@@ -1,0 +1,126 @@
+{
+  "note": "Independent historical run without ProtocolIR. Each row joins the attempt parsed.json with its compiler and runtime validation files; recorded_error is the compiler error text after its source location. The original ProtocolIR run in stage4_recorded_attempts stopped before build and keeps its original buckets.",
+  "source": "artifacts/deepseek_real/generation/ft_parser_from_memory_a5265df23ba0/stage4",
+  "attempts": [
+    {
+      "attempt": "attempt_001",
+      "parsed_status": "passed",
+      "recorded_status": "failed",
+      "recorded_phase": "harness_compile",
+      "failure_type": "compile_error",
+      "recorded_error": "variable has incomplete type 'Parser' (aka 'struct Parser')"
+    },
+    {
+      "attempt": "attempt_002",
+      "parsed_status": "passed",
+      "recorded_status": "failed",
+      "recorded_phase": "harness_compile",
+      "failure_type": "compile_error",
+      "recorded_error": "variable has incomplete type 'Parser' (aka 'struct Parser')"
+    },
+    {
+      "attempt": "attempt_003",
+      "parsed_status": "passed",
+      "recorded_status": "failed",
+      "recorded_phase": "harness_compile",
+      "failure_type": "compile_error",
+      "recorded_error": "variable has incomplete type 'Parser' (aka 'struct Parser')"
+    },
+    {
+      "attempt": "attempt_004",
+      "parsed_status": "passed",
+      "recorded_status": "failed",
+      "recorded_phase": "harness_compile",
+      "failure_type": "compile_error",
+      "recorded_error": "variable has incomplete type 'Parser' (aka 'struct Parser')"
+    },
+    {
+      "attempt": "attempt_005",
+      "parsed_status": "passed",
+      "recorded_status": "failed",
+      "recorded_phase": "harness_compile",
+      "failure_type": "compile_error",
+      "recorded_error": "variable has incomplete type 'Parser' (aka 'struct Parser')"
+    },
+    {
+      "attempt": "attempt_006",
+      "parsed_status": "passed",
+      "recorded_status": "failed",
+      "recorded_phase": "harness_compile",
+      "failure_type": "compile_error",
+      "recorded_error": "variable has incomplete type 'Parser' (aka 'struct Parser')"
+    },
+    {
+      "attempt": "attempt_007",
+      "parsed_status": "passed",
+      "recorded_status": "failed",
+      "recorded_phase": "harness_compile",
+      "failure_type": "compile_error",
+      "recorded_error": "variable has incomplete type 'Parser' (aka 'struct Parser')"
+    },
+    {
+      "attempt": "attempt_008",
+      "parsed_status": "passed",
+      "recorded_status": "failed",
+      "recorded_phase": "harness_compile",
+      "failure_type": "compile_error",
+      "recorded_error": "variable has incomplete type 'Parser' (aka 'struct Parser')"
+    },
+    {
+      "attempt": "attempt_009",
+      "parsed_status": "passed",
+      "recorded_status": "failed",
+      "recorded_phase": "harness_compile",
+      "failure_type": "compile_error",
+      "recorded_error": "variable has incomplete type 'Parser' (aka 'struct Parser')"
+    },
+    {
+      "attempt": "attempt_010",
+      "parsed_status": "passed",
+      "recorded_status": "failed",
+      "recorded_phase": "harness_compile",
+      "failure_type": "compile_error",
+      "recorded_error": "variable has incomplete type 'Parser' (aka 'struct Parser')"
+    },
+    {
+      "attempt": "attempt_011",
+      "parsed_status": "passed",
+      "recorded_status": "failed",
+      "recorded_phase": "harness_compile",
+      "failure_type": "compile_error",
+      "recorded_error": "variable has incomplete type 'Parser' (aka 'struct Parser')"
+    },
+    {
+      "attempt": "attempt_012",
+      "parsed_status": "passed",
+      "recorded_status": "failed",
+      "recorded_phase": "harness_compile",
+      "failure_type": "compile_error",
+      "recorded_error": "variable has incomplete type 'struct Parser'"
+    },
+    {
+      "attempt": "attempt_013",
+      "parsed_status": "passed",
+      "recorded_status": "passed",
+      "recorded_phase": "validated",
+      "failure_type": null,
+      "recorded_error": null
+    },
+    {
+      "attempt": "attempt_014",
+      "parsed_status": "passed",
+      "recorded_status": "failed",
+      "recorded_phase": "harness_compile",
+      "failure_type": "compile_error",
+      "recorded_error": "unknown type name 'uint8_t'"
+    },
+    {
+      "attempt": "attempt_015",
+      "parsed_status": "passed",
+      "recorded_status": "passed",
+      "recorded_phase": "validated",
+      "failure_type": null,
+      "recorded_error": null
+    }
+  ]
+}
