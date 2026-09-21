@@ -1,6 +1,8 @@
 # mini_parser Benchmark
 
-This benchmark is adapted from `/home/luchitong/work/mini_parser`.
+This benchmark is adapted from the `mini_parser` source project. Its original
+checkout path is recorded as provenance in `manifest.json`; no command here
+requires that path.
 
 `target.c` is an amalgamation of `parser.h` and `parser.c`, so the existing
 single-file harness-generation pipeline can pass the complete target to the
@@ -13,7 +15,7 @@ int mp_parse(mp_context *ctx, const uint8_t *data, size_t size);
 ```
 
 `harnesses/structured.c` is the C11 equivalent of
-`/home/luchitong/work/mini_parser/fuzz/fuzz_structured.cpp`. It converts fuzzer
+the source project's `fuzz/fuzz_structured.cpp`. It converts fuzzer
 bytes into a sequence of valid mini_parser frames, keeps one `mp_context` alive
 for all commands in the same fuzz input, and destroys the context at the end.
 

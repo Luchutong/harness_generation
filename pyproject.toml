@@ -5,13 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "harness-generation"
 version = "0.1.0"
-description = "Generate C libFuzzer harnesses with DeepSeek and check compilation"
+description = "Generate and evaluate libFuzzer harnesses from C project structure and protocol facts"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "tree-sitter>=0.25,<0.27",
   "tree-sitter-c>=0.24,<0.25",
   "tree-sitter-cpp>=0.23,<0.24",
 ]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
 
 [project.scripts]
 harness-generation = "harness_generation.cli:main"

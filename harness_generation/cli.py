@@ -46,7 +46,16 @@ def main(
         from .generation_variance import main as generation_variance_main
         return generation_variance_main(arguments[1:])
 
-    parser = argparse.ArgumentParser(description="Generate N independent C libFuzzer harness candidates.")
+    parser = argparse.ArgumentParser(
+        description="Generate independent C libFuzzer harness candidates.",
+        epilog=(
+            "Project workflow: triplets, protocol-mine, generate, generate-all, run. "
+            "Evaluation: measure-target, coverage-arms, generation-variance. "
+            "Candidate feedback: feedback-loop. Use '<command> --help' for "
+            "command options. With --source, this entry runs the single-file "
+            "candidate workflow."
+        ),
+    )
     parser.add_argument("--source", required=True, type=Path, help="Self-contained UTF-8 C source without main")
     parser.add_argument("--function", required=True, help="Target C function name")
     parser.add_argument("--output", required=True, type=Path, help="New experiment directory (must not exist)")
