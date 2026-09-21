@@ -1,0 +1,92 @@
+{
+  "corpus_digests": {
+    "multiply": "35a94c1e95835492ae941af20be1f67c69e0eb2c82536a150acbbee75b9eccab",
+    "nested": "28dde24d730ecc9e9e21516b4ca0a7d210927617e4c571c2ff42240ea1f3c04b",
+    "read": "527e7af33f5c0c4bd6b34f6406175b022385d5173ffe2f73fbcab11351d49be3",
+    "release": "c0ba8a33ac67f44abff5984dfbb6f56c46b880ac2b86e1f23e7fa9c402c53ae7",
+    "stateful_safe": "e0affd36e44cb1e3f3138e09ce7d3f2f305c9d8444c1cf288fe34da993a265c9",
+    "store": "8115ec37c58bd09374c59fe72ae4583ee27ae02c50470d07055055f9fc6a8924",
+    "use": "2921a11f25dadaa24aa79a548e4e81508c2e5e56af2d833d65e2bcce448ce2f5",
+    "write": "d09110611314f131e6e9d6618f12e30f4a37eb87c1eb2c3352e98ff00d5172d6"
+  },
+  "harness": "/home/luchitong/work/mini_parser/fuzz/fuzz_structured.cpp",
+  "harness_sha256": "d2f6ffee1bf32bd2a756afbc51aab27f11d621d165342de20ffe6bb6fd28cb35",
+  "header_sha256": "bc52f181b05120311d8d4dfb5e9c8f92ae5fecca155ff624728d855a9b39190d",
+  "recipe": "two_tu",
+  "records": [
+    {
+      "artifact": "/home/luchitong/work/harness_generation/.claude/worktrees/protocol-mining/artifacts/p4_mini_parser_20260921/campaign/exact_reference_measure/coverage/ft_exact_reference/run_001",
+      "errors": [],
+      "runs": 20000,
+      "seed": 1,
+      "status": "passed",
+      "totals": {
+        "branches": {
+          "count": 68,
+          "covered": 56,
+          "percent": 82.3529
+        },
+        "lines": {
+          "count": 82,
+          "covered": 78,
+          "percent": 95.122
+        },
+        "regions": {
+          "count": 76,
+          "covered": 70,
+          "percent": 92.1053
+        }
+      }
+    },
+    {
+      "artifact": "/home/luchitong/work/harness_generation/.claude/worktrees/protocol-mining/artifacts/p4_mini_parser_20260921/campaign/exact_reference_measure/coverage/ft_exact_reference/run_002",
+      "errors": [],
+      "runs": 20000,
+      "seed": 2,
+      "status": "passed",
+      "totals": {
+        "branches": {
+          "count": 68,
+          "covered": 56,
+          "percent": 82.3529
+        },
+        "lines": {
+          "count": 82,
+          "covered": 78,
+          "percent": 95.122
+        },
+        "regions": {
+          "count": 76,
+          "covered": 70,
+          "percent": 92.1053
+        }
+      }
+    },
+    {
+      "artifact": "/home/luchitong/work/harness_generation/.claude/worktrees/protocol-mining/artifacts/p4_mini_parser_20260921/campaign/exact_reference_measure/coverage/ft_exact_reference/run_003",
+      "errors": [],
+      "runs": 20000,
+      "seed": 3,
+      "status": "passed",
+      "totals": {
+        "branches": {
+          "count": 68,
+          "covered": 56,
+          "percent": 82.3529
+        },
+        "lines": {
+          "count": 82,
+          "covered": 78,
+          "percent": 95.122
+        },
+        "regions": {
+          "count": 76,
+          "covered": 70,
+          "percent": 92.1053
+        }
+      }
+    }
+  ],
+  "runs": 20000,
+  "target_sha256": "aa82360a8d4b147bbdd69dcd7ea46ca22d9dae0daaf6ae5a77fc951a9bda27ff"
+}

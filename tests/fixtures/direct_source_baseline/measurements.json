@@ -1,0 +1,105 @@
+{
+  "corpus_digests": {
+    "multiply": "35a94c1e95835492ae941af20be1f67c69e0eb2c82536a150acbbee75b9eccab",
+    "nested": "28dde24d730ecc9e9e21516b4ca0a7d210927617e4c571c2ff42240ea1f3c04b",
+    "read": "527e7af33f5c0c4bd6b34f6406175b022385d5173ffe2f73fbcab11351d49be3",
+    "release": "c0ba8a33ac67f44abff5984dfbb6f56c46b880ac2b86e1f23e7fa9c402c53ae7",
+    "stateful_safe": "e0affd36e44cb1e3f3138e09ce7d3f2f305c9d8444c1cf288fe34da993a265c9",
+    "store": "8115ec37c58bd09374c59fe72ae4583ee27ae02c50470d07055055f9fc6a8924",
+    "use": "2921a11f25dadaa24aa79a548e4e81508c2e5e56af2d833d65e2bcce448ce2f5",
+    "write": "d09110611314f131e6e9d6618f12e30f4a37eb87c1eb2c3352e98ff00d5172d6"
+  },
+  "harness_sha256": "4cd2f4c02274f1c859b29f2ec1d59c0dd674a05cd59783ee5bfda8f463372330",
+  "recipe": "two_tu",
+  "records": [
+    {
+      "artifact": "/home/luchitong/work/harness_generation/.claude/worktrees/protocol-mining/artifacts/p4_mini_parser_20260921/direct_source_baseline/coverage/coverage/ft_direct_source/run_001",
+      "entered_functions": [
+        "mp_destroy",
+        "mp_init",
+        "mp_parse"
+      ],
+      "errors": [],
+      "runs": 20000,
+      "seed": 1,
+      "status": "passed",
+      "totals": {
+        "branches": {
+          "count": 68,
+          "covered": 7,
+          "percent": 10.2941
+        },
+        "lines": {
+          "count": 82,
+          "covered": 10,
+          "percent": 12.1951
+        },
+        "regions": {
+          "count": 76,
+          "covered": 15,
+          "percent": 19.7368
+        }
+      }
+    },
+    {
+      "artifact": "/home/luchitong/work/harness_generation/.claude/worktrees/protocol-mining/artifacts/p4_mini_parser_20260921/direct_source_baseline/coverage/coverage/ft_direct_source/run_002",
+      "entered_functions": [
+        "mp_destroy",
+        "mp_init",
+        "mp_parse"
+      ],
+      "errors": [],
+      "runs": 20000,
+      "seed": 2,
+      "status": "passed",
+      "totals": {
+        "branches": {
+          "count": 68,
+          "covered": 7,
+          "percent": 10.2941
+        },
+        "lines": {
+          "count": 82,
+          "covered": 10,
+          "percent": 12.1951
+        },
+        "regions": {
+          "count": 76,
+          "covered": 15,
+          "percent": 19.7368
+        }
+      }
+    },
+    {
+      "artifact": "/home/luchitong/work/harness_generation/.claude/worktrees/protocol-mining/artifacts/p4_mini_parser_20260921/direct_source_baseline/coverage/coverage/ft_direct_source/run_003",
+      "entered_functions": [
+        "mp_destroy",
+        "mp_init",
+        "mp_parse"
+      ],
+      "errors": [],
+      "runs": 20000,
+      "seed": 3,
+      "status": "passed",
+      "totals": {
+        "branches": {
+          "count": 68,
+          "covered": 5,
+          "percent": 7.3529
+        },
+        "lines": {
+          "count": 82,
+          "covered": 10,
+          "percent": 12.1951
+        },
+        "regions": {
+          "count": 76,
+          "covered": 14,
+          "percent": 18.4211
+        }
+      }
+    }
+  ],
+  "runs": 20000,
+  "target_sha256": "aa82360a8d4b147bbdd69dcd7ea46ca22d9dae0daaf6ae5a77fc951a9bda27ff"
+}

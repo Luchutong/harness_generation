@@ -1,0 +1,13 @@
+{
+  "finish_reason": "stop",
+  "harness_sha256": "4cd2f4c02274f1c859b29f2ec1d59c0dd674a05cd59783ee5bfda8f463372330",
+  "parser_c_sha256": "27c3eb186dd25956a6a4c76f9c64ca40e8526c2e9b51c1ed1d0d4573db33556f",
+  "parser_h_sha256": "bc52f181b05120311d8d4dfb5e9c8f92ae5fecca155ff624728d855a9b39190d",
+  "prompt_sha256": "e9a9b397036884d81c0056f3f2c9fb93362f2a80a4808af28138b80d860c4721",
+  "provider": "openai-compatible",
+  "raw_harness_sha256": "4cd2f4c02274f1c859b29f2ec1d59c0dd674a05cd59783ee5bfda8f463372330",
+  "requested_model": "deepseek-v4-flash",
+  "response_id": "eb37d66e-422e-40cd-a1ad-87b30cdc4daf",
+  "response_model": "deepseek-flash",
+  "temperature": 0.2
+}

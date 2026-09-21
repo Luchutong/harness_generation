@@ -1,0 +1,24 @@
+{
+  "content": "```cpp\n#include \"parser.h\"\n\n#include <cstddef>\n#include <cstdint>\n#include <cstring>\n\nextern \"C\" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {\n    if (size < MP_HEADER_SIZE) return 0;\n\n    mp_context ctx;\n    mp_init(&ctx);\n\n    /* Feed the whole input as one frame first. */\n    mp_parse(&ctx, data, size);\n\n    /* Also exercise stateful sequences: split the input into multiple\n       frames so MP_STORE / MP_RELEASE / MP_USE interactions are covered.\n       Use a small bounded number of frames to keep work bounded. */\n    const size_t max_frames = 8;\n    size_t offset = 0;\n    size_t frames = 0;\n    while (offset + MP_HEADER_SIZE <= size && frames < max_frames) {\n        /* Derive frame length from the header's length field if it looks\n           plausible; otherwise consume the rest. */\n        size_t remaining = size - offset;\n        size_t frame_len = remaining;\n        if (remaining >= MP_HEADER_SIZE) {\n            const uint8_t *h = data + offset;\n            if (h[0] == 'M' && h[1] == 'P' && h[2] == 1) {\n                size_t declared = (size_t)h[4] | ((size_t)h[5] << 8);\n                if (declared <= MP_MAX_PAYLOAD &&\n                    declared + MP_HEADER_SIZE <= remaining) {\n                    frame_len = declared + MP_HEADER_SIZE;\n                }\n            }\n        }\n        if (frame_len == 0) break;\n        mp_parse(&ctx, data + offset, frame_len);\n        offset += frame_len;\n        ++frames;\n    }\n\n    mp_destroy(&ctx);\n    return 0;\n}\n```",
+  "finish_reason": "stop",
+  "metadata": {
+    "max_tokens": 4096,
+    "prompt_name": "unregistered",
+    "temperature": 0.2,
+    "thinking": "disabled"
+  },
+  "model": "deepseek-flash",
+  "prompt_version": "direct-source-v1",
+  "provider": "openai-compatible",
+  "response_id": "eb37d66e-422e-40cd-a1ad-87b30cdc4daf",
+  "usage": {
+    "completion_tokens": 407,
+    "prompt_cache_hit_tokens": 0,
+    "prompt_cache_miss_tokens": 1396,
+    "prompt_tokens": 1396,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1803
+  }
+}
