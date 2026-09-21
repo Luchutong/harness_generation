@@ -1,0 +1,822 @@
+{
+  "config": {
+    "runs": 20000,
+    "seeds": [
+      1,
+      2,
+      3
+    ]
+  },
+  "ft_id": "ft_mp_parse_787468773c9f",
+  "generated_by": "harness_generation.generation_variance",
+  "generations": [
+    {
+      "coverage_runs": [
+        {
+          "arm": "generation_001",
+          "artifact": "arms/generation_001/seed_1/target/store/coverage/ft_arms_generation_001/run_001",
+          "compile_target_sources": true,
+          "entered_functions": [
+            "mp_checksum",
+            "mp_destroy",
+            "mp_init",
+            "mp_parse",
+            "target.c:le16"
+          ],
+          "errors": [],
+          "harness_compiler": "clang++",
+          "recipe": "two_tu",
+          "role": "published_contracted",
+          "runs": 20000,
+          "scope": "target_code",
+          "seed": 1,
+          "seed_recorded": 1,
+          "status": "passed",
+          "totals": {
+            "branches": {
+              "count": 68,
+              "covered": 57,
+              "percent": 83.8235
+            },
+            "functions": {
+              "count": 5,
+              "covered": 5,
+              "percent": 100.0
+            },
+            "instantiations": {
+              "count": 5,
+              "covered": 5,
+              "percent": 100.0
+            },
+            "lines": {
+              "count": 82,
+              "covered": 81,
+              "percent": 98.7805
+            },
+            "mcdc": {
+              "count": 0,
+              "covered": 0,
+              "percent": 0.0
+            },
+            "regions": {
+              "count": 76,
+              "covered": 71,
+              "percent": 93.4211
+            }
+          }
+        },
+        {
+          "arm": "generation_001",
+          "artifact": "arms/generation_001/seed_2/target/store/coverage/ft_arms_generation_001/run_001",
+          "compile_target_sources": true,
+          "entered_functions": [
+            "mp_checksum",
+            "mp_destroy",
+            "mp_init",
+            "mp_parse",
+            "target.c:le16"
+          ],
+          "errors": [],
+          "harness_compiler": "clang++",
+          "recipe": "two_tu",
+          "role": "published_contracted",
+          "runs": 20000,
+          "scope": "target_code",
+          "seed": 2,
+          "seed_recorded": 2,
+          "status": "passed",
+          "totals": {
+            "branches": {
+              "count": 68,
+              "covered": 57,
+              "percent": 83.8235
+            },
+            "functions": {
+              "count": 5,
+              "covered": 5,
+              "percent": 100.0
+            },
+            "instantiations": {
+              "count": 5,
+              "covered": 5,
+              "percent": 100.0
+            },
+            "lines": {
+              "count": 82,
+              "covered": 81,
+              "percent": 98.7805
+            },
+            "mcdc": {
+              "count": 0,
+              "covered": 0,
+              "percent": 0.0
+            },
+            "regions": {
+              "count": 76,
+              "covered": 71,
+              "percent": 93.4211
+            }
+          }
+        },
+        {
+          "arm": "generation_001",
+          "artifact": "arms/generation_001/seed_3/target/store/coverage/ft_arms_generation_001/run_001",
+          "compile_target_sources": true,
+          "entered_functions": [
+            "mp_checksum",
+            "mp_destroy",
+            "mp_init",
+            "mp_parse",
+            "target.c:le16"
+          ],
+          "errors": [],
+          "harness_compiler": "clang++",
+          "recipe": "two_tu",
+          "role": "published_contracted",
+          "runs": 20000,
+          "scope": "target_code",
+          "seed": 3,
+          "seed_recorded": 3,
+          "status": "passed",
+          "totals": {
+            "branches": {
+              "count": 68,
+              "covered": 57,
+              "percent": 83.8235
+            },
+            "functions": {
+              "count": 5,
+              "covered": 5,
+              "percent": 100.0
+            },
+            "instantiations": {
+              "count": 5,
+              "covered": 5,
+              "percent": 100.0
+            },
+            "lines": {
+              "count": 82,
+              "covered": 81,
+              "percent": 98.7805
+            },
+            "mcdc": {
+              "count": 0,
+              "covered": 0,
+              "percent": 0.0
+            },
+            "regions": {
+              "count": 76,
+              "covered": 71,
+              "percent": 93.4211
+            }
+          }
+        }
+      ],
+      "exit_code": 0,
+      "failure_reason": null,
+      "generation_status": "published",
+      "harness_sha256": "b859ffdc20950734f4adcae9b81a8b6a64abc3c6cb95cc6791607ad0dbe2d1b0",
+      "plan_response_ids": [
+        "0a994e8d-1669-412a-92cd-9e8374c0d056"
+      ],
+      "rollback_count": 0,
+      "root": "generation_001",
+      "stage4_attempts": 1,
+      "trial": 1
+    },
+    {
+      "coverage_runs": [
+        {
+          "arm": "generation_002",
+          "artifact": "arms/generation_002/seed_1/target/store/coverage/ft_arms_generation_002/run_001",
+          "compile_target_sources": true,
+          "entered_functions": [
+            "mp_checksum",
+            "mp_destroy",
+            "mp_init",
+            "mp_parse",
+            "target.c:le16"
+          ],
+          "errors": [],
+          "harness_compiler": "clang++",
+          "recipe": "two_tu",
+          "role": "published_contracted",
+          "runs": 20000,
+          "scope": "target_code",
+          "seed": 1,
+          "seed_recorded": 1,
+          "status": "passed",
+          "totals": {
+            "branches": {
+              "count": 68,
+              "covered": 57,
+              "percent": 83.8235
+            },
+            "functions": {
+              "count": 5,
+              "covered": 5,
+              "percent": 100.0
+            },
+            "instantiations": {
+              "count": 5,
+              "covered": 5,
+              "percent": 100.0
+            },
+            "lines": {
+              "count": 82,
+              "covered": 81,
+              "percent": 98.7805
+            },
+            "mcdc": {
+              "count": 0,
+              "covered": 0,
+              "percent": 0.0
+            },
+            "regions": {
+              "count": 76,
+              "covered": 71,
+              "percent": 93.4211
+            }
+          }
+        },
+        {
+          "arm": "generation_002",
+          "artifact": "arms/generation_002/seed_2/target/store/coverage/ft_arms_generation_002/run_001",
+          "compile_target_sources": true,
+          "entered_functions": [
+            "mp_checksum",
+            "mp_destroy",
+            "mp_init",
+            "mp_parse",
+            "target.c:le16"
+          ],
+          "errors": [],
+          "harness_compiler": "clang++",
+          "recipe": "two_tu",
+          "role": "published_contracted",
+          "runs": 20000,
+          "scope": "target_code",
+          "seed": 2,
+          "seed_recorded": 2,
+          "status": "passed",
+          "totals": {
+            "branches": {
+              "count": 68,
+              "covered": 55,
+              "percent": 80.8824
+            },
+            "functions": {
+              "count": 5,
+              "covered": 5,
+              "percent": 100.0
+            },
+            "instantiations": {
+              "count": 5,
+              "covered": 5,
+              "percent": 100.0
+            },
+            "lines": {
+              "count": 82,
+              "covered": 81,
+              "percent": 98.7805
+            },
+            "mcdc": {
+              "count": 0,
+              "covered": 0,
+              "percent": 0.0
+            },
+            "regions": {
+              "count": 76,
+              "covered": 69,
+              "percent": 90.7895
+            }
+          }
+        },
+        {
+          "arm": "generation_002",
+          "artifact": "arms/generation_002/seed_3/target/store/coverage/ft_arms_generation_002/run_001",
+          "compile_target_sources": true,
+          "entered_functions": [
+            "mp_checksum",
+            "mp_destroy",
+            "mp_init",
+            "mp_parse",
+            "target.c:le16"
+          ],
+          "errors": [],
+          "harness_compiler": "clang++",
+          "recipe": "two_tu",
+          "role": "published_contracted",
+          "runs": 20000,
+          "scope": "target_code",
+          "seed": 3,
+          "seed_recorded": 3,
+          "status": "passed",
+          "totals": {
+            "branches": {
+              "count": 68,
+              "covered": 57,
+              "percent": 83.8235
+            },
+            "functions": {
+              "count": 5,
+              "covered": 5,
+              "percent": 100.0
+            },
+            "instantiations": {
+              "count": 5,
+              "covered": 5,
+              "percent": 100.0
+            },
+            "lines": {
+              "count": 82,
+              "covered": 81,
+              "percent": 98.7805
+            },
+            "mcdc": {
+              "count": 0,
+              "covered": 0,
+              "percent": 0.0
+            },
+            "regions": {
+              "count": 76,
+              "covered": 71,
+              "percent": 93.4211
+            }
+          }
+        }
+      ],
+      "exit_code": 0,
+      "failure_reason": null,
+      "generation_status": "published",
+      "harness_sha256": "509e017722d18416d2f59ae6e5a1df1ad0d944298ddaf5b7406315e95b5022e1",
+      "plan_response_ids": [
+        "cefc66ec-5184-4d60-853f-cd897ec04fb3",
+        "9fe241e6-5885-4be7-b5f2-e124c085a5e9"
+      ],
+      "rollback_count": 1,
+      "root": "generation_002",
+      "stage4_attempts": 2,
+      "trial": 2
+    },
+    {
+      "coverage_runs": [
+        {
+          "arm": "generation_003",
+          "artifact": "arms/generation_003/seed_1/target/store/coverage/ft_arms_generation_003/run_001",
+          "compile_target_sources": true,
+          "entered_functions": [
+            "mp_checksum",
+            "mp_destroy",
+            "mp_init",
+            "mp_parse",
+            "target.c:le16"
+          ],
+          "errors": [],
+          "harness_compiler": "clang++",
+          "recipe": "two_tu",
+          "role": "published_contracted",
+          "runs": 20000,
+          "scope": "target_code",
+          "seed": 1,
+          "seed_recorded": 1,
+          "status": "passed",
+          "totals": {
+            "branches": {
+              "count": 68,
+              "covered": 57,
+              "percent": 83.8235
+            },
+            "functions": {
+              "count": 5,
+              "covered": 5,
+              "percent": 100.0
+            },
+            "instantiations": {
+              "count": 5,
+              "covered": 5,
+              "percent": 100.0
+            },
+            "lines": {
+              "count": 82,
+              "covered": 81,
+              "percent": 98.7805
+            },
+            "mcdc": {
+              "count": 0,
+              "covered": 0,
+              "percent": 0.0
+            },
+            "regions": {
+              "count": 76,
+              "covered": 71,
+              "percent": 93.4211
+            }
+          }
+        },
+        {
+          "arm": "generation_003",
+          "artifact": "arms/generation_003/seed_2/target/store/coverage/ft_arms_generation_003/run_001",
+          "compile_target_sources": true,
+          "entered_functions": [
+            "mp_checksum",
+            "mp_destroy",
+            "mp_init",
+            "mp_parse",
+            "target.c:le16"
+          ],
+          "errors": [],
+          "harness_compiler": "clang++",
+          "recipe": "two_tu",
+          "role": "published_contracted",
+          "runs": 20000,
+          "scope": "target_code",
+          "seed": 2,
+          "seed_recorded": 2,
+          "status": "passed",
+          "totals": {
+            "branches": {
+              "count": 68,
+              "covered": 57,
+              "percent": 83.8235
+            },
+            "functions": {
+              "count": 5,
+              "covered": 5,
+              "percent": 100.0
+            },
+            "instantiations": {
+              "count": 5,
+              "covered": 5,
+              "percent": 100.0
+            },
+            "lines": {
+              "count": 82,
+              "covered": 81,
+              "percent": 98.7805
+            },
+            "mcdc": {
+              "count": 0,
+              "covered": 0,
+              "percent": 0.0
+            },
+            "regions": {
+              "count": 76,
+              "covered": 71,
+              "percent": 93.4211
+            }
+          }
+        },
+        {
+          "arm": "generation_003",
+          "artifact": "arms/generation_003/seed_3/target/store/coverage/ft_arms_generation_003/run_001",
+          "compile_target_sources": true,
+          "entered_functions": [
+            "mp_checksum",
+            "mp_destroy",
+            "mp_init",
+            "mp_parse",
+            "target.c:le16"
+          ],
+          "errors": [],
+          "harness_compiler": "clang++",
+          "recipe": "two_tu",
+          "role": "published_contracted",
+          "runs": 20000,
+          "scope": "target_code",
+          "seed": 3,
+          "seed_recorded": 3,
+          "status": "passed",
+          "totals": {
+            "branches": {
+              "count": 68,
+              "covered": 57,
+              "percent": 83.8235
+            },
+            "functions": {
+              "count": 5,
+              "covered": 5,
+              "percent": 100.0
+            },
+            "instantiations": {
+              "count": 5,
+              "covered": 5,
+              "percent": 100.0
+            },
+            "lines": {
+              "count": 82,
+              "covered": 81,
+              "percent": 98.7805
+            },
+            "mcdc": {
+              "count": 0,
+              "covered": 0,
+              "percent": 0.0
+            },
+            "regions": {
+              "count": 76,
+              "covered": 71,
+              "percent": 93.4211
+            }
+          }
+        }
+      ],
+      "exit_code": 0,
+      "failure_reason": null,
+      "generation_status": "published",
+      "harness_sha256": "a9958499972a36d678fabad4ee104553c99a87055adb74fccd7a1be61fb6f90e",
+      "plan_response_ids": [
+        "96c25180-2360-4bf8-820e-dd943e5a7ea2"
+      ],
+      "rollback_count": 0,
+      "root": "generation_003",
+      "stage4_attempts": 1,
+      "trial": 3
+    }
+  ],
+  "inputs": {
+    "catalogs": {
+      "annotations.json": "d0e55ce3facefc38827f728fdeb9d317869514228a8da255b492f36ad4bc8f2c",
+      "flows.json": "cdaecf9aa1aa4f0d3c3c758df47b8e1f19d53c5284b441fe465de040a93f29f1",
+      "functions.json": "0e5e1c4a27aa0d97126f0f952dd9078a50fa34028aceb303815bdfa26a3dc9e7",
+      "protocol_ir.json": "3c2f2819fd47625523f14b549d3efa4ae26dffa5d4ed15b269987ae57199f66b",
+      "sfg.json": "1b3eddeccb77de3ea4d920ce2548aa869ea9467b82d6e56288e9e3987b4aade9",
+      "triplets.json": "33bbd74aa7539df9b9c100a0afa46b5289d4fe79a7b38a8328311b3cf0dd4252"
+    },
+    "corpus": {
+      "multiply": "35a94c1e95835492ae941af20be1f67c69e0eb2c82536a150acbbee75b9eccab",
+      "nested": "28dde24d730ecc9e9e21516b4ca0a7d210927617e4c571c2ff42240ea1f3c04b",
+      "read": "527e7af33f5c0c4bd6b34f6406175b022385d5173ffe2f73fbcab11351d49be3",
+      "release": "c0ba8a33ac67f44abff5984dfbb6f56c46b880ac2b86e1f23e7fa9c402c53ae7",
+      "stateful_safe": "e0affd36e44cb1e3f3138e09ce7d3f2f305c9d8444c1cf288fe34da993a265c9",
+      "store": "8115ec37c58bd09374c59fe72ae4583ee27ae02c50470d07055055f9fc6a8924",
+      "use": "2921a11f25dadaa24aa79a548e4e81508c2e5e56af2d833d65e2bcce448ce2f5",
+      "write": "d09110611314f131e6e9d6618f12e30f4a37eb87c1eb2c3352e98ff00d5172d6"
+    },
+    "llm_config": {
+      "api_key_env_name": "LLM_API_KEY",
+      "base_url": "https://api.deepseek.com",
+      "max_tokens": 4096,
+      "model": "deepseek-v4-flash",
+      "temperature": 0.2,
+      "thinking": "disabled",
+      "timeout": 120.0
+    },
+    "reference_sha256": "6039764f6fd3b5c4f2ec1a0c4a47e2ee763372fb8bbc635d0df79b8c2e51ea08",
+    "target_source_sha256": "aa82360a8d4b147bbdd69dcd7ea46ca22d9dae0daaf6ae5a77fc951a9bda27ff"
+  },
+  "reference_complete": true,
+  "reference_runs": [
+    {
+      "arm": "reference",
+      "artifact": "arms/reference/seed_1/target/store/coverage/ft_arms_reference/run_001",
+      "compile_target_sources": false,
+      "entered_functions": [
+        "_Z10mp_destroyP10mp_context",
+        "_Z11mp_checksumPKhm",
+        "_Z7mp_initP10mp_context",
+        "_Z8mp_parseP10mp_contextPKhm",
+        "harness.c:_ZL4le16PKh"
+      ],
+      "errors": [],
+      "harness_compiler": "clang++",
+      "recipe": "single_tu",
+      "role": "accepted_reference",
+      "runs": 20000,
+      "scope": "target_code",
+      "seed": 1,
+      "seed_recorded": 1,
+      "status": "passed",
+      "totals": {
+        "branches": {
+          "count": 68,
+          "covered": 56,
+          "percent": 82.3529
+        },
+        "functions": {
+          "count": 5,
+          "covered": 5,
+          "percent": 100.0
+        },
+        "instantiations": {
+          "count": 5,
+          "covered": 5,
+          "percent": 100.0
+        },
+        "lines": {
+          "count": 82,
+          "covered": 78,
+          "percent": 95.122
+        },
+        "mcdc": {
+          "count": 0,
+          "covered": 0,
+          "percent": 0.0
+        },
+        "regions": {
+          "count": 76,
+          "covered": 70,
+          "percent": 92.1053
+        }
+      }
+    },
+    {
+      "arm": "reference",
+      "artifact": "arms/reference/seed_2/target/store/coverage/ft_arms_reference/run_001",
+      "compile_target_sources": false,
+      "entered_functions": [
+        "_Z10mp_destroyP10mp_context",
+        "_Z11mp_checksumPKhm",
+        "_Z7mp_initP10mp_context",
+        "_Z8mp_parseP10mp_contextPKhm",
+        "harness.c:_ZL4le16PKh"
+      ],
+      "errors": [],
+      "harness_compiler": "clang++",
+      "recipe": "single_tu",
+      "role": "accepted_reference",
+      "runs": 20000,
+      "scope": "target_code",
+      "seed": 2,
+      "seed_recorded": 2,
+      "status": "passed",
+      "totals": {
+        "branches": {
+          "count": 68,
+          "covered": 56,
+          "percent": 82.3529
+        },
+        "functions": {
+          "count": 5,
+          "covered": 5,
+          "percent": 100.0
+        },
+        "instantiations": {
+          "count": 5,
+          "covered": 5,
+          "percent": 100.0
+        },
+        "lines": {
+          "count": 82,
+          "covered": 78,
+          "percent": 95.122
+        },
+        "mcdc": {
+          "count": 0,
+          "covered": 0,
+          "percent": 0.0
+        },
+        "regions": {
+          "count": 76,
+          "covered": 70,
+          "percent": 92.1053
+        }
+      }
+    },
+    {
+      "arm": "reference",
+      "artifact": "arms/reference/seed_3/target/store/coverage/ft_arms_reference/run_001",
+      "compile_target_sources": false,
+      "entered_functions": [
+        "_Z10mp_destroyP10mp_context",
+        "_Z11mp_checksumPKhm",
+        "_Z7mp_initP10mp_context",
+        "_Z8mp_parseP10mp_contextPKhm",
+        "harness.c:_ZL4le16PKh"
+      ],
+      "errors": [],
+      "harness_compiler": "clang++",
+      "recipe": "single_tu",
+      "role": "accepted_reference",
+      "runs": 20000,
+      "scope": "target_code",
+      "seed": 3,
+      "seed_recorded": 3,
+      "status": "passed",
+      "totals": {
+        "branches": {
+          "count": 68,
+          "covered": 56,
+          "percent": 82.3529
+        },
+        "functions": {
+          "count": 5,
+          "covered": 5,
+          "percent": 100.0
+        },
+        "instantiations": {
+          "count": 5,
+          "covered": 5,
+          "percent": 100.0
+        },
+        "lines": {
+          "count": 82,
+          "covered": 78,
+          "percent": 95.122
+        },
+        "mcdc": {
+          "count": 0,
+          "covered": 0,
+          "percent": 0.0
+        },
+        "regions": {
+          "count": 76,
+          "covered": 70,
+          "percent": 92.1053
+        }
+      }
+    }
+  ],
+  "requested_generations": 3,
+  "schema_version": 1,
+  "status": "complete",
+  "summary": {
+    "branches": {
+      "between_generation_cv": 0.006778889268480615,
+      "between_generation_sample_variance": 0.32037293370370495,
+      "mean_percent": 83.49671111111111,
+      "measured_generations": 3,
+      "per_generation": [
+        {
+          "complete": true,
+          "mean_percent": 83.8235,
+          "trial": 1,
+          "within_sample_variance": 0.0
+        },
+        {
+          "complete": true,
+          "mean_percent": 82.84313333333333,
+          "trial": 2,
+          "within_sample_variance": 2.883356403333317
+        },
+        {
+          "complete": true,
+          "mean_percent": 83.8235,
+          "trial": 3,
+          "within_sample_variance": 0.0
+        }
+      ],
+      "requested_generations": 3,
+      "within_generation_cv": 0.01174138063189179,
+      "within_generation_sample_variance": 0.9611188011111057
+    },
+    "lines": {
+      "between_generation_cv": 0.0,
+      "between_generation_sample_variance": 0.0,
+      "mean_percent": 98.7805,
+      "measured_generations": 3,
+      "per_generation": [
+        {
+          "complete": true,
+          "mean_percent": 98.7805,
+          "trial": 1,
+          "within_sample_variance": 0.0
+        },
+        {
+          "complete": true,
+          "mean_percent": 98.7805,
+          "trial": 2,
+          "within_sample_variance": 0.0
+        },
+        {
+          "complete": true,
+          "mean_percent": 98.7805,
+          "trial": 3,
+          "within_sample_variance": 0.0
+        }
+      ],
+      "requested_generations": 3,
+      "within_generation_cv": 0.0,
+      "within_generation_sample_variance": 0.0
+    },
+    "regions": {
+      "between_generation_cv": 0.005438190978002924,
+      "between_generation_sample_variance": 0.25649328000000116,
+      "mean_percent": 93.1287,
+      "measured_generations": 3,
+      "per_generation": [
+        {
+          "complete": true,
+          "mean_percent": 93.4211,
+          "trial": 1,
+          "within_sample_variance": 0.0
+        },
+        {
+          "complete": true,
+          "mean_percent": 92.5439,
+          "trial": 2,
+          "within_sample_variance": 2.3084395199999856
+        },
+        {
+          "complete": true,
+          "mean_percent": 93.4211,
+          "trial": 3,
+          "within_sample_variance": 0.0
+        }
+      ],
+      "requested_generations": 3,
+      "within_generation_cv": 0.009419223075163697,
+      "within_generation_sample_variance": 0.7694798399999953
+    }
+  }
+}

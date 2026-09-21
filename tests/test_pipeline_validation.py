@@ -525,6 +525,23 @@ class AttemptOutcomeTests(ContractHelperAllowanceTests):
             outcome["validation_result"]["status"], result.status,
         )
 
+    def test_unavailable_compiler_keeps_toolchain_reason_in_attempt(self):
+        root, published = self.published_attempt("outcome_compiler_unavailable")
+
+        result = self.building_validator(
+            root, CompilerConfig(compiler="missing-harness-compiler-p3")
+        ).validate_stage4(published)
+
+        self.assertEqual(result.status, "unavailable")
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.metadata["failure_type"],
+                         "required_validation_incomplete")
+        self.assertIn("missing-harness-compiler-p3", result.warnings[0])
+        self.assertIn("compiler validation unavailable", result.warnings[0])
+        outcome = self.outcome_in(published)
+        self.assertEqual(outcome["status"], "unavailable")
+        self.assertIn("missing-harness-compiler-p3", outcome["error"])
+
     def test_a_successful_validation_is_recorded_as_validated(self):
         root, published = self.published_attempt("outcome_validated")
 

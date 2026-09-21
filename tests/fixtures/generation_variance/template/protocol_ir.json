@@ -1,0 +1,357 @@
+{
+  "confidence": 1.0,
+  "context": {
+    "confidence": 1.0,
+    "destroy": "mp_destroy",
+    "evidence": [
+      "void mp_destroy(mp_context *ctx);",
+      "void mp_init(mp_context *ctx);",
+      "void mp_destroy(mp_context *ctx) { if (ctx->owns_saved) free(ctx->saved); mp_init(ctx); }",
+      "void mp_init(mp_context *ctx) { memset(ctx, 0, sizeof(*ctx)); }"
+    ],
+    "init": "mp_init",
+    "lifetime": "one per fuzz iteration",
+    "source": "llm_inference",
+    "type": "mp_context"
+  },
+  "entry_function": "mp_parse",
+  "frame": {
+    "evidence": [
+      {
+        "column": 26,
+        "detail": "guard `size < MP_HEADER_SIZE` bounds size by MP_HEADER_SIZE = 8",
+        "kind": "min_size_guard",
+        "line": 57,
+        "location": "target.c:57:26",
+        "snippet": "size < MP_HEADER_SIZE",
+        "source": "source_static"
+      },
+      {
+        "column": 9,
+        "detail": "`len > MP_MAX_PAYLOAD` bounds payload length by MP_MAX_PAYLOAD = 64",
+        "kind": "length_bound",
+        "line": 60,
+        "location": "target.c:60:9",
+        "snippet": "len > MP_MAX_PAYLOAD",
+        "source": "source_static"
+      }
+    ],
+    "fields": [
+      {
+        "confidence": 1.0,
+        "evidence": [
+          {
+            "column": 9,
+            "detail": "byte at offset 0 is compared against a constant in a guard",
+            "kind": "literal_guard",
+            "line": 58,
+            "location": "target.c:58:9",
+            "snippet": "data[0] != 'M'",
+            "source": "source_static"
+          }
+        ],
+        "name": "magic0",
+        "offset": 0,
+        "role": "magic",
+        "source": "source_static",
+        "value": "'M'",
+        "width": 1
+      },
+      {
+        "confidence": 1.0,
+        "evidence": [
+          {
+            "column": 27,
+            "detail": "byte at offset 1 is compared against a constant in a guard",
+            "kind": "literal_guard",
+            "line": 58,
+            "location": "target.c:58:27",
+            "snippet": "data[1] != 'P'",
+            "source": "source_static"
+          }
+        ],
+        "name": "magic1",
+        "offset": 1,
+        "role": "magic",
+        "source": "source_static",
+        "value": "'P'",
+        "width": 1
+      },
+      {
+        "confidence": 1.0,
+        "evidence": [
+          {
+            "column": 45,
+            "detail": "byte at offset 2 is compared against a constant in a guard",
+            "kind": "literal_guard",
+            "line": 58,
+            "location": "target.c:58:45",
+            "snippet": "data[2] != 1",
+            "source": "source_static"
+          }
+        ],
+        "name": "version",
+        "offset": 2,
+        "role": "version",
+        "source": "source_static",
+        "value": "1",
+        "width": 1
+      },
+      {
+        "confidence": 1.0,
+        "evidence": [
+          {
+            "column": 13,
+            "detail": "byte at offset 3 selects the command handler",
+            "kind": "dispatch_selector",
+            "line": 68,
+            "location": "target.c:68:13",
+            "snippet": "data[3]",
+            "source": "source_static"
+          }
+        ],
+        "name": "opcode",
+        "offset": 3,
+        "role": "opcode",
+        "source": "source_static",
+        "value": "dispatch selector over 7 cases, values 1..7",
+        "width": 1
+      },
+      {
+        "confidence": 1.0,
+        "endianness": "little_endian",
+        "evidence": [
+          {
+            "column": 18,
+            "detail": "le16() reads 2 bytes at offset 4 (little_endian)",
+            "kind": "symbolic_load",
+            "line": 59,
+            "location": "target.c:59:18",
+            "snippet": "le16(data + 4)",
+            "source": "source_static"
+          },
+          {
+            "column": 33,
+            "detail": "`len != size - MP_HEADER_SIZE` relates the offset-4 field to the remaining input size",
+            "kind": "length_relation",
+            "line": 60,
+            "location": "target.c:60:33",
+            "snippet": "len != size - MP_HEADER_SIZE",
+            "source": "source_static"
+          }
+        ],
+        "name": "payload_length",
+        "offset": 4,
+        "role": "payload_length",
+        "source": "source_static",
+        "value": "le16() load",
+        "width": 2
+      },
+      {
+        "confidence": 1.0,
+        "endianness": "little_endian",
+        "evidence": [
+          {
+            "column": 52,
+            "detail": "le16() reads 2 bytes at offset 6 (little_endian)",
+            "kind": "symbolic_load",
+            "line": 61,
+            "location": "target.c:61:52",
+            "snippet": "le16(data + 6)",
+            "source": "source_static"
+          },
+          {
+            "column": 9,
+            "detail": "`mp_checksum(data + MP_HEADER_SIZE, len) != le16(data + 6)` compares the offset-6 field against mp_checksum() over the payload region",
+            "kind": "checksum_comparison",
+            "line": 61,
+            "location": "target.c:61:9",
+            "snippet": "mp_checksum(data + MP_HEADER_SIZE, len) != le16(data + 6)",
+            "source": "source_static"
+          }
+        ],
+        "name": "checksum",
+        "offset": 6,
+        "role": "checksum",
+        "source": "source_static",
+        "value": "le16() load",
+        "width": 2
+      },
+      {
+        "confidence": 1.0,
+        "evidence": [
+          {
+            "column": 21,
+            "detail": "`data + MP_HEADER_SIZE` is the largest fixed offset from the input buffer, so payload bytes start at 8",
+            "kind": "payload_region",
+            "line": 61,
+            "location": "target.c:61:21",
+            "snippet": "data + MP_HEADER_SIZE",
+            "source": "source_static"
+          }
+        ],
+        "name": "payload",
+        "offset": 8,
+        "role": "payload",
+        "source": "source_static",
+        "value": "fuzzer-controlled bytes",
+        "width": "payload_length"
+      }
+    ],
+    "header_size": 8,
+    "max_payload": 64,
+    "max_payload_symbol": "MP_MAX_PAYLOAD",
+    "payload_offset": 8
+  },
+  "limitations": [
+    "field_8 has a variable width; it must be tied to the length field by a later stage",
+    "convention block (command loop, context lifetime, requirements, notes) is out of scope for static mining: it is not present in the parser body"
+  ],
+  "metadata": {
+    "model": "deepseek-flash",
+    "prompt_version": "protocol-convention-refinement-v1",
+    "provider": "recorded-response",
+    "rejected_samples": [],
+    "samples_requested": 3,
+    "valid_samples": 3,
+    "vote_summary": {
+      "confidence": {
+        "fields_counted": [
+          "context.destroy",
+          "context.init",
+          "context.lifetime",
+          "context.type",
+          "sequence_model.max_steps.source",
+          "sequence_model.max_steps.value",
+          "sequence_model.multi_frame",
+          "stateful_operations"
+        ],
+        "mean_field_agreement": 1.0,
+        "sample_validity": 1.0,
+        "value": 1.0
+      },
+      "fields": {
+        "context.destroy": {
+          "agreement": 1.0,
+          "selected": "mp_destroy",
+          "valid_samples": 3,
+          "votes": 3
+        },
+        "context.init": {
+          "agreement": 1.0,
+          "selected": "mp_init",
+          "valid_samples": 3,
+          "votes": 3
+        },
+        "context.lifetime": {
+          "agreement": 1.0,
+          "selected": "one per fuzz iteration",
+          "valid_samples": 3,
+          "votes": 3
+        },
+        "context.type": {
+          "agreement": 1.0,
+          "selected": "mp_context",
+          "valid_samples": 3,
+          "votes": 3
+        },
+        "sequence_model.max_steps.source": {
+          "agreement": 1.0,
+          "selected": "engineering_choice",
+          "valid_samples": 3,
+          "votes": 3
+        },
+        "sequence_model.max_steps.value": {
+          "agreement": 1.0,
+          "selected": 32,
+          "valid_samples": 3,
+          "votes": 3
+        },
+        "sequence_model.multi_frame": {
+          "agreement": 1.0,
+          "selected": true,
+          "valid_samples": 3,
+          "votes": 3
+        },
+        "stateful_operations": {
+          "agreement": 1.0,
+          "alternatives": {
+            "MP_RELEASE": 3,
+            "MP_STORE": 3,
+            "MP_USE": 3
+          },
+          "selected": [
+            "MP_RELEASE",
+            "MP_STORE",
+            "MP_USE"
+          ],
+          "valid_samples": 3
+        }
+      }
+    },
+    "vote_threshold": 2
+  },
+  "notes": [],
+  "requirements": [
+    "Keep payload bytes starting at offset 8 fuzz-controlled.",
+    "Keep the mp_context alive across all frames decoded from one fuzz input and destroy it at the end of the iteration."
+  ],
+  "schema_version": 1,
+  "sequence_model": {
+    "confidence": 1.0,
+    "evidence": [
+      "/* One complete frame per call; a context can process multiple frames. */",
+      "int mp_parse(mp_context *ctx, const uint8_t *data, size_t size);"
+    ],
+    "max_steps": {
+      "evidence": [
+        "/* One complete frame per call; a context can process multiple frames. */"
+      ],
+      "source": "engineering_choice",
+      "value": 32
+    },
+    "multi_frame": true,
+    "reason": "mp_parse processes one complete frame per call and the header comment states a context can process multiple frames, so a single fuzz input should be decoded as a bounded sequence of frames while keeping the mp_context alive.",
+    "source": "llm_inference"
+  },
+  "source": "target.c",
+  "stateful_operations": [
+    {
+      "confidence": 1.0,
+      "evidence": [
+        "case MP_RELEASE:",
+        "ctx->owns_saved = 0;",
+        "free(ctx->saved);",
+        "if (ctx->owns_saved) {",
+        "/* BUG 4: saved and saved_len remain valid-looking stale state. */"
+      ],
+      "opcode": "MP_RELEASE",
+      "reason": "MP_RELEASE frees ctx->saved and clears ctx->owns_saved, changing persistent context state for subsequent frames.",
+      "source": "llm_inference"
+    },
+    {
+      "confidence": 1.0,
+      "evidence": [
+        "case MP_STORE:",
+        "ctx->owns_saved = 1;",
+        "ctx->saved = p;",
+        "ctx->saved_len = len;",
+        "return 0; /* Transfer ownership to the context. */",
+        "if (ctx->owns_saved) free(ctx->saved);"
+      ],
+      "opcode": "MP_STORE",
+      "reason": "MP_STORE transfers ownership of the payload buffer into ctx->saved and sets ctx->owns_saved, mutating persistent context state used by later frames.",
+      "source": "llm_inference"
+    },
+    {
+      "confidence": 1.0,
+      "evidence": [
+        "case MP_USE:",
+        "if (ctx->saved && ctx->saved_len) ctx->observation = ctx->saved[0];"
+      ],
+      "opcode": "MP_USE",
+      "reason": "MP_USE reads ctx->saved and ctx->saved_len, so its behavior depends on prior MP_STORE/MP_RELEASE frames within the same context lifetime.",
+      "source": "llm_inference"
+    }
+  ]
+}

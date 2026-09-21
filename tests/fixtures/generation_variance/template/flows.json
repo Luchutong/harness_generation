@@ -1,0 +1,189 @@
+{
+  "flows": [
+    {
+      "complex_flow": false,
+      "file": "target.c",
+      "function": "le16",
+      "function_id": "target.c:37:le16",
+      "input_structs": [],
+      "labels": [
+        "ISF"
+      ],
+      "line": 37,
+      "output_structs": [],
+      "parameters": [
+        {
+          "base_type": "uint8_t",
+          "declaration": "const uint8_t *p",
+          "is_const": true,
+          "is_pointer": true,
+          "is_struct_like": false,
+          "name": "p",
+          "pointer_depth": 1,
+          "type": "const uint8_t *"
+        }
+      ],
+      "source": {
+        "file": "target.c",
+        "line": 37
+      },
+      "warnings": []
+    },
+    {
+      "complex_flow": false,
+      "file": "target.c",
+      "function": "mp_init",
+      "function_id": "target.c:41:mp_init",
+      "input_structs": [],
+      "labels": [
+        "HPF"
+      ],
+      "line": 41,
+      "output_structs": [],
+      "parameters": [
+        {
+          "base_type": "mp_context",
+          "declaration": "mp_context *ctx",
+          "is_const": false,
+          "is_pointer": true,
+          "is_struct_like": true,
+          "name": "ctx",
+          "pointer_depth": 1,
+          "type": "mp_context *"
+        }
+      ],
+      "source": {
+        "file": "target.c",
+        "line": 41
+      },
+      "warnings": [
+        "mp_init.ctx: unknown struct direction omitted from edges"
+      ]
+    },
+    {
+      "complex_flow": false,
+      "file": "target.c",
+      "function": "mp_destroy",
+      "function_id": "target.c:45:mp_destroy",
+      "input_structs": [
+        "mp_context"
+      ],
+      "labels": [
+        "HPF"
+      ],
+      "line": 45,
+      "output_structs": [],
+      "parameters": [
+        {
+          "base_type": "mp_context",
+          "declaration": "mp_context *ctx",
+          "is_const": false,
+          "is_pointer": true,
+          "is_struct_like": true,
+          "name": "ctx",
+          "pointer_depth": 1,
+          "type": "mp_context *"
+        }
+      ],
+      "source": {
+        "file": "target.c",
+        "line": 45
+      },
+      "warnings": []
+    },
+    {
+      "complex_flow": false,
+      "file": "target.c",
+      "function": "mp_checksum",
+      "function_id": "target.c:50:mp_checksum",
+      "input_structs": [],
+      "labels": [
+        "ISF"
+      ],
+      "line": 50,
+      "output_structs": [],
+      "parameters": [
+        {
+          "base_type": "uint8_t",
+          "declaration": "const uint8_t *payload",
+          "is_const": true,
+          "is_pointer": true,
+          "is_struct_like": false,
+          "name": "payload",
+          "pointer_depth": 1,
+          "type": "const uint8_t *"
+        },
+        {
+          "base_type": "size_t",
+          "declaration": "size_t size",
+          "is_const": false,
+          "is_pointer": false,
+          "is_struct_like": false,
+          "name": "size",
+          "pointer_depth": 0,
+          "type": "size_t"
+        }
+      ],
+      "source": {
+        "file": "target.c",
+        "line": 50
+      },
+      "warnings": []
+    },
+    {
+      "complex_flow": false,
+      "file": "target.c",
+      "function": "mp_parse",
+      "function_id": "target.c:56:mp_parse",
+      "input_structs": [
+        "mp_context"
+      ],
+      "labels": [
+        "ISF",
+        "PRF"
+      ],
+      "line": 56,
+      "output_structs": [],
+      "parameters": [
+        {
+          "base_type": "mp_context",
+          "declaration": "mp_context *ctx",
+          "is_const": false,
+          "is_pointer": true,
+          "is_struct_like": true,
+          "name": "ctx",
+          "pointer_depth": 1,
+          "type": "mp_context *"
+        },
+        {
+          "base_type": "uint8_t",
+          "declaration": "const uint8_t *data",
+          "is_const": true,
+          "is_pointer": true,
+          "is_struct_like": false,
+          "name": "data",
+          "pointer_depth": 1,
+          "type": "const uint8_t *"
+        },
+        {
+          "base_type": "size_t",
+          "declaration": "size_t size",
+          "is_const": false,
+          "is_pointer": false,
+          "is_struct_like": false,
+          "name": "size",
+          "pointer_depth": 0,
+          "type": "size_t"
+        }
+      ],
+      "source": {
+        "file": "target.c",
+        "line": 56
+      },
+      "warnings": [
+        "mp_parse.ctx: BOTH is represented as input-only in SFG"
+      ]
+    }
+  ],
+  "schema_version": 1
+}

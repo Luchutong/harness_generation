@@ -436,9 +436,13 @@ class PipelineStageValidator:
         )
         required_statuses = statuses[:2]
         if "unavailable" in required_statuses:
-            return _nonblocking_result("stage4", "unavailable", statuses)
+            return _required_validation_incomplete(
+                "stage4", "unavailable", statuses, intermediate, compiler
+            )
         if "skipped" in required_statuses:
-            return _nonblocking_result("stage4", "skipped", statuses)
+            return _required_validation_incomplete(
+                "stage4", "skipped", statuses, intermediate, compiler
+            )
         if any(status in {"skipped", "unavailable"} for status in statuses[2:]):
             return _limited_result("stage4", statuses)
         if self.config.fuzz_smoke is not None:
@@ -495,18 +499,35 @@ def _unavailable(validator: str, reason: str) -> ValidationResult:
     )
 
 
-def _nonblocking_result(
+def _required_validation_incomplete(
     validator: str,
     status: str,
     component_statuses: Sequence[str],
+    intermediate: ValidationResult,
+    compiler: ValidationResult,
 ) -> ValidationResult:
+    diagnostics = []
+    for name, result in (("intermediate", intermediate), ("compiler", compiler)):
+        if result.status not in {"unavailable", "skipped"}:
+            continue
+        details = list(result.warnings)
+        syntax = result.metadata.get("syntax")
+        if isinstance(syntax, Mapping):
+            stderr = syntax.get("stderr")
+            if isinstance(stderr, str) and stderr.strip():
+                details.append(stderr.strip())
+        diagnostics.append(
+            f"{name} validation {result.status}"
+            + (f": {'; '.join(dict.fromkeys(details))}" if details else "")
+        )
     return ValidationResult(
         success=None,
         errors=(),
-        warnings=(f"Stage validation completed with status {status}",),
+        warnings=tuple(diagnostics),
         metadata={
             "validator": validator,
             "component_statuses": list(component_statuses),
+            "failure_type": "required_validation_incomplete",
         },
         status=status,
     )

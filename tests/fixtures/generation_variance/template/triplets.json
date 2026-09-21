@@ -1,0 +1,701 @@
+{
+  "schema_version": 3,
+  "triplets": [
+    {
+      "bypass_semantics": [
+        {
+          "evidence": [
+            "parameter: const uint8_t *p"
+          ],
+          "function": "le16",
+          "function_id": "target.c:37:le16",
+          "id": "bs_byte_stream_parameter_40117249be33",
+          "kind": "byte_stream_parameter",
+          "metadata": {
+            "base_type": "uint8_t",
+            "is_const": true,
+            "parameter": "p",
+            "pointer_depth": 1,
+            "type": "const uint8_t *"
+          },
+          "summary": "le16 receives byte stream parameter p."
+        },
+        {
+          "evidence": [
+            "return_type: uint16_t"
+          ],
+          "function": "le16",
+          "function_id": "target.c:37:le16",
+          "id": "bs_return_value_65c0c8495430",
+          "kind": "return_value",
+          "metadata": {
+            "return_base_type": "uint16_t",
+            "return_is_struct_like": false,
+            "return_pointer_depth": 0,
+            "return_type": "uint16_t"
+          },
+          "summary": "le16 returns uint16_t."
+        }
+      ],
+      "edges": [],
+      "functions": [
+        {
+          "file": "target.c",
+          "function": "le16",
+          "function_id": "target.c:37:le16",
+          "line": 37,
+          "roles": [
+            "ISF"
+          ]
+        }
+      ],
+      "hpfs": [],
+      "id": "ft_le16_83cfe3064aba",
+      "isf": {
+        "file": "target.c",
+        "function": "le16",
+        "function_id": "target.c:37:le16",
+        "line": 37,
+        "roles": [
+          "ISF"
+        ]
+      },
+      "metadata": {
+        "algorithm": "synapseflow-function-triplet-v2",
+        "anchor_function_id": "target.c:37:le16",
+        "bypass_semantics_count": 2,
+        "bypass_semantics_version": "function-triplet-bypass-v1",
+        "data_chain": {
+          "entry": "fuzz_input",
+          "isf": "le16",
+          "structures": []
+        },
+        "in_nodes": [],
+        "input_structs": [],
+        "other_isfs": [
+          "target.c:50:mp_checksum",
+          "target.c:56:mp_parse"
+        ],
+        "out_nodes": [],
+        "output_structs": [],
+        "removed_isfs": [
+          "target.c:50:mp_checksum"
+        ],
+        "role_masked_isfs": [
+          "target.c:56:mp_parse"
+        ],
+        "source_schema_versions": {
+          "annotations": 1,
+          "flows": 1,
+          "functions": 2,
+          "sfg": 1
+        }
+      },
+      "prfs": [],
+      "structures": []
+    },
+    {
+      "bypass_semantics": [
+        {
+          "evidence": [
+            "parameter: const uint8_t *payload"
+          ],
+          "function": "mp_checksum",
+          "function_id": "target.c:50:mp_checksum",
+          "id": "bs_byte_stream_parameter_fe8990ef8ae1",
+          "kind": "byte_stream_parameter",
+          "metadata": {
+            "base_type": "uint8_t",
+            "is_const": true,
+            "parameter": "payload",
+            "pointer_depth": 1,
+            "type": "const uint8_t *"
+          },
+          "summary": "mp_checksum receives byte stream parameter payload."
+        },
+        {
+          "evidence": [
+            "parameter: const uint8_t *payload",
+            "parameter: size_t size"
+          ],
+          "function": "mp_checksum",
+          "function_id": "target.c:50:mp_checksum",
+          "id": "bs_fuzzer_input_binding_a2cd2599d757",
+          "kind": "fuzzer_input_binding",
+          "metadata": {
+            "length_parameter": "size",
+            "length_type": "size_t",
+            "stream_parameter": "payload",
+            "stream_type": "const uint8_t *"
+          },
+          "summary": "mp_checksum binds byte stream parameter payload with length parameter size."
+        },
+        {
+          "evidence": [
+            "return_type: uint16_t"
+          ],
+          "function": "mp_checksum",
+          "function_id": "target.c:50:mp_checksum",
+          "id": "bs_return_value_ace8197fe097",
+          "kind": "return_value",
+          "metadata": {
+            "return_base_type": "uint16_t",
+            "return_is_struct_like": false,
+            "return_pointer_depth": 0,
+            "return_type": "uint16_t"
+          },
+          "summary": "mp_checksum returns uint16_t."
+        },
+        {
+          "evidence": [
+            "parameter: size_t size"
+          ],
+          "function": "mp_checksum",
+          "function_id": "target.c:50:mp_checksum",
+          "id": "bs_scalar_parameter_76497286d20d",
+          "kind": "scalar_parameter",
+          "metadata": {
+            "base_type": "size_t",
+            "parameter": "size",
+            "type": "size_t"
+          },
+          "summary": "mp_checksum has scalar parameter size."
+        }
+      ],
+      "edges": [],
+      "functions": [
+        {
+          "file": "target.c",
+          "function": "mp_checksum",
+          "function_id": "target.c:50:mp_checksum",
+          "line": 50,
+          "roles": [
+            "ISF"
+          ]
+        }
+      ],
+      "hpfs": [],
+      "id": "ft_mp_checksum_e90a0ea3f77d",
+      "isf": {
+        "file": "target.c",
+        "function": "mp_checksum",
+        "function_id": "target.c:50:mp_checksum",
+        "line": 50,
+        "roles": [
+          "ISF"
+        ]
+      },
+      "metadata": {
+        "algorithm": "synapseflow-function-triplet-v2",
+        "anchor_function_id": "target.c:50:mp_checksum",
+        "bypass_semantics_count": 4,
+        "bypass_semantics_version": "function-triplet-bypass-v1",
+        "data_chain": {
+          "entry": "fuzz_input",
+          "isf": "mp_checksum",
+          "structures": []
+        },
+        "in_nodes": [],
+        "input_structs": [],
+        "other_isfs": [
+          "target.c:37:le16",
+          "target.c:56:mp_parse"
+        ],
+        "out_nodes": [],
+        "output_structs": [],
+        "removed_isfs": [
+          "target.c:37:le16"
+        ],
+        "role_masked_isfs": [
+          "target.c:56:mp_parse"
+        ],
+        "source_schema_versions": {
+          "annotations": 1,
+          "flows": 1,
+          "functions": 2,
+          "sfg": 1
+        }
+      },
+      "prfs": [],
+      "structures": []
+    },
+    {
+      "bypass_semantics": [
+        {
+          "evidence": [
+            "parameter: const uint8_t *data"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_byte_stream_parameter_9b0cff401f5f",
+          "kind": "byte_stream_parameter",
+          "metadata": {
+            "base_type": "uint8_t",
+            "is_const": true,
+            "parameter": "data",
+            "pointer_depth": 1,
+            "type": "const uint8_t *"
+          },
+          "summary": "mp_parse receives byte stream parameter data."
+        },
+        {
+          "evidence": [
+            "MP_HEADER_SIZE"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_constant_reference_05752ea237f4",
+          "kind": "constant_reference",
+          "metadata": {
+            "constant": "MP_HEADER_SIZE"
+          },
+          "summary": "mp_parse references constant MP_HEADER_SIZE."
+        },
+        {
+          "evidence": [
+            "MP_NESTED_LENGTH"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_constant_reference_59caef4983f4",
+          "kind": "constant_reference",
+          "metadata": {
+            "constant": "MP_NESTED_LENGTH"
+          },
+          "summary": "mp_parse references constant MP_NESTED_LENGTH."
+        },
+        {
+          "evidence": [
+            "MP_RELEASE"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_constant_reference_69861d3250b7",
+          "kind": "constant_reference",
+          "metadata": {
+            "constant": "MP_RELEASE"
+          },
+          "summary": "mp_parse references constant MP_RELEASE."
+        },
+        {
+          "evidence": [
+            "MP_READ"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_constant_reference_7973f0d3fe4e",
+          "kind": "constant_reference",
+          "metadata": {
+            "constant": "MP_READ"
+          },
+          "summary": "mp_parse references constant MP_READ."
+        },
+        {
+          "evidence": [
+            "INT32_MAX"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_constant_reference_8a9d8e842606",
+          "kind": "constant_reference",
+          "metadata": {
+            "constant": "INT32_MAX"
+          },
+          "summary": "mp_parse references constant INT32_MAX."
+        },
+        {
+          "evidence": [
+            "MP_WRITE"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_constant_reference_aadaf5d4a101",
+          "kind": "constant_reference",
+          "metadata": {
+            "constant": "MP_WRITE"
+          },
+          "summary": "mp_parse references constant MP_WRITE."
+        },
+        {
+          "evidence": [
+            "MP_MULTIPLY"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_constant_reference_c53ea6b71b3d",
+          "kind": "constant_reference",
+          "metadata": {
+            "constant": "MP_MULTIPLY"
+          },
+          "summary": "mp_parse references constant MP_MULTIPLY."
+        },
+        {
+          "evidence": [
+            "MP_MAX_PAYLOAD"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_constant_reference_cba7fcfeaccc",
+          "kind": "constant_reference",
+          "metadata": {
+            "constant": "MP_MAX_PAYLOAD"
+          },
+          "summary": "mp_parse references constant MP_MAX_PAYLOAD."
+        },
+        {
+          "evidence": [
+            "MP_STORE"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_constant_reference_cc6b01de6670",
+          "kind": "constant_reference",
+          "metadata": {
+            "constant": "MP_STORE"
+          },
+          "summary": "mp_parse references constant MP_STORE."
+        },
+        {
+          "evidence": [
+            "MP_USE"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_constant_reference_d6e00fa9c905",
+          "kind": "constant_reference",
+          "metadata": {
+            "constant": "MP_USE"
+          },
+          "summary": "mp_parse references constant MP_USE."
+        },
+        {
+          "evidence": [
+            "parameter: const uint8_t *data",
+            "parameter: size_t size"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_fuzzer_input_binding_4d431c3859e2",
+          "kind": "fuzzer_input_binding",
+          "metadata": {
+            "length_parameter": "size",
+            "length_type": "size_t",
+            "stream_parameter": "data",
+            "stream_type": "const uint8_t *"
+          },
+          "summary": "mp_parse binds byte stream parameter data with length parameter size."
+        },
+        {
+          "evidence": [
+            "if (ctx->owns_saved)"
+          ],
+          "function": "mp_destroy",
+          "function_id": "target.c:45:mp_destroy",
+          "id": "bs_guard_condition_c6ef78c8289a",
+          "kind": "guard_condition",
+          "metadata": {
+            "condition": "ctx->owns_saved"
+          },
+          "summary": "mp_destroy has guard condition: ctx->owns_saved"
+        },
+        {
+          "evidence": [
+            "if (!p)"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_guard_condition_16f4d3f03f7c",
+          "kind": "guard_condition",
+          "metadata": {
+            "condition": "!p"
+          },
+          "summary": "mp_parse has guard condition: !p"
+        },
+        {
+          "evidence": [
+            "if (!ctx || !data || size < MP_HEADER_SIZE)"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_guard_condition_3f469a6dd527",
+          "kind": "guard_condition",
+          "metadata": {
+            "condition": "!ctx || !data || size < MP_HEADER_SIZE"
+          },
+          "summary": "mp_parse has guard condition: !ctx || !data || size < MP_HEADER_SIZE"
+        },
+        {
+          "evidence": [
+            "if (len > MP_MAX_PAYLOAD || len != size - MP_HEADER_SIZE)"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_guard_condition_51d059bd2a9e",
+          "kind": "guard_condition",
+          "metadata": {
+            "condition": "len > MP_MAX_PAYLOAD || len != size - MP_HEADER_SIZE"
+          },
+          "summary": "mp_parse has guard condition: len > MP_MAX_PAYLOAD || len != size - MP_HEADER_SIZE"
+        },
+        {
+          "evidence": [
+            "if (mp_checksum(data + MP_HEADER_SIZE, len) != le16(data + 6)"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_guard_condition_530f6218ac3c",
+          "kind": "guard_condition",
+          "metadata": {
+            "condition": "mp_checksum(data + MP_HEADER_SIZE, len) != le16(data + 6"
+          },
+          "summary": "mp_parse has guard condition: mp_checksum(data + MP_HEADER_SIZE, len) != le16(data + 6"
+        },
+        {
+          "evidence": [
+            "if (len >= 4)"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_guard_condition_a2da693c4654",
+          "kind": "guard_condition",
+          "metadata": {
+            "condition": "len >= 4"
+          },
+          "summary": "mp_parse has guard condition: len >= 4"
+        },
+        {
+          "evidence": [
+            "if (len >= 1)"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_guard_condition_acbb268a9298",
+          "kind": "guard_condition",
+          "metadata": {
+            "condition": "len >= 1"
+          },
+          "summary": "mp_parse has guard condition: len >= 1"
+        },
+        {
+          "evidence": [
+            "if (index <= len)"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_guard_condition_b769f7ab0986",
+          "kind": "guard_condition",
+          "metadata": {
+            "condition": "index <= len"
+          },
+          "summary": "mp_parse has guard condition: index <= len"
+        },
+        {
+          "evidence": [
+            "if (data[0] != 'M' || data[1] != 'P' || data[2] != 1)"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_guard_condition_d68e873699dc",
+          "kind": "guard_condition",
+          "metadata": {
+            "condition": "data[0] != 'M' || data[1] != 'P' || data[2] != 1"
+          },
+          "summary": "mp_parse has guard condition: data[0] != 'M' || data[1] != 'P' || data[2] != 1"
+        },
+        {
+          "evidence": [
+            "return_type: int"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_return_status_834b6024bb8f",
+          "kind": "return_status",
+          "metadata": {
+            "return_base_type": "int",
+            "return_is_struct_like": false,
+            "return_pointer_depth": 0,
+            "return_type": "int"
+          },
+          "summary": "mp_parse returns int."
+        },
+        {
+          "evidence": [
+            "parameter: size_t size"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_scalar_parameter_a06bacad4d32",
+          "kind": "scalar_parameter",
+          "metadata": {
+            "base_type": "size_t",
+            "parameter": "size",
+            "type": "size_t"
+          },
+          "summary": "mp_parse has scalar parameter size."
+        },
+        {
+          "evidence": [
+            "read: ctx->owns_saved",
+            "read: ctx->saved"
+          ],
+          "function": "mp_destroy",
+          "function_id": "target.c:45:mp_destroy",
+          "id": "bs_struct_access_hint_8adc2fb58b29",
+          "kind": "struct_access_hint",
+          "metadata": {
+            "parameter": "ctx",
+            "reads": true,
+            "writes": false
+          },
+          "summary": "mp_destroy has read access on ctx."
+        },
+        {
+          "evidence": [
+            "read: ctx->owns_saved",
+            "read: ctx->saved",
+            "read: ctx->saved_len",
+            "write: ctx->observation",
+            "write: ctx->owns_saved",
+            "write: ctx->saved",
+            "write: ctx->saved_len"
+          ],
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "id": "bs_struct_access_hint_c8621f41d950",
+          "kind": "struct_access_hint",
+          "metadata": {
+            "parameter": "ctx",
+            "reads": true,
+            "writes": true
+          },
+          "summary": "mp_parse has read/write access on ctx."
+        }
+      ],
+      "edges": [
+        {
+          "dst": "(null)",
+          "file": "target.c",
+          "function": "mp_destroy",
+          "function_id": "target.c:45:mp_destroy",
+          "inference_reason": null,
+          "inferred": false,
+          "line": 45,
+          "roles": [
+            "HPF"
+          ],
+          "src": "mp_context"
+        },
+        {
+          "dst": "(null)",
+          "file": "target.c",
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "inference_reason": null,
+          "inferred": false,
+          "line": 56,
+          "roles": [
+            "ISF",
+            "PRF"
+          ],
+          "src": "mp_context"
+        }
+      ],
+      "functions": [
+        {
+          "file": "target.c",
+          "function": "mp_destroy",
+          "function_id": "target.c:45:mp_destroy",
+          "line": 45,
+          "roles": [
+            "HPF"
+          ]
+        },
+        {
+          "file": "target.c",
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "line": 56,
+          "roles": [
+            "ISF",
+            "PRF"
+          ]
+        }
+      ],
+      "hpfs": [
+        {
+          "file": "target.c",
+          "function": "mp_destroy",
+          "function_id": "target.c:45:mp_destroy",
+          "line": 45,
+          "roles": [
+            "HPF"
+          ]
+        }
+      ],
+      "id": "ft_mp_parse_787468773c9f",
+      "isf": {
+        "file": "target.c",
+        "function": "mp_parse",
+        "function_id": "target.c:56:mp_parse",
+        "line": 56,
+        "roles": [
+          "ISF",
+          "PRF"
+        ]
+      },
+      "metadata": {
+        "algorithm": "synapseflow-function-triplet-v2",
+        "anchor_function_id": "target.c:56:mp_parse",
+        "bypass_semantics_count": 25,
+        "bypass_semantics_version": "function-triplet-bypass-v1",
+        "data_chain": {
+          "entry": "fuzz_input",
+          "isf": "mp_parse",
+          "structures": []
+        },
+        "in_nodes": [
+          "mp_context"
+        ],
+        "input_structs": [
+          "mp_context"
+        ],
+        "other_isfs": [
+          "target.c:37:le16",
+          "target.c:50:mp_checksum"
+        ],
+        "out_nodes": [
+          "(null)"
+        ],
+        "output_structs": [
+          "(null)"
+        ],
+        "removed_isfs": [
+          "target.c:37:le16",
+          "target.c:50:mp_checksum"
+        ],
+        "role_masked_isfs": [],
+        "source_schema_versions": {
+          "annotations": 1,
+          "flows": 1,
+          "functions": 2,
+          "sfg": 1
+        }
+      },
+      "prfs": [
+        {
+          "file": "target.c",
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "line": 56,
+          "roles": [
+            "ISF",
+            "PRF"
+          ]
+        }
+      ],
+      "structures": [
+        "mp_context"
+      ]
+    }
+  ]
+}

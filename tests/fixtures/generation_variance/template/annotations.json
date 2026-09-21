@@ -1,0 +1,458 @@
+{
+  "annotations": [
+    {
+      "decisions": [
+        {
+          "confidence": 0.95,
+          "error": null,
+          "file": "target.c",
+          "function": "le16",
+          "function_id": "target.c:37:le16",
+          "line": 37,
+          "prompt": "Function signature: static uint16_t le16(const uint8_t *p);\nFunction body:\n{\n    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));\n}\nRelevant type definitions:\n\nTarget parameter: p: const uint8_t *\nDirectly determine whether the target is a contiguous byte/text stream.\nReturn only this JSON object: {\"is_byte_stream\":bool,\"kind\":\"binary|text|filename|pathname|struct|other\",\"confidence\":0.0,\"reason\":\"...\"}",
+          "prompt_version": "sfg-stream-v1",
+          "response": {
+            "confidence": 0.95,
+            "is_byte_stream": true,
+            "kind": "binary",
+            "reason": "byte-compatible pointer and stream-like declaration"
+          },
+          "status": "ok",
+          "task": "stream_parameter"
+        },
+        {
+          "confidence": 0.95,
+          "error": null,
+          "file": "target.c",
+          "function": "le16",
+          "function_id": "target.c:37:le16",
+          "line": 37,
+          "prompt": "Function signature: static uint16_t le16(const uint8_t *p);\nFunction body:\n{\n    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));\n}\nRelevant type definitions:\n\nTarget parameter: p: const uint8_t *\nAnswer yes or no internally: does the target point to contiguous byte/text data?\nReturn only this JSON object: {\"is_byte_stream\":bool,\"kind\":\"binary|text|filename|pathname|struct|other\",\"confidence\":0.0,\"reason\":\"...\"}",
+          "prompt_version": "sfg-stream-v1",
+          "response": {
+            "confidence": 0.95,
+            "is_byte_stream": true,
+            "kind": "binary",
+            "reason": "byte-compatible pointer and stream-like declaration"
+          },
+          "status": "ok",
+          "task": "stream_parameter"
+        },
+        {
+          "confidence": 0.95,
+          "error": null,
+          "file": "target.c",
+          "function": "le16",
+          "function_id": "target.c:37:le16",
+          "line": 37,
+          "prompt": "Function signature: static uint16_t le16(const uint8_t *p);\nFunction body:\n{\n    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));\n}\nRelevant type definitions:\n\nTarget parameter: p: const uint8_t *\nFirst choose exactly one kind: binary, text, filename, pathname, struct, or other; then decide whether that kind is a byte stream.\nReturn only this JSON object: {\"is_byte_stream\":bool,\"kind\":\"binary|text|filename|pathname|struct|other\",\"confidence\":0.0,\"reason\":\"...\"}",
+          "prompt_version": "sfg-stream-v1",
+          "response": {
+            "confidence": 0.95,
+            "is_byte_stream": true,
+            "kind": "binary",
+            "reason": "byte-compatible pointer and stream-like declaration"
+          },
+          "status": "ok",
+          "task": "stream_parameter"
+        }
+      ],
+      "file": "target.c",
+      "function": "le16",
+      "function_id": "target.c:37:le16",
+      "is_hpf": false,
+      "is_prf": false,
+      "labels": [
+        "ISF"
+      ],
+      "line": 37,
+      "operation": "other",
+      "output_struct_candidates": [],
+      "reason": "not a struct-related candidate",
+      "stream_parameters": [
+        {
+          "confidence": 0.9499999999999998,
+          "is_byte_stream": true,
+          "kind": "binary",
+          "parameter": "p",
+          "positive_votes": 3,
+          "reason": "byte-compatible pointer and stream-like declaration",
+          "type": "const uint8_t *",
+          "valid_votes": 3
+        }
+      ],
+      "struct_directions": []
+    },
+    {
+      "decisions": [
+        {
+          "confidence": 0.9,
+          "error": null,
+          "file": "target.c",
+          "function": "mp_init",
+          "function_id": "target.c:41:mp_init",
+          "line": 41,
+          "prompt": "Function signature: void mp_init(mp_context *ctx);\nFunction body:\n{\n    memset(ctx, 0, sizeof(*ctx));\n}\nRelevant type definitions:\ntypedef struct { uint8_t *saved; size_t saved_len; int owns_saved; volatile uint32_t observation; } mp_context;\nClassify PRF and HPF independently; both may be true. Return only this JSON object: {\"is_prf\":bool,\"is_hpf\":bool,\"operation\":\"process|read|transform|init|allocate|cleanup|free|other\",\"reason\":\"...\",\"confidence\":0.0}",
+          "prompt_version": "sfg-role-v1",
+          "response": {
+            "confidence": 0.9,
+            "is_hpf": true,
+            "is_prf": false,
+            "operation": "init",
+            "reason": "deterministic mock classification from function metadata"
+          },
+          "status": "ok",
+          "task": "function_role"
+        },
+        {
+          "confidence": 0.2,
+          "error": null,
+          "file": "target.c",
+          "function": "mp_init",
+          "function_id": "target.c:41:mp_init",
+          "line": 41,
+          "prompt": "Function signature: void mp_init(mp_context *ctx);\nFunction body:\n{\n    memset(ctx, 0, sizeof(*ctx));\n}\nRelevant type definitions:\ntypedef struct { uint8_t *saved; size_t saved_len; int owns_saved; volatile uint32_t observation; } mp_context;\nTarget struct pointer: ctx: mp_context *\nAST access hints: {\"parameter\": \"ctx\", \"reads\": false, \"writes\": false, \"evidence\": []}\nReturn only this JSON object: {\"parameter\":\"...\",\"struct_type\":\"...\",\"direction\":\"input|output|both|unknown\",\"reason\":\"...\",\"confidence\":0.0}",
+          "prompt_version": "sfg-direction-v1",
+          "response": {
+            "confidence": 0.2,
+            "direction": "unknown",
+            "parameter": "ctx",
+            "reason": "no decisive access evidence",
+            "struct_type": "mp_context"
+          },
+          "status": "ok",
+          "task": "struct_direction"
+        }
+      ],
+      "file": "target.c",
+      "function": "mp_init",
+      "function_id": "target.c:41:mp_init",
+      "is_hpf": true,
+      "is_prf": false,
+      "labels": [
+        "HPF"
+      ],
+      "line": 41,
+      "operation": "init",
+      "output_struct_candidates": [],
+      "reason": "deterministic mock classification from function metadata",
+      "stream_parameters": [],
+      "struct_directions": [
+        {
+          "access_hint": {
+            "evidence": [],
+            "parameter": "ctx",
+            "reads": false,
+            "writes": false
+          },
+          "confidence": 0.2,
+          "direction": "unknown",
+          "parameter": "ctx",
+          "reason": "no decisive access evidence",
+          "struct_type": "mp_context"
+        }
+      ]
+    },
+    {
+      "decisions": [
+        {
+          "confidence": 0.9,
+          "error": null,
+          "file": "target.c",
+          "function": "mp_destroy",
+          "function_id": "target.c:45:mp_destroy",
+          "line": 45,
+          "prompt": "Function signature: void mp_destroy(mp_context *ctx);\nFunction body:\n{\n    if (ctx->owns_saved) free(ctx->saved);\n    mp_init(ctx);\n}\nRelevant type definitions:\ntypedef struct { uint8_t *saved; size_t saved_len; int owns_saved; volatile uint32_t observation; } mp_context;\nClassify PRF and HPF independently; both may be true. Return only this JSON object: {\"is_prf\":bool,\"is_hpf\":bool,\"operation\":\"process|read|transform|init|allocate|cleanup|free|other\",\"reason\":\"...\",\"confidence\":0.0}",
+          "prompt_version": "sfg-role-v1",
+          "response": {
+            "confidence": 0.9,
+            "is_hpf": true,
+            "is_prf": false,
+            "operation": "cleanup",
+            "reason": "deterministic mock classification from function metadata"
+          },
+          "status": "ok",
+          "task": "function_role"
+        },
+        {
+          "confidence": 0.9,
+          "error": null,
+          "file": "target.c",
+          "function": "mp_destroy",
+          "function_id": "target.c:45:mp_destroy",
+          "line": 45,
+          "prompt": "Function signature: void mp_destroy(mp_context *ctx);\nFunction body:\n{\n    if (ctx->owns_saved) free(ctx->saved);\n    mp_init(ctx);\n}\nRelevant type definitions:\ntypedef struct { uint8_t *saved; size_t saved_len; int owns_saved; volatile uint32_t observation; } mp_context;\nTarget struct pointer: ctx: mp_context *\nAST access hints: {\"parameter\": \"ctx\", \"reads\": true, \"writes\": false, \"evidence\": [\"read: ctx->owns_saved\", \"read: ctx->saved\"]}\nReturn only this JSON object: {\"parameter\":\"...\",\"struct_type\":\"...\",\"direction\":\"input|output|both|unknown\",\"reason\":\"...\",\"confidence\":0.0}",
+          "prompt_version": "sfg-direction-v1",
+          "response": {
+            "confidence": 0.9,
+            "direction": "input",
+            "parameter": "ctx",
+            "reason": "AST reports field reads",
+            "struct_type": "mp_context"
+          },
+          "status": "ok",
+          "task": "struct_direction"
+        }
+      ],
+      "file": "target.c",
+      "function": "mp_destroy",
+      "function_id": "target.c:45:mp_destroy",
+      "is_hpf": true,
+      "is_prf": false,
+      "labels": [
+        "HPF"
+      ],
+      "line": 45,
+      "operation": "cleanup",
+      "output_struct_candidates": [],
+      "reason": "deterministic mock classification from function metadata",
+      "stream_parameters": [],
+      "struct_directions": [
+        {
+          "access_hint": {
+            "evidence": [
+              "read: ctx->owns_saved",
+              "read: ctx->saved"
+            ],
+            "parameter": "ctx",
+            "reads": true,
+            "writes": false
+          },
+          "confidence": 0.9,
+          "direction": "input",
+          "parameter": "ctx",
+          "reason": "AST reports field reads",
+          "struct_type": "mp_context"
+        }
+      ]
+    },
+    {
+      "decisions": [
+        {
+          "confidence": 0.95,
+          "error": null,
+          "file": "target.c",
+          "function": "mp_checksum",
+          "function_id": "target.c:50:mp_checksum",
+          "line": 50,
+          "prompt": "Function signature: uint16_t mp_checksum(const uint8_t *payload, size_t size);\nFunction body:\n{\n    uint16_t sum = 0;\n    for (size_t i = 0; i < size; ++i) sum = (uint16_t)(sum + payload[i]);\n    return sum;\n}\nRelevant type definitions:\n\nTarget parameter: payload: const uint8_t *\nDirectly determine whether the target is a contiguous byte/text stream.\nReturn only this JSON object: {\"is_byte_stream\":bool,\"kind\":\"binary|text|filename|pathname|struct|other\",\"confidence\":0.0,\"reason\":\"...\"}",
+          "prompt_version": "sfg-stream-v1",
+          "response": {
+            "confidence": 0.95,
+            "is_byte_stream": true,
+            "kind": "binary",
+            "reason": "byte-compatible pointer and stream-like declaration"
+          },
+          "status": "ok",
+          "task": "stream_parameter"
+        },
+        {
+          "confidence": 0.95,
+          "error": null,
+          "file": "target.c",
+          "function": "mp_checksum",
+          "function_id": "target.c:50:mp_checksum",
+          "line": 50,
+          "prompt": "Function signature: uint16_t mp_checksum(const uint8_t *payload, size_t size);\nFunction body:\n{\n    uint16_t sum = 0;\n    for (size_t i = 0; i < size; ++i) sum = (uint16_t)(sum + payload[i]);\n    return sum;\n}\nRelevant type definitions:\n\nTarget parameter: payload: const uint8_t *\nAnswer yes or no internally: does the target point to contiguous byte/text data?\nReturn only this JSON object: {\"is_byte_stream\":bool,\"kind\":\"binary|text|filename|pathname|struct|other\",\"confidence\":0.0,\"reason\":\"...\"}",
+          "prompt_version": "sfg-stream-v1",
+          "response": {
+            "confidence": 0.95,
+            "is_byte_stream": true,
+            "kind": "binary",
+            "reason": "byte-compatible pointer and stream-like declaration"
+          },
+          "status": "ok",
+          "task": "stream_parameter"
+        },
+        {
+          "confidence": 0.95,
+          "error": null,
+          "file": "target.c",
+          "function": "mp_checksum",
+          "function_id": "target.c:50:mp_checksum",
+          "line": 50,
+          "prompt": "Function signature: uint16_t mp_checksum(const uint8_t *payload, size_t size);\nFunction body:\n{\n    uint16_t sum = 0;\n    for (size_t i = 0; i < size; ++i) sum = (uint16_t)(sum + payload[i]);\n    return sum;\n}\nRelevant type definitions:\n\nTarget parameter: payload: const uint8_t *\nFirst choose exactly one kind: binary, text, filename, pathname, struct, or other; then decide whether that kind is a byte stream.\nReturn only this JSON object: {\"is_byte_stream\":bool,\"kind\":\"binary|text|filename|pathname|struct|other\",\"confidence\":0.0,\"reason\":\"...\"}",
+          "prompt_version": "sfg-stream-v1",
+          "response": {
+            "confidence": 0.95,
+            "is_byte_stream": true,
+            "kind": "binary",
+            "reason": "byte-compatible pointer and stream-like declaration"
+          },
+          "status": "ok",
+          "task": "stream_parameter"
+        }
+      ],
+      "file": "target.c",
+      "function": "mp_checksum",
+      "function_id": "target.c:50:mp_checksum",
+      "is_hpf": false,
+      "is_prf": false,
+      "labels": [
+        "ISF"
+      ],
+      "line": 50,
+      "operation": "other",
+      "output_struct_candidates": [],
+      "reason": "not a struct-related candidate",
+      "stream_parameters": [
+        {
+          "confidence": 0.9499999999999998,
+          "is_byte_stream": true,
+          "kind": "binary",
+          "parameter": "payload",
+          "positive_votes": 3,
+          "reason": "byte-compatible pointer and stream-like declaration",
+          "type": "const uint8_t *",
+          "valid_votes": 3
+        }
+      ],
+      "struct_directions": []
+    },
+    {
+      "decisions": [
+        {
+          "confidence": 0.95,
+          "error": null,
+          "file": "target.c",
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "line": 56,
+          "prompt": "Function signature: int mp_parse(mp_context *ctx, const uint8_t *data, size_t size);\nFunction body:\n{\n    if (!ctx || !data || size < MP_HEADER_SIZE) return -1;\n    if (data[0] != 'M' || data[1] != 'P' || data[2] != 1) return -2;\n    size_t len = le16(data + 4);\n    if (len > MP_MAX_PAYLOAD || len != size - MP_HEADER_SIZE) return -3;\n    if (mp_checksum(data + MP_HEADER_SIZE, len) != le16(data + 6)) return -4;\n\n    /* Exact allocation makes logical payload overreads observable with ASan,\n       even when the harness input buffer has spare capacity. */\n    uint8_t *p = (uint8_t *)malloc(len ? len : 1);\n    if (!p) return -5;\n    memcpy(p, data + MP_HEADER_SIZE, len);\n    switch (data[3]) {\n    case MP_READ:\n        if (len >= 1) {\n            size_t index = p[0];\n            /* BUG 1: <= instead of < allows a one-past-end read. */\n            if (index <= len) ctx->observation = p[index];\n        }\n        break;\n    case MP_WRITE: {\n        volatile uint8_t dst[16] = {0};\n        /* BUG 2: payload length is not bounded by destination capacity. */\n        for (size_t i = 0; i < len; ++i) dst[i] = p[i];\n        ctx->observation = dst[0];\n        break;\n    }\n    case MP_MULTIPLY:\n        if (len >= 4) {\n            uint32_t raw = (uint32_t)p[0] | ((uint32_t)p[1] << 8) |\n                           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);\n            if (raw <= INT32_MAX) {\n                int32_t count = (int32_t)raw;\n                /* BUG 3: signed multiplication can overflow before any\n                   allocation. UBSan reports this without needing huge RAM. */\n                ctx->observation = (uint32_t)(count * 16);\n            }\n        }\n        break;\n    case MP_STORE:\n        if (len) {\n            if (ctx->owns_saved) free(ctx->saved);\n            ctx->saved = p;\n            ctx->saved_len = len;\n            ctx->owns_saved = 1;\n            return 0; /* Transfer ownership to the context. */\n        }\n        break;\n    case MP_RELEASE:\n        if (ctx->owns_saved) {\n            free(ctx->saved);\n            ctx->owns_saved = 0;\n            /* BUG 4: saved and saved_len remain valid-looking stale state. */\n        }\n        break;\n    case MP_USE:\n        if (ctx->saved && ctx->saved_len) ctx->observation = ctx->saved[0];\n        break;\n    case MP_NESTED_LENGTH:\n        if (len >= 2) {\n            size_t inner_len = le16(p);\n            volatile uint8_t dst[32] = {0};\n            /* BUG 5: checks destination capacity but not inner_len <= len-2.\n               This length-validation defect manifests as a heap OOB read. */\n            if (inner_len <= sizeof(dst)) {\n                for (size_t i = 0; i < inner_len; ++i) dst[i] = p[2 + i];\n                ctx->observation = dst[0];\n            }\n        }\n        break;\n    default:\n        free(p);\n        return -6;\n    }\n    free(p);\n    return 0;\n}\nRelevant type definitions:\ntypedef struct { uint8_t *saved; size_t saved_len; int owns_saved; volatile uint32_t observation; } mp_context;\nTarget parameter: data: const uint8_t *\nDirectly determine whether the target is a contiguous byte/text stream.\nReturn only this JSON object: {\"is_byte_stream\":bool,\"kind\":\"binary|text|filename|pathname|struct|other\",\"confidence\":0.0,\"reason\":\"...\"}",
+          "prompt_version": "sfg-stream-v1",
+          "response": {
+            "confidence": 0.95,
+            "is_byte_stream": true,
+            "kind": "binary",
+            "reason": "byte-compatible pointer and stream-like declaration"
+          },
+          "status": "ok",
+          "task": "stream_parameter"
+        },
+        {
+          "confidence": 0.95,
+          "error": null,
+          "file": "target.c",
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "line": 56,
+          "prompt": "Function signature: int mp_parse(mp_context *ctx, const uint8_t *data, size_t size);\nFunction body:\n{\n    if (!ctx || !data || size < MP_HEADER_SIZE) return -1;\n    if (data[0] != 'M' || data[1] != 'P' || data[2] != 1) return -2;\n    size_t len = le16(data + 4);\n    if (len > MP_MAX_PAYLOAD || len != size - MP_HEADER_SIZE) return -3;\n    if (mp_checksum(data + MP_HEADER_SIZE, len) != le16(data + 6)) return -4;\n\n    /* Exact allocation makes logical payload overreads observable with ASan,\n       even when the harness input buffer has spare capacity. */\n    uint8_t *p = (uint8_t *)malloc(len ? len : 1);\n    if (!p) return -5;\n    memcpy(p, data + MP_HEADER_SIZE, len);\n    switch (data[3]) {\n    case MP_READ:\n        if (len >= 1) {\n            size_t index = p[0];\n            /* BUG 1: <= instead of < allows a one-past-end read. */\n            if (index <= len) ctx->observation = p[index];\n        }\n        break;\n    case MP_WRITE: {\n        volatile uint8_t dst[16] = {0};\n        /* BUG 2: payload length is not bounded by destination capacity. */\n        for (size_t i = 0; i < len; ++i) dst[i] = p[i];\n        ctx->observation = dst[0];\n        break;\n    }\n    case MP_MULTIPLY:\n        if (len >= 4) {\n            uint32_t raw = (uint32_t)p[0] | ((uint32_t)p[1] << 8) |\n                           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);\n            if (raw <= INT32_MAX) {\n                int32_t count = (int32_t)raw;\n                /* BUG 3: signed multiplication can overflow before any\n                   allocation. UBSan reports this without needing huge RAM. */\n                ctx->observation = (uint32_t)(count * 16);\n            }\n        }\n        break;\n    case MP_STORE:\n        if (len) {\n            if (ctx->owns_saved) free(ctx->saved);\n            ctx->saved = p;\n            ctx->saved_len = len;\n            ctx->owns_saved = 1;\n            return 0; /* Transfer ownership to the context. */\n        }\n        break;\n    case MP_RELEASE:\n        if (ctx->owns_saved) {\n            free(ctx->saved);\n            ctx->owns_saved = 0;\n            /* BUG 4: saved and saved_len remain valid-looking stale state. */\n        }\n        break;\n    case MP_USE:\n        if (ctx->saved && ctx->saved_len) ctx->observation = ctx->saved[0];\n        break;\n    case MP_NESTED_LENGTH:\n        if (len >= 2) {\n            size_t inner_len = le16(p);\n            volatile uint8_t dst[32] = {0};\n            /* BUG 5: checks destination capacity but not inner_len <= len-2.\n               This length-validation defect manifests as a heap OOB read. */\n            if (inner_len <= sizeof(dst)) {\n                for (size_t i = 0; i < inner_len; ++i) dst[i] = p[2 + i];\n                ctx->observation = dst[0];\n            }\n        }\n        break;\n    default:\n        free(p);\n        return -6;\n    }\n    free(p);\n    return 0;\n}\nRelevant type definitions:\ntypedef struct { uint8_t *saved; size_t saved_len; int owns_saved; volatile uint32_t observation; } mp_context;\nTarget parameter: data: const uint8_t *\nAnswer yes or no internally: does the target point to contiguous byte/text data?\nReturn only this JSON object: {\"is_byte_stream\":bool,\"kind\":\"binary|text|filename|pathname|struct|other\",\"confidence\":0.0,\"reason\":\"...\"}",
+          "prompt_version": "sfg-stream-v1",
+          "response": {
+            "confidence": 0.95,
+            "is_byte_stream": true,
+            "kind": "binary",
+            "reason": "byte-compatible pointer and stream-like declaration"
+          },
+          "status": "ok",
+          "task": "stream_parameter"
+        },
+        {
+          "confidence": 0.95,
+          "error": null,
+          "file": "target.c",
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "line": 56,
+          "prompt": "Function signature: int mp_parse(mp_context *ctx, const uint8_t *data, size_t size);\nFunction body:\n{\n    if (!ctx || !data || size < MP_HEADER_SIZE) return -1;\n    if (data[0] != 'M' || data[1] != 'P' || data[2] != 1) return -2;\n    size_t len = le16(data + 4);\n    if (len > MP_MAX_PAYLOAD || len != size - MP_HEADER_SIZE) return -3;\n    if (mp_checksum(data + MP_HEADER_SIZE, len) != le16(data + 6)) return -4;\n\n    /* Exact allocation makes logical payload overreads observable with ASan,\n       even when the harness input buffer has spare capacity. */\n    uint8_t *p = (uint8_t *)malloc(len ? len : 1);\n    if (!p) return -5;\n    memcpy(p, data + MP_HEADER_SIZE, len);\n    switch (data[3]) {\n    case MP_READ:\n        if (len >= 1) {\n            size_t index = p[0];\n            /* BUG 1: <= instead of < allows a one-past-end read. */\n            if (index <= len) ctx->observation = p[index];\n        }\n        break;\n    case MP_WRITE: {\n        volatile uint8_t dst[16] = {0};\n        /* BUG 2: payload length is not bounded by destination capacity. */\n        for (size_t i = 0; i < len; ++i) dst[i] = p[i];\n        ctx->observation = dst[0];\n        break;\n    }\n    case MP_MULTIPLY:\n        if (len >= 4) {\n            uint32_t raw = (uint32_t)p[0] | ((uint32_t)p[1] << 8) |\n                           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);\n            if (raw <= INT32_MAX) {\n                int32_t count = (int32_t)raw;\n                /* BUG 3: signed multiplication can overflow before any\n                   allocation. UBSan reports this without needing huge RAM. */\n                ctx->observation = (uint32_t)(count * 16);\n            }\n        }\n        break;\n    case MP_STORE:\n        if (len) {\n            if (ctx->owns_saved) free(ctx->saved);\n            ctx->saved = p;\n            ctx->saved_len = len;\n            ctx->owns_saved = 1;\n            return 0; /* Transfer ownership to the context. */\n        }\n        break;\n    case MP_RELEASE:\n        if (ctx->owns_saved) {\n            free(ctx->saved);\n            ctx->owns_saved = 0;\n            /* BUG 4: saved and saved_len remain valid-looking stale state. */\n        }\n        break;\n    case MP_USE:\n        if (ctx->saved && ctx->saved_len) ctx->observation = ctx->saved[0];\n        break;\n    case MP_NESTED_LENGTH:\n        if (len >= 2) {\n            size_t inner_len = le16(p);\n            volatile uint8_t dst[32] = {0};\n            /* BUG 5: checks destination capacity but not inner_len <= len-2.\n               This length-validation defect manifests as a heap OOB read. */\n            if (inner_len <= sizeof(dst)) {\n                for (size_t i = 0; i < inner_len; ++i) dst[i] = p[2 + i];\n                ctx->observation = dst[0];\n            }\n        }\n        break;\n    default:\n        free(p);\n        return -6;\n    }\n    free(p);\n    return 0;\n}\nRelevant type definitions:\ntypedef struct { uint8_t *saved; size_t saved_len; int owns_saved; volatile uint32_t observation; } mp_context;\nTarget parameter: data: const uint8_t *\nFirst choose exactly one kind: binary, text, filename, pathname, struct, or other; then decide whether that kind is a byte stream.\nReturn only this JSON object: {\"is_byte_stream\":bool,\"kind\":\"binary|text|filename|pathname|struct|other\",\"confidence\":0.0,\"reason\":\"...\"}",
+          "prompt_version": "sfg-stream-v1",
+          "response": {
+            "confidence": 0.95,
+            "is_byte_stream": true,
+            "kind": "binary",
+            "reason": "byte-compatible pointer and stream-like declaration"
+          },
+          "status": "ok",
+          "task": "stream_parameter"
+        },
+        {
+          "confidence": 0.9,
+          "error": null,
+          "file": "target.c",
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "line": 56,
+          "prompt": "Function signature: int mp_parse(mp_context *ctx, const uint8_t *data, size_t size);\nFunction body:\n{\n    if (!ctx || !data || size < MP_HEADER_SIZE) return -1;\n    if (data[0] != 'M' || data[1] != 'P' || data[2] != 1) return -2;\n    size_t len = le16(data + 4);\n    if (len > MP_MAX_PAYLOAD || len != size - MP_HEADER_SIZE) return -3;\n    if (mp_checksum(data + MP_HEADER_SIZE, len) != le16(data + 6)) return -4;\n\n    /* Exact allocation makes logical payload overreads observable with ASan,\n       even when the harness input buffer has spare capacity. */\n    uint8_t *p = (uint8_t *)malloc(len ? len : 1);\n    if (!p) return -5;\n    memcpy(p, data + MP_HEADER_SIZE, len);\n    switch (data[3]) {\n    case MP_READ:\n        if (len >= 1) {\n            size_t index = p[0];\n            /* BUG 1: <= instead of < allows a one-past-end read. */\n            if (index <= len) ctx->observation = p[index];\n        }\n        break;\n    case MP_WRITE: {\n        volatile uint8_t dst[16] = {0};\n        /* BUG 2: payload length is not bounded by destination capacity. */\n        for (size_t i = 0; i < len; ++i) dst[i] = p[i];\n        ctx->observation = dst[0];\n        break;\n    }\n    case MP_MULTIPLY:\n        if (len >= 4) {\n            uint32_t raw = (uint32_t)p[0] | ((uint32_t)p[1] << 8) |\n                           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);\n            if (raw <= INT32_MAX) {\n                int32_t count = (int32_t)raw;\n                /* BUG 3: signed multiplication can overflow before any\n                   allocation. UBSan reports this without needing huge RAM. */\n                ctx->observation = (uint32_t)(count * 16);\n            }\n        }\n        break;\n    case MP_STORE:\n        if (len) {\n            if (ctx->owns_saved) free(ctx->saved);\n            ctx->saved = p;\n            ctx->saved_len = len;\n            ctx->owns_saved = 1;\n            return 0; /* Transfer ownership to the context. */\n        }\n        break;\n    case MP_RELEASE:\n        if (ctx->owns_saved) {\n            free(ctx->saved);\n            ctx->owns_saved = 0;\n            /* BUG 4: saved and saved_len remain valid-looking stale state. */\n        }\n        break;\n    case MP_USE:\n        if (ctx->saved && ctx->saved_len) ctx->observation = ctx->saved[0];\n        break;\n    case MP_NESTED_LENGTH:\n        if (len >= 2) {\n            size_t inner_len = le16(p);\n            volatile uint8_t dst[32] = {0};\n            /* BUG 5: checks destination capacity but not inner_len <= len-2.\n               This length-validation defect manifests as a heap OOB read. */\n            if (inner_len <= sizeof(dst)) {\n                for (size_t i = 0; i < inner_len; ++i) dst[i] = p[2 + i];\n                ctx->observation = dst[0];\n            }\n        }\n        break;\n    default:\n        free(p);\n        return -6;\n    }\n    free(p);\n    return 0;\n}\nRelevant type definitions:\ntypedef struct { uint8_t *saved; size_t saved_len; int owns_saved; volatile uint32_t observation; } mp_context;\nClassify PRF and HPF independently; both may be true. Return only this JSON object: {\"is_prf\":bool,\"is_hpf\":bool,\"operation\":\"process|read|transform|init|allocate|cleanup|free|other\",\"reason\":\"...\",\"confidence\":0.0}",
+          "prompt_version": "sfg-role-v1",
+          "response": {
+            "confidence": 0.9,
+            "is_hpf": false,
+            "is_prf": true,
+            "operation": "process",
+            "reason": "deterministic mock classification from function metadata"
+          },
+          "status": "ok",
+          "task": "function_role"
+        },
+        {
+          "confidence": 0.9,
+          "error": null,
+          "file": "target.c",
+          "function": "mp_parse",
+          "function_id": "target.c:56:mp_parse",
+          "line": 56,
+          "prompt": "Function signature: int mp_parse(mp_context *ctx, const uint8_t *data, size_t size);\nFunction body:\n{\n    if (!ctx || !data || size < MP_HEADER_SIZE) return -1;\n    if (data[0] != 'M' || data[1] != 'P' || data[2] != 1) return -2;\n    size_t len = le16(data + 4);\n    if (len > MP_MAX_PAYLOAD || len != size - MP_HEADER_SIZE) return -3;\n    if (mp_checksum(data + MP_HEADER_SIZE, len) != le16(data + 6)) return -4;\n\n    /* Exact allocation makes logical payload overreads observable with ASan,\n       even when the harness input buffer has spare capacity. */\n    uint8_t *p = (uint8_t *)malloc(len ? len : 1);\n    if (!p) return -5;\n    memcpy(p, data + MP_HEADER_SIZE, len);\n    switch (data[3]) {\n    case MP_READ:\n        if (len >= 1) {\n            size_t index = p[0];\n            /* BUG 1: <= instead of < allows a one-past-end read. */\n            if (index <= len) ctx->observation = p[index];\n        }\n        break;\n    case MP_WRITE: {\n        volatile uint8_t dst[16] = {0};\n        /* BUG 2: payload length is not bounded by destination capacity. */\n        for (size_t i = 0; i < len; ++i) dst[i] = p[i];\n        ctx->observation = dst[0];\n        break;\n    }\n    case MP_MULTIPLY:\n        if (len >= 4) {\n            uint32_t raw = (uint32_t)p[0] | ((uint32_t)p[1] << 8) |\n                           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);\n            if (raw <= INT32_MAX) {\n                int32_t count = (int32_t)raw;\n                /* BUG 3: signed multiplication can overflow before any\n                   allocation. UBSan reports this without needing huge RAM. */\n                ctx->observation = (uint32_t)(count * 16);\n            }\n        }\n        break;\n    case MP_STORE:\n        if (len) {\n            if (ctx->owns_saved) free(ctx->saved);\n            ctx->saved = p;\n            ctx->saved_len = len;\n            ctx->owns_saved = 1;\n            return 0; /* Transfer ownership to the context. */\n        }\n        break;\n    case MP_RELEASE:\n        if (ctx->owns_saved) {\n            free(ctx->saved);\n            ctx->owns_saved = 0;\n            /* BUG 4: saved and saved_len remain valid-looking stale state. */\n        }\n        break;\n    case MP_USE:\n        if (ctx->saved && ctx->saved_len) ctx->observation = ctx->saved[0];\n        break;\n    case MP_NESTED_LENGTH:\n        if (len >= 2) {\n            size_t inner_len = le16(p);\n            volatile uint8_t dst[32] = {0};\n            /* BUG 5: checks destination capacity but not inner_len <= len-2.\n               This length-validation defect manifests as a heap OOB read. */\n            if (inner_len <= sizeof(dst)) {\n                for (size_t i = 0; i < inner_len; ++i) dst[i] = p[2 + i];\n                ctx->observation = dst[0];\n            }\n        }\n        break;\n    default:\n        free(p);\n        return -6;\n    }\n    free(p);\n    return 0;\n}\nRelevant type definitions:\ntypedef struct { uint8_t *saved; size_t saved_len; int owns_saved; volatile uint32_t observation; } mp_context;\nTarget struct pointer: ctx: mp_context *\nAST access hints: {\"parameter\": \"ctx\", \"reads\": true, \"writes\": true, \"evidence\": [\"write: ctx->observation\", \"read: ctx->owns_saved\", \"read: ctx->saved\", \"write: ctx->saved\", \"write: ctx->saved_len\", \"write: ctx->owns_saved\", \"read: ctx->saved_len\"]}\nReturn only this JSON object: {\"parameter\":\"...\",\"struct_type\":\"...\",\"direction\":\"input|output|both|unknown\",\"reason\":\"...\",\"confidence\":0.0}",
+          "prompt_version": "sfg-direction-v1",
+          "response": {
+            "confidence": 0.9,
+            "direction": "both",
+            "parameter": "ctx",
+            "reason": "AST reports field reads and writes",
+            "struct_type": "mp_context"
+          },
+          "status": "ok",
+          "task": "struct_direction"
+        }
+      ],
+      "file": "target.c",
+      "function": "mp_parse",
+      "function_id": "target.c:56:mp_parse",
+      "is_hpf": false,
+      "is_prf": true,
+      "labels": [
+        "ISF",
+        "PRF"
+      ],
+      "line": 56,
+      "operation": "process",
+      "output_struct_candidates": [],
+      "reason": "deterministic mock classification from function metadata",
+      "stream_parameters": [
+        {
+          "confidence": 0.9499999999999998,
+          "is_byte_stream": true,
+          "kind": "binary",
+          "parameter": "data",
+          "positive_votes": 3,
+          "reason": "byte-compatible pointer and stream-like declaration",
+          "type": "const uint8_t *",
+          "valid_votes": 3
+        }
+      ],
+      "struct_directions": [
+        {
+          "access_hint": {
+            "evidence": [
+              "write: ctx->observation",
+              "read: ctx->owns_saved",
+              "read: ctx->saved",
+              "write: ctx->saved",
+              "write: ctx->saved_len",
+              "write: ctx->owns_saved",
+              "read: ctx->saved_len"
+            ],
+            "parameter": "ctx",
+            "reads": true,
+            "writes": true
+          },
+          "confidence": 0.9,
+          "direction": "both",
+          "parameter": "ctx",
+          "reason": "AST reports field reads and writes",
+          "struct_type": "mp_context"
+        }
+      ]
+    }
+  ],
+  "schema_version": 1
+}

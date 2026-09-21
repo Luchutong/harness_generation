@@ -210,7 +210,15 @@ def _failure_reason(
     history: Sequence[Mapping[str, Any]],
     **milestones: bool,
 ) -> str:
-    for event in reversed(history):
+    # A rollback retires the failed attempt and everything that preceded it.
+    # If the replacement attempt completes without meeting the requested
+    # capability, its missing milestone is the reason, not the old failure.
+    last_rollback = next(
+        (index for index in range(len(history) - 1, -1, -1)
+         if history[index].get("event") == "rollback"),
+        -1,
+    )
+    for event in reversed(history[last_rollback + 1:]):
         if event.get("event") in {"pipeline_failed", "stage_failed"}:
             reason = event.get("reason")
             if isinstance(reason, str) and reason:

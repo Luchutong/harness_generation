@@ -1,0 +1,232 @@
+{
+  "files": [
+    "target.c"
+  ],
+  "functions": [
+    {
+      "access_hints": [],
+      "body": "{\n    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));\n}",
+      "defined": true,
+      "end_line": 39,
+      "file": "target.c",
+      "id": "target.c:37:le16",
+      "labels": [],
+      "name": "le16",
+      "parameters": [
+        {
+          "base_type": "uint8_t",
+          "declaration": "const uint8_t *p",
+          "is_const": true,
+          "is_pointer": true,
+          "is_struct_like": false,
+          "name": "p",
+          "pointer_depth": 1,
+          "type": "const uint8_t *"
+        }
+      ],
+      "return_base_type": "uint16_t",
+      "return_is_struct_like": false,
+      "return_pointer_depth": 0,
+      "return_type": "uint16_t",
+      "signature": "static uint16_t le16(const uint8_t *p);",
+      "start_line": 37,
+      "storage": [
+        "static"
+      ]
+    },
+    {
+      "access_hints": [
+        {
+          "evidence": [],
+          "parameter": "ctx",
+          "reads": false,
+          "writes": false
+        }
+      ],
+      "body": "{\n    memset(ctx, 0, sizeof(*ctx));\n}",
+      "defined": true,
+      "end_line": 43,
+      "file": "target.c",
+      "id": "target.c:41:mp_init",
+      "labels": [],
+      "name": "mp_init",
+      "parameters": [
+        {
+          "base_type": "mp_context",
+          "declaration": "mp_context *ctx",
+          "is_const": false,
+          "is_pointer": true,
+          "is_struct_like": true,
+          "name": "ctx",
+          "pointer_depth": 1,
+          "type": "mp_context *"
+        }
+      ],
+      "return_base_type": "void",
+      "return_is_struct_like": false,
+      "return_pointer_depth": 0,
+      "return_type": "void",
+      "signature": "void mp_init(mp_context *ctx);",
+      "start_line": 41,
+      "storage": []
+    },
+    {
+      "access_hints": [
+        {
+          "evidence": [
+            "read: ctx->owns_saved",
+            "read: ctx->saved"
+          ],
+          "parameter": "ctx",
+          "reads": true,
+          "writes": false
+        }
+      ],
+      "body": "{\n    if (ctx->owns_saved) free(ctx->saved);\n    mp_init(ctx);\n}",
+      "defined": true,
+      "end_line": 48,
+      "file": "target.c",
+      "id": "target.c:45:mp_destroy",
+      "labels": [],
+      "name": "mp_destroy",
+      "parameters": [
+        {
+          "base_type": "mp_context",
+          "declaration": "mp_context *ctx",
+          "is_const": false,
+          "is_pointer": true,
+          "is_struct_like": true,
+          "name": "ctx",
+          "pointer_depth": 1,
+          "type": "mp_context *"
+        }
+      ],
+      "return_base_type": "void",
+      "return_is_struct_like": false,
+      "return_pointer_depth": 0,
+      "return_type": "void",
+      "signature": "void mp_destroy(mp_context *ctx);",
+      "start_line": 45,
+      "storage": []
+    },
+    {
+      "access_hints": [],
+      "body": "{\n    uint16_t sum = 0;\n    for (size_t i = 0; i < size; ++i) sum = (uint16_t)(sum + payload[i]);\n    return sum;\n}",
+      "defined": true,
+      "end_line": 54,
+      "file": "target.c",
+      "id": "target.c:50:mp_checksum",
+      "labels": [],
+      "name": "mp_checksum",
+      "parameters": [
+        {
+          "base_type": "uint8_t",
+          "declaration": "const uint8_t *payload",
+          "is_const": true,
+          "is_pointer": true,
+          "is_struct_like": false,
+          "name": "payload",
+          "pointer_depth": 1,
+          "type": "const uint8_t *"
+        },
+        {
+          "base_type": "size_t",
+          "declaration": "size_t size",
+          "is_const": false,
+          "is_pointer": false,
+          "is_struct_like": false,
+          "name": "size",
+          "pointer_depth": 0,
+          "type": "size_t"
+        }
+      ],
+      "return_base_type": "uint16_t",
+      "return_is_struct_like": false,
+      "return_pointer_depth": 0,
+      "return_type": "uint16_t",
+      "signature": "uint16_t mp_checksum(const uint8_t *payload, size_t size);",
+      "start_line": 50,
+      "storage": []
+    },
+    {
+      "access_hints": [
+        {
+          "evidence": [
+            "write: ctx->observation",
+            "read: ctx->owns_saved",
+            "read: ctx->saved",
+            "write: ctx->saved",
+            "write: ctx->saved_len",
+            "write: ctx->owns_saved",
+            "read: ctx->saved_len"
+          ],
+          "parameter": "ctx",
+          "reads": true,
+          "writes": true
+        }
+      ],
+      "body": "{\n    if (!ctx || !data || size < MP_HEADER_SIZE) return -1;\n    if (data[0] != 'M' || data[1] != 'P' || data[2] != 1) return -2;\n    size_t len = le16(data + 4);\n    if (len > MP_MAX_PAYLOAD || len != size - MP_HEADER_SIZE) return -3;\n    if (mp_checksum(data + MP_HEADER_SIZE, len) != le16(data + 6)) return -4;\n\n    /* Exact allocation makes logical payload overreads observable with ASan,\n       even when the harness input buffer has spare capacity. */\n    uint8_t *p = (uint8_t *)malloc(len ? len : 1);\n    if (!p) return -5;\n    memcpy(p, data + MP_HEADER_SIZE, len);\n    switch (data[3]) {\n    case MP_READ:\n        if (len >= 1) {\n            size_t index = p[0];\n            /* BUG 1: <= instead of < allows a one-past-end read. */\n            if (index <= len) ctx->observation = p[index];\n        }\n        break;\n    case MP_WRITE: {\n        volatile uint8_t dst[16] = {0};\n        /* BUG 2: payload length is not bounded by destination capacity. */\n        for (size_t i = 0; i < len; ++i) dst[i] = p[i];\n        ctx->observation = dst[0];\n        break;\n    }\n    case MP_MULTIPLY:\n        if (len >= 4) {\n            uint32_t raw = (uint32_t)p[0] | ((uint32_t)p[1] << 8) |\n                           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);\n            if (raw <= INT32_MAX) {\n                int32_t count = (int32_t)raw;\n                /* BUG 3: signed multiplication can overflow before any\n                   allocation. UBSan reports this without needing huge RAM. */\n                ctx->observation = (uint32_t)(count * 16);\n            }\n        }\n        break;\n    case MP_STORE:\n        if (len) {\n            if (ctx->owns_saved) free(ctx->saved);\n            ctx->saved = p;\n            ctx->saved_len = len;\n            ctx->owns_saved = 1;\n            return 0; /* Transfer ownership to the context. */\n        }\n        break;\n    case MP_RELEASE:\n        if (ctx->owns_saved) {\n            free(ctx->saved);\n            ctx->owns_saved = 0;\n            /* BUG 4: saved and saved_len remain valid-looking stale state. */\n        }\n        break;\n    case MP_USE:\n        if (ctx->saved && ctx->saved_len) ctx->observation = ctx->saved[0];\n        break;\n    case MP_NESTED_LENGTH:\n        if (len >= 2) {\n            size_t inner_len = le16(p);\n            volatile uint8_t dst[32] = {0};\n            /* BUG 5: checks destination capacity but not inner_len <= len-2.\n               This length-validation defect manifests as a heap OOB read. */\n            if (inner_len <= sizeof(dst)) {\n                for (size_t i = 0; i < inner_len; ++i) dst[i] = p[2 + i];\n                ctx->observation = dst[0];\n            }\n        }\n        break;\n    default:\n        free(p);\n        return -6;\n    }\n    free(p);\n    return 0;\n}",
+      "defined": true,
+      "end_line": 132,
+      "file": "target.c",
+      "id": "target.c:56:mp_parse",
+      "labels": [],
+      "name": "mp_parse",
+      "parameters": [
+        {
+          "base_type": "mp_context",
+          "declaration": "mp_context *ctx",
+          "is_const": false,
+          "is_pointer": true,
+          "is_struct_like": true,
+          "name": "ctx",
+          "pointer_depth": 1,
+          "type": "mp_context *"
+        },
+        {
+          "base_type": "uint8_t",
+          "declaration": "const uint8_t *data",
+          "is_const": true,
+          "is_pointer": true,
+          "is_struct_like": false,
+          "name": "data",
+          "pointer_depth": 1,
+          "type": "const uint8_t *"
+        },
+        {
+          "base_type": "size_t",
+          "declaration": "size_t size",
+          "is_const": false,
+          "is_pointer": false,
+          "is_struct_like": false,
+          "name": "size",
+          "pointer_depth": 0,
+          "type": "size_t"
+        }
+      ],
+      "return_base_type": "int",
+      "return_is_struct_like": false,
+      "return_pointer_depth": 0,
+      "return_type": "int",
+      "signature": "int mp_parse(mp_context *ctx, const uint8_t *data, size_t size);",
+      "start_line": 56,
+      "storage": []
+    }
+  ],
+  "project": "../project",
+  "schema_version": 2,
+  "source_path_base": "project",
+  "structs": [
+    {
+      "aliases": [
+        "mp_context"
+      ],
+      "declaration": "typedef struct { uint8_t *saved; size_t saved_len; int owns_saved; volatile uint32_t observation; } mp_context;",
+      "end_line": 23,
+      "file": "target.c",
+      "name": "mp_context",
+      "start_line": 18
+    }
+  ],
+  "warnings": []
+}

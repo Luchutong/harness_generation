@@ -405,6 +405,13 @@ Stage 4 检查该表达式是否写入 harness，并以语法近似追到 payloa
 - **凭什么说改对了**:plan 里那个已知例子——整轮原因被写成已回滚 attempt 的
   `HarnessPlan duplicates FT functions`——必须变成 milestone 文案。
 
+**实施记录（2026-09-21）**：Stage 4 的必需验证若为 `unavailable` / `skipped`，仍按
+未通过处理；原 `_nonblocking_result` 改名为 `_required_validation_incomplete`，并把
+对应组件的警告和编译器启动错误写入 Stage 4 结果及 attempt `outcome.json`。最终
+`_failure_reason` 只在最后一次 `rollback` 之后寻找失败事件；若恢复后的运行仅缺少
+能力里程碑，报告里程碑原因。回归用例同时固定了“已回滚的 `mp_destroy` 错误不再冒充
+整轮原因”和“回滚后当前 attempt 的终局错误仍保留具体原因”。
+
 ### P4 · N 次独立生成
 
 - **凭什么说这是必要的**:`PFM §5.3.2` 已经就 **seed 轴**做过一次同类纠正,逐字写着
@@ -412,6 +419,35 @@ Stage 4 检查该表达式是否写入 harness，并以语法近似追到 payloa
   **同一个错误在 generation 轴上还没有被检查过。**
 - **落点**:至少 N=3 次独立 `generate`,生成间方差与运行间方差分开报。
 - **方法论**:`MT M9`(生成方差是主方差)+ `MT M8`(评测口径)。
+
+**实施记录（2026-09-21）**：新增 `generation-variance` 入口。至少 3 轮，每轮从同一套
+`functions.json`、`triplets.json`、`protocol_ir.json` 等目录文件复制到全新的 artifact 根，
+调用一次完整 `run --validate` 并只测正式发布的 harness；轮内的 Stage 4 回滚不计作独立生成。
+目标源码、语料、参考 harness、执行预算和 seed 集固定，覆盖率复用 `coverage_arms` 的
+无 sanitizer、仅目标源码的测量路径。`measurements.json` 保留每轮成功/失败及 harness
+哈希，`report.md` 把各轮 seed 均值的样本方差与各轮内部 seed 样本方差分别列出；缺失测量
+保留在请求总数里，不补零。默认 `N=3` 只作描述统计，不作显著性或总体结论。
+
+运行例（需配置 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`；仓库已存本次固定输入）：
+
+```bash
+python -m harness_generation generation-variance \
+  --template tests/fixtures/generation_variance/template \
+  --ft ft_mp_parse_787468773c9f \
+  --project-root tests/fixtures/generation_variance/project \
+  --output artifacts/mp-generation-variance-new \
+  --trials 3 --runs 20000 --seeds 1,2,3
+```
+
+**实测（2026-09-21）**：从用户提供的 `.env` 读取配置，请求模型为 `deepseek-v4-flash`、
+`temperature=0.2` 发起 3 次独立生成。三轮均正式发布、哈希不同，各完成 3 个 seed 的
+2 万次目标源码覆盖率测量；第二轮的 Stage 4 曾回滚一次，只计作**一轮生成**。
+`branches` 的三轮均值为 83.4967%，轮间样本方差 0.320373 平方百分点，轮内 seed
+样本方差均值 0.961119 平方百分点；`lines` 两种方差均为 0。
+完整证据在 `tests/fixtures/generation_variance/measurements.json`，三份正式发布物及固定
+catalog/IR 同目录保存，`docs/GENERATION_VARIANCE.md` 由证据渲染；本地 20 MB 原始运行
+文件留在被 git 忽略的 `artifacts/p4_mini_parser_20260921/campaign`。这组 3 轮描述统计
+**没有**复现文献的“生成方差更大”现象，也不足以对其他 target 或预算作显著性判断。
 
 ### P5 · 互为 oracle
 

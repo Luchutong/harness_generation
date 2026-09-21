@@ -42,6 +42,9 @@ def main(
     if arguments[:1] == ["coverage-arms"]:
         from .coverage_arms import main as coverage_arms_main
         return coverage_arms_main(arguments[1:])
+    if arguments[:1] == ["generation-variance"]:
+        from .generation_variance import main as generation_variance_main
+        return generation_variance_main(arguments[1:])
 
     parser = argparse.ArgumentParser(description="Generate N independent C libFuzzer harness candidates.")
     parser.add_argument("--source", required=True, type=Path, help="Self-contained UTF-8 C source without main")
