@@ -70,7 +70,15 @@ class Stage2Generator:
                 functions=unit["functions"],
                 dependencies=unit["dependencies"],
                 documentation=[
-                    _documentation_for_prompt(documents[name])
+                    {
+                        **_documentation_for_prompt(documents[name]),
+                        "ownership_relations": [
+                            relation.to_dict()
+                            for relation in triplet.ownership_relations
+                            if relation.producer_function == name
+                            or name in relation.consumers
+                        ],
+                    }
                     for name in unit["functions"]
                 ],
             )

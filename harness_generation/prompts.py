@@ -125,6 +125,11 @@ Functions:
 Dependencies:
 {dependencies}
 
+Ownership relations relevant to these functions are descriptive lifecycle
+constraints only; they do not authorize unrelated APIs. A cleanup relation must
+remain bound to its producer return value and execute after every declared
+consumer.
+
 Function documentation:
 {documentation}""",
 )
@@ -188,11 +193,19 @@ std::vector, std::min/std::max, lambdas, and scoped local helpers when they make
 the input model clearer, but avoid complex classes or unrelated abstractions.
 Pass the external data and size into the unique ISF according to its signature,
 retain downstream FT calls, initialize writable objects before use, and perform
-cleanup after processing.
+cleanup after processing. Ownership cleanup is permitted only for an exact
+FT-scoped ownership relation in HarnessPlan.cleanup_sequence, bound to the
+producer return value and placed after every declared consumer. Nullable owned
+pointers require an explicit null-safe cleanup condition. Do not treat lifecycle
+prose, null structural endpoints, or a global allowlist as cleanup authority.
 If a protocol contract is supplied, implement its input model directly. For
 framed command protocols, build a bounded multi-frame command loop, keep one
 stateful context alive for the whole libFuzzer iteration, and populate declared
 magic/version/opcode/length/checksum/payload fields exactly.
+When no protocol contract is supplied, use raw byte/text passthrough. Do not
+invent a length prefix, magic, checksum, padding, or multi-frame framing. For
+explicit-length APIs, pass the fuzzer-controlled buffer and length directly,
+for example cJSON_ParseWithLengthOpts((const char *)data, size, ..., 0).
 
 HarnessPlan JSON:
 {harness_plan}
@@ -208,6 +221,9 @@ Function metadata:
 
 Project headers and exact type declarations:
 {project_context}
+
+FT-scoped ownership relations:
+{ownership_relations}
 
 Protocol contract, if supplied:
 {protocol_contract}
@@ -241,7 +257,9 @@ Return only one strict JSON object with exactly this shape:
 "arguments":["..."],"uses_fuzzer_data":true,"uses_fuzzer_size":true,
 "outputs":["..."],"conditions":["..."]}}],
 "cleanup_sequence":[{{"function":"...","purpose":"...",
-"arguments":["..."],"after":["..."]}}],
+"arguments":["..."],"relation_id":"...","producer_function":"...",
+"resource_type":"...","producer_return_binding":{{"kind":"return_value",
+"identifier":"..."}},"after":["..."]}}],
 "constraints":["..."],"notes":["..."]}}
 
 Every FT function must appear exactly once in call_sequence or cleanup_sequence.
@@ -249,13 +267,21 @@ The unique ISF must appear in call_sequence and must use both fuzzer data and
 fuzzer size when the signature has a byte stream and length parameter. If a
 function is both PRF and HPF, keep it in call_sequence and mention cleanup
 responsibility in purpose or notes. Cleanup must happen after downstream
-processing.
+processing. Ownership cleanup is a scoped exception: use it only when the
+supplied FunctionTriplet ownership_relations contains the exact relation, keep
+it in cleanup_sequence, bind it to the named producer return value, and include
+every declared consumer in after. A nullable resource requires an explicit
+null-safe condition. Never infer cleanup permission from prose, a null structural
+endpoint, or a global API allowlist.
 If a protocol contract is supplied, the plan must explicitly preserve its input
 model. For framed command protocols, use a bounded multi-frame command loop,
 set input_strategy.bounded_steps to a positive cap, keep state_objects alive
 across commands, and include exact protocol fields such as magic, version,
 opcode, length endianness, checksum, and payload offset in constraints or call
 arguments.
+When no protocol contract is supplied, the plan must use raw byte/text passthrough:
+do not invent a length prefix, magic, checksum, padding, or multi-frame framing.
+For explicit-length APIs, bind the fuzzer-controlled buffer and size directly.
 
 Rough program:
 {rough_code}
@@ -269,6 +295,9 @@ Function metadata:
 FT bypass semantics (non-SFG sidecar evidence; use these for scalar guards,
 byte-stream/length binding, constants, return status, and struct access hints):
 {bypass_semantics}
+
+FT-scoped ownership relations (the only authority for external cleanup calls):
+{ownership_relations}
 
 Project headers and exact type declarations:
 {project_context}
@@ -380,6 +409,7 @@ def stage3_rough_assembly(*, snippets: Any, structural_dependencies: Any,
 
 def stage4_harness_plan(*, triplet_id: Any, rough_code: Any, unique_isf: Any,
                         function_metadata: Any, bypass_semantics: Any = (),
+                        ownership_relations: Any = (),
                         project_context: Any = (),
                         protocol_contract: Any = None,
                         validation_feedback: Any = None) -> RenderedPrompt:
@@ -389,6 +419,7 @@ def stage4_harness_plan(*, triplet_id: Any, rough_code: Any, unique_isf: Any,
         unique_isf=unique_isf,
         function_metadata=function_metadata,
         bypass_semantics=bypass_semantics,
+        ownership_relations=ownership_relations,
         project_context=project_context,
         protocol_contract=protocol_contract or {},
         validation_feedback=validation_feedback or {},
@@ -397,6 +428,7 @@ def stage4_harness_plan(*, triplet_id: Any, rough_code: Any, unique_isf: Any,
 
 def stage4_harness_transform(*, harness_plan: Any, rough_code: Any,
                              unique_isf: Any, function_metadata: Any,
+                             ownership_relations: Any = (),
                              project_context: Any = (),
                              protocol_contract: Any = None,
                              validation_feedback: Any = None) -> RenderedPrompt:
@@ -405,6 +437,7 @@ def stage4_harness_transform(*, harness_plan: Any, rough_code: Any,
         rough_code=rough_code,
         unique_isf=unique_isf,
         function_metadata=function_metadata,
+        ownership_relations=ownership_relations,
         project_context=project_context,
         protocol_contract=protocol_contract or {},
         validation_feedback=validation_feedback or {},

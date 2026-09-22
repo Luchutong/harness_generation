@@ -6,7 +6,8 @@ from .candidates import (CandidateDetector, ISFCandidateDetector,
 from .directions import StructDirectionAnalyzer
 from .graph import (FlowBuilder, SFGBuilder, write_flows_json, write_sfg_dot,
                     write_sfg_json)
-from .models import FunctionInfo, ParameterInfo, StructInfo
+from .models import FunctionInfo, ParameterInfo, StructInfo, ReturnValueOwnership, OwnershipRelation
+from .ownership import derive_ownership_relations, load_ownership_json, write_ownership_json
 from .parser import (CProjectParser, DEFAULT_IGNORES, ParseResult,
                      ProjectParseError, write_functions_json)
 from .pipeline import SFGPipeline, SFGRunResult
@@ -21,6 +22,11 @@ __all__ = [
     "CProjectParser",
     "DEFAULT_IGNORES",
     "FunctionInfo",
+    "ReturnValueOwnership",
+    "OwnershipRelation",
+    "derive_ownership_relations",
+    "load_ownership_json",
+    "write_ownership_json",
     "FunctionRoleAnnotator",
     "FlowBuilder",
     "ISFCandidateDetector",

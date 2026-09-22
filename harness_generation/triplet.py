@@ -14,8 +14,8 @@ from sfg_builder.models import Serializable
 from .records import write_json
 
 
-TRIPLET_SCHEMA_VERSION = 3
-SUPPORTED_TRIPLET_SCHEMA_VERSIONS = frozenset({1, 2, TRIPLET_SCHEMA_VERSION})
+TRIPLET_SCHEMA_VERSION = 4
+SUPPORTED_TRIPLET_SCHEMA_VERSIONS = frozenset({1, 2, 3, TRIPLET_SCHEMA_VERSION})
 _ROLE_ORDER = {"ISF": 0, "PRF": 1, "HPF": 2}
 
 
@@ -114,6 +114,59 @@ class TripletBypassSemantic(Serializable):
 
 
 @dataclass(frozen=True)
+class TripletOwnershipRelation(Serializable):
+    """FT-scoped permission to release one producer return value."""
+
+    id: str
+    producer_function_id: str
+    producer_function: str
+    resource_type: str
+    cleanup_function_id: str
+    cleanup_function: str
+    cleanup_argument: str = "return_value"
+    consumers: tuple[str, ...] = ()
+    nullable: bool = True
+    evidence: tuple[str, ...] = ()
+    confidence: float = 0.0
+    source: str = "static"
+
+    def __post_init__(self) -> None:
+        if not all((self.id, self.producer_function_id, self.producer_function,
+                    self.resource_type, self.cleanup_function_id,
+                    self.cleanup_function)):
+            raise ValueError("ownership relation identity is required")
+        if self.cleanup_argument not in {"return_value", "address_of_return_value"}:
+            raise ValueError("unsupported ownership cleanup argument")
+        if not 0 <= self.confidence <= 1:
+            raise ValueError("ownership relation confidence must be between 0 and 1")
+        if not isinstance(self.nullable, bool):
+            raise ValueError("ownership relation nullable must be a boolean")
+        if any(not isinstance(value, str) or not value for value in self.consumers):
+            raise ValueError("ownership relation consumers must be non-empty strings")
+        if any(not isinstance(value, str) or not value for value in self.evidence):
+            raise ValueError("ownership relation evidence must be non-empty strings")
+        object.__setattr__(self, "consumers", tuple(sorted(set(self.consumers))))
+        object.__setattr__(self, "evidence", tuple(sorted(set(self.evidence))))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "producer_function_id": self.producer_function_id,
+            "producer_function": self.producer_function,
+            "resource_type": self.resource_type,
+            "cleanup_function_id": self.cleanup_function_id,
+            "cleanup_function": self.cleanup_function,
+            "cleanup_argument": self.cleanup_argument,
+            "consumers": list(self.consumers),
+            "nullable": self.nullable,
+            "evidence": list(self.evidence),
+            "confidence": self.confidence,
+            "source": self.source,
+        }
+
+
+
+@dataclass(frozen=True)
 class FunctionTriplet(Serializable):
     """FT = (I, P, H), anchored by exactly one ISF."""
 
@@ -126,6 +179,7 @@ class FunctionTriplet(Serializable):
     metadata: Mapping[str, Any] = field(default_factory=dict)
     id: str | None = None
     bypass_semantics: tuple[TripletBypassSemantic, ...] = ()
+    ownership_relations: tuple[TripletOwnershipRelation, ...] = ()
 
     def __post_init__(self) -> None:
         if "ISF" not in self.isf.roles:
@@ -151,6 +205,26 @@ class FunctionTriplet(Serializable):
         if any(semantic.function_id not in function_ids
                for semantic in self.bypass_semantics):
             raise ValueError("FunctionTriplet bypass semantic references a function outside functions")
+        relation_ids = set()
+        function_names = {function.function_id: function.function for function in functions}
+        known_names = set(function_names.values())
+        cleanup_names: set[str] = set()
+        for relation in self.ownership_relations:
+            if relation.id in relation_ids:
+                raise ValueError(f"duplicate ownership relation: {relation.id}")
+            relation_ids.add(relation.id)
+            if relation.producer_function_id not in function_ids:
+                raise ValueError("ownership relation producer is outside functions")
+            if function_names[relation.producer_function_id] != relation.producer_function:
+                raise ValueError("ownership relation producer name does not match its id")
+            if any(consumer not in known_names for consumer in relation.consumers):
+                raise ValueError("ownership relation consumer is outside functions")
+            if relation.cleanup_function in cleanup_names:
+                raise ValueError(
+                    "ambiguous ownership relations share cleanup function: "
+                    + relation.cleanup_function
+                )
+            cleanup_names.add(relation.cleanup_function)
 
         structures = tuple(sorted(set(self.structures)))
         if any(not structure for structure in structures):
@@ -171,6 +245,9 @@ class FunctionTriplet(Serializable):
             "bypass_semantics",
             _canonical_bypass_semantics(self.bypass_semantics),
         )
+        object.__setattr__(self, "ownership_relations", tuple(sorted(
+            self.ownership_relations, key=lambda relation: relation.id
+        )))
         object.__setattr__(self, "metadata", _canonical_json_object(self.metadata))
 
     def to_dict(self) -> dict[str, Any]:
@@ -184,6 +261,9 @@ class FunctionTriplet(Serializable):
             "edges": [edge.to_dict() for edge in self.edges],
             "bypass_semantics": [
                 semantic.to_dict() for semantic in self.bypass_semantics
+            ],
+            "ownership_relations": [
+                relation.to_dict() for relation in self.ownership_relations
             ],
             "metadata": dict(self.metadata),
         }
@@ -354,6 +434,10 @@ def _triplet_from_dict(value: Mapping[str, Any]) -> FunctionTriplet:
         _bypass_from_dict(item)
         for item in value.get("bypass_semantics", [])
     )
+    ownership = tuple(
+        _ownership_from_dict(item)
+        for item in value.get("ownership_relations", [])
+    )
     metadata = _object(value, "metadata")
     triplet_id = value.get("id")
     if not isinstance(triplet_id, str):
@@ -368,6 +452,7 @@ def _triplet_from_dict(value: Mapping[str, Any]) -> FunctionTriplet:
         metadata,
         triplet_id,
         bypass,
+        ownership,
     )
 
 
@@ -398,6 +483,25 @@ def _edge_from_dict(value: Mapping[str, Any]) -> TripletEdge:
         _positive_int(value, "line"),
         inferred,
         reason,
+    )
+
+
+def _ownership_from_dict(value: Mapping[str, Any]) -> TripletOwnershipRelation:
+    if not isinstance(value, Mapping):
+        raise ValueError("triplet ownership relation must be an object")
+    return TripletOwnershipRelation(
+        _string(value, "id"),
+        _string(value, "producer_function_id"),
+        _string(value, "producer_function"),
+        _string(value, "resource_type"),
+        _string(value, "cleanup_function_id"),
+        _string(value, "cleanup_function"),
+        value.get("cleanup_argument", "return_value"),
+        _string_array(value, "consumers") if "consumers" in value else (),
+        value.get("nullable", True),
+        _string_array(value, "evidence") if "evidence" in value else (),
+        value.get("confidence", 0.0),
+        value.get("source", "static"),
     )
 
 

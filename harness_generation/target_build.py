@@ -68,16 +68,31 @@ class TargetBuildConfig:
 
     @classmethod
     def for_simple_project(cls, project_root: str | Path) -> "TargetBuildConfig":
-        """Inspect the simple fixture's src/include convention.
+        """Inspect conventional project source roots and root-level implementations.
 
-        Only ``src`` is a target source root. This deliberately excludes the
-        parser fixture's ``vendor/ignored.c`` from the target library.
+        Vendor, generated, build, and artifact trees are excluded from automatic
+        discovery; callers can still provide an explicit configuration.
         """
 
         root = Path(project_root).resolve()
-        sources = tuple(sorted((root / "src").rglob("*.c")))
-        headers = tuple(sorted((root / "include").rglob("*.h")))
-        include_paths = (root / "include",) if (root / "include").is_dir() else ()
+        ignored = {"build", "out", "vendor", "third_party", "generated", "artifacts"}
+        candidates = []
+        for path in (root / "src").rglob("*.c") if (root / "src").is_dir() else ():
+            if not any(part.casefold() in ignored for part in path.relative_to(root).parts):
+                candidates.append(path)
+        for path in root.glob("*.c"):
+            if path.name != "harness.c":
+                candidates.append(path)
+        sources = tuple(sorted(set(candidates)))
+        headers = tuple(sorted(
+            path for path in ((root / "include").rglob("*.h")
+                              if (root / "include").is_dir() else ())
+            if not any(part.casefold() in ignored for part in path.relative_to(root).parts)
+        ))
+        include_paths = tuple(
+            path for path in ((root,) if any(path.parent == root for path in sources) else ())
+            + ((root / "include",) if (root / "include").is_dir() else ())
+        )
         return cls(
             project_root=root,
             source_files=sources,

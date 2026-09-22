@@ -37,7 +37,7 @@ class TripletCLITests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         document = json.loads((self.artifacts / "triplets.json").read_text())
-        self.assertEqual(document["schema_version"], 3)
+        self.assertEqual(document["schema_version"], 4)
         self.assertEqual(len(document["triplets"]), 1)
         triplet = document["triplets"][0]
         self.assertTrue(triplet["id"].startswith("ft_parser_from_memory_"))

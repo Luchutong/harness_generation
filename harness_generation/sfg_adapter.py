@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
 from sfg_builder.models import SFGEdge, SFGNode
+from sfg_builder.ownership import load_ownership_json
 
 
 SFG_SCHEMA_VERSION = 1
@@ -128,7 +129,8 @@ class SFGArtifacts:
     annotations: tuple[Mapping[str, Any], ...]
     flows: tuple[Mapping[str, Any], ...]
     embedded_flows: tuple[Mapping[str, Any], ...]
-    source_schema_versions: Mapping[str, int]
+    source_schema_versions: Mapping[str, int] = field(default_factory=dict)
+    ownership: tuple[Mapping[str, Any], ...] = ()
     functions_by_id: Mapping[str, Mapping[str, Any]] = field(init=False, repr=False)
     annotations_by_id: Mapping[str, Mapping[str, Any]] = field(init=False, repr=False)
     flows_by_id: Mapping[str, Mapping[str, Any]] = field(init=False, repr=False)
@@ -207,6 +209,7 @@ class SFGLoader:
             )),
             flows=tuple(_record_array(documents["flows"], "flows", "flows.json")),
             embedded_flows=tuple(_record_array(documents["sfg"], "functions", "sfg.json")),
+            ownership=tuple(load_ownership_json(artifacts / "ownership.json")),
             source_schema_versions=versions,
         )
 

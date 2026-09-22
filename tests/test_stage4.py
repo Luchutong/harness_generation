@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
@@ -7,11 +8,15 @@ from harness_generation.llm import MockLLM
 from harness_generation.policy import FORBIDDEN_LOGGING_FUNCTIONS
 from harness_generation.sfg_adapter import load_sfg_artifacts
 from harness_generation.stage4 import (
+    HarnessPlan,
     Stage4Error,
     Stage4Generator,
+    _analyze_cpp,
+    _validate_ownership_calls,
     generate_stage4_harness,
     parse_harness_plan,
 )
+from harness_generation.triplet import TripletOwnershipRelation
 from harness_generation.triplet_extractor import extract_function_triplets
 from sfg_builder.parser import DEFAULT_IGNORES
 from sfg_builder.pipeline import SFGPipeline
@@ -503,6 +508,170 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             self.assertEqual(outcome["phase"], "harness_plan")
             self.assertEqual(outcome["status"], "failed")
 
+    def _ownership_triplet_and_plan(self, relation_id):
+        relation = TripletOwnershipRelation(
+            id=relation_id,
+            producer_function_id=self.triplet.isf.function_id,
+            producer_function=self.triplet.isf.function,
+            resource_type="Parser",
+            cleanup_function_id="src/parser.c:1:parser_free",
+            cleanup_function="parser_free",
+            consumers=("parser_next", "node_process"),
+            nullable=True,
+            evidence=("test evidence",),
+            confidence=1.0,
+        )
+        triplet = replace(self.triplet, ownership_relations=(relation,))
+        plan = json.loads(self.harness_plan())
+        plan["cleanup_sequence"][0].update({
+            "relation_id": relation.id,
+            "producer_function": relation.producer_function,
+            "resource_type": relation.resource_type,
+            "producer_return_binding": {
+                "kind": "return_value", "identifier": "item"
+            },
+            "arguments": ["item"],
+            "after": ["parser_from_memory", "parser_next", "node_process"],
+            "conditions": ["item != NULL"],
+        })
+        return triplet, json.dumps(plan)
+
+    def test_stage4_run_rejects_cleanup_only_on_null_branch(self):
+        triplet, plan = self._ownership_triplet_and_plan("own_e2e_null_branch")
+        code = """#include <stddef.h>
+#include <stdint.h>
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+{
+    if (size == 0) return 0;
+    Parser parser = {0};
+    Parser *item = (Parser *)parser_from_memory(&parser, data, (unsigned long)size);
+    Node node = parser_next(&parser);
+    node_process(&node);
+    if (!item) { parser_free(item); }
+    return 0;
+}"""
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(Stage4Error, "lacks a null guard"):
+                Stage4Generator(MockLLM([plan, code])).run(
+                    triplet,
+                    rough_code=self.rough_code(),
+                    functions_json=self.phase1_artifacts / "functions.json",
+                    artifacts=Path(temporary),
+                )
+
+    def test_stage4_run_rejects_cleanup_after_non_null_early_return(self):
+        triplet, plan = self._ownership_triplet_and_plan("own_e2e_early_return")
+        code = """#include <stddef.h>
+#include <stdint.h>
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+{
+    if (size == 0) return 0;
+    Parser parser = {0};
+    Parser *item = (Parser *)parser_from_memory(&parser, data, (unsigned long)size);
+    Node node = parser_next(&parser);
+    node_process(&node);
+    if (item) return 0;
+    if (item != NULL) { parser_free(item); }
+    return 0;
+}"""
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(Stage4Error, "unreachable on a non-null return path"):
+                Stage4Generator(MockLLM([plan, code])).run(
+                    triplet,
+                    rough_code=self.rough_code(),
+                    functions_json=self.phase1_artifacts / "functions.json",
+                    artifacts=Path(temporary),
+                )
+
+    def test_rejects_ownership_cleanup_on_null_branch(self):
+        relation = TripletOwnershipRelation(
+            id="own_parser_parse",
+            producer_function_id=self.triplet.isf.function_id,
+            producer_function=self.triplet.isf.function,
+            resource_type="Parser",
+            cleanup_function_id="src/parser.c:1:parser_free",
+            cleanup_function="parser_free",
+            consumers=("parser_next", "node_process"),
+            nullable=True,
+            evidence=("test evidence",),
+            confidence=1.0,
+        )
+        triplet = replace(self.triplet, ownership_relations=(relation,))
+        plan = json.loads(self.harness_plan())
+        cleanup = plan["cleanup_sequence"][0]
+        cleanup.update({
+            "relation_id": relation.id,
+            "producer_function": relation.producer_function,
+            "resource_type": relation.resource_type,
+            "producer_return_binding": {
+                "kind": "return_value", "identifier": "item"
+            },
+            "arguments": ["item"],
+            "after": ["parser_from_memory", "parser_next", "node_process"],
+            "conditions": ["item"],
+        })
+        plan = parse_harness_plan(
+            json.dumps(plan), triplet=triplet,
+            isf_metadata=json.loads(
+                (self.phase1_artifacts / "functions.json").read_text()
+            )["functions"][0],
+        )
+        code = """#include <stddef.h>
+#include <stdint.h>
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+{
+    Parser *item = (Parser *)parser_from_memory((Parser *)data, data, (unsigned long)size);
+    if (!item) { parser_free(item); }
+    return 0;
+}"""
+        with self.assertRaisesRegex(Stage4Error, "lacks a null guard"):
+            _validate_ownership_calls(_analyze_cpp(code).calls, triplet, plan)
+
+    def test_rejects_ownership_cleanup_after_non_null_early_return(self):
+        relation = TripletOwnershipRelation(
+            id="own_parser_return",
+            producer_function_id=self.triplet.isf.function_id,
+            producer_function=self.triplet.isf.function,
+            resource_type="Parser",
+            cleanup_function_id="src/parser.c:1:parser_free",
+            cleanup_function="parser_free",
+            consumers=("parser_next", "node_process"),
+            nullable=True,
+            evidence=("test evidence",),
+            confidence=1.0,
+        )
+        triplet = replace(self.triplet, ownership_relations=(relation,))
+        plan = json.loads(self.harness_plan())
+        cleanup = plan["cleanup_sequence"][0]
+        cleanup.update({
+            "relation_id": relation.id,
+            "producer_function": relation.producer_function,
+            "resource_type": relation.resource_type,
+            "producer_return_binding": {
+                "kind": "return_value", "identifier": "item"
+            },
+            "arguments": ["item"],
+            "after": ["parser_from_memory", "parser_next", "node_process"],
+            "conditions": ["item"],
+        })
+        plan = parse_harness_plan(
+            json.dumps(plan), triplet=triplet,
+            isf_metadata=json.loads(
+                (self.phase1_artifacts / "functions.json").read_text()
+            )["functions"][0],
+        )
+        code = """#include <stddef.h>
+#include <stdint.h>
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+{
+    Parser *item = (Parser *)parser_from_memory((Parser *)data, data, (unsigned long)size);
+    if (item) return 0;
+    if (item != NULL) { parser_free(item); }
+    return 0;
+}"""
+        with self.assertRaisesRegex(Stage4Error, "unreachable on a non-null return path"):
+            _validate_ownership_calls(_analyze_cpp(code).calls, triplet, plan)
+
     def test_parse_harness_plan_rejects_embedded_final_c(self):
         invalid = json.loads(self.harness_plan())
         invalid["harness_code"] = "int LLVMFuzzerTestOneInput(void) { return 0; }"
@@ -519,7 +688,6 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
                 triplet=self.triplet,
                 isf_metadata=isf,
             )
-
 
 if __name__ == "__main__":
     unittest.main()

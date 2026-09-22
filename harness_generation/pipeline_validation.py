@@ -228,6 +228,9 @@ class PipelineStageValidator:
             functions_json=self.functions_json,
             artifacts=self.artifacts,
             stage="stage3_rough",
+            allowed_functions={
+                relation.cleanup_function for relation in self.triplet.ownership_relations
+            },
         )
         _copy_attempt_validation(
             self.layout,
@@ -253,6 +256,9 @@ class PipelineStageValidator:
             functions_json=self.functions_json,
             artifacts=self.artifacts,
             stage="stage4_harness",
+            allowed_functions={
+                relation.cleanup_function for relation in self.triplet.ownership_relations
+            },
         )
         _copy_attempt_validation(self.layout, attempt, "intermediate")
         if intermediate.status == "failed":

@@ -47,7 +47,7 @@ class GraphTests(unittest.TestCase):
             with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
                 self.assertEqual(main(["--project", str(PROJECT), "--output", str(output)]), 0)
             expected = {"functions.json", "candidates.json", "annotations.json",
-                        "flows.json", "sfg.json", "sfg.dot"}
+                        "flows.json", "sfg.json", "sfg.dot", "ownership.json"}
             self.assertEqual({path.name for path in output.iterdir()}, expected)
             graph = json.loads((output / "sfg.json").read_text())
             self.assertEqual(len(graph["nodes"]), 3)

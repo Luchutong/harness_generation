@@ -11,7 +11,8 @@ import re
 import tempfile
 from typing import Any, Iterable
 
-from .models import AccessHint, FunctionInfo, ParameterInfo, StructInfo
+from .models import (AccessHint, FunctionInfo, ParameterInfo, ReturnValueOwnership,
+                     StructInfo)
 
 
 DEFAULT_IGNORES = (".git", "build", "out", "cmake-build*", "third_party",
@@ -217,26 +218,24 @@ def _extract_functions(root, source: bytes, relative: str) -> list[_ParsedFuncti
             continue
         name = _text(source, name_node)
         type_node = node.child_by_field_name("type")
-        if type_node is None:
-            continue
-        return_base = _clean(_text(source, type_node))
-        return_depth = _return_pointer_depth(declarator, function_declarator)
-        return_qualifiers = [_text(source, child) for child in node.named_children
-                             if child.type == "type_qualifier"]
-        return_type = _render_type(return_base, return_depth, return_qualifiers)
-        parameters = tuple(_extract_parameters(function_declarator, source))
         body_node = node.child_by_field_name("body") if defined else None
-        body = _text(source, body_node) if body_node is not None else ""
         signature_end = body_node.start_byte if body_node is not None else node.end_byte
         signature = _clean(source[node.start_byte:signature_end].decode("utf-8", errors="replace"))
         signature = signature.rstrip("; ") + ";"
+        return_base, return_depth, return_type, annotations = _return_type_details(
+            source, node, declarator, function_declarator, name_node, type_node, signature
+        )
+        parameters = tuple(_extract_parameters(function_declarator, source))
+        body = _text(source, body_node) if body_node is not None else ""
         storage = tuple(_text(source, child) for child in node.named_children
                         if child.type == "storage_class_specifier")
         function_id = f"{relative}:{node.start_point[0] + 1}:{name}"
         function = FunctionInfo(
             function_id, name, relative, node.start_point[0] + 1, node.end_point[0] + 1,
-            return_type, _normalize_base(return_base), return_depth, False, parameters,
+            return_type, return_base, return_depth, False, parameters,
             signature, body, defined, storage,
+            return_ownership=_return_ownership(name, return_base, return_depth, signature),
+            return_type_annotations=annotations,
         )
         result.append(_ParsedFunction(function, return_base))
     return result
@@ -275,11 +274,61 @@ def _declarator_identifier(node):
     return None
 
 
+def _return_type_details(source: bytes, node, declarator, function_declarator,
+                         name_node, type_node, signature: str):
+    """Recover a normalized return type, including annotation-wrapped declarations."""
+    ast_base = _clean(_text(source, type_node)) if type_node is not None else ""
+    depth = _return_pointer_depth(declarator, function_declarator)
+    annotations: list[str] = []
+    name = _text(source, name_node)
+    prefix = signature.split(name, 1)[0].strip() if name in signature else ast_base
+    macro = re.search(
+        r"\b(CJSON_PUBLIC)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)",
+        prefix,
+    )
+    if macro:
+        macro_name, macro_args = macro.groups()
+        annotations.append(macro_name)
+        candidate = _clean(macro_args)
+        if candidate:
+            ast_base = candidate
+            depth = candidate.count("*")
+    if not ast_base:
+        ast_base = _clean(prefix)
+    ast_base = re.sub(r"\b(?:static|extern|inline|const|volatile|restrict)\b", " ", ast_base)
+    ast_base = re.sub(r"\b[A-Za-z_]\w*\s*\([^;{}]*\)", " ", ast_base)
+    ast_base = _clean(ast_base)
+    qualifiers = []
+    if re.search(r"\bconst\b", prefix):
+        qualifiers.append("const")
+    base = _normalize_base(ast_base)
+    return base, depth, _render_type(base, depth, qualifiers), tuple(dict.fromkeys(annotations))
+
+
+def _return_ownership(name: str, base_type: str, pointer_depth: int,
+                      signature: str) -> ReturnValueOwnership | None:
+    if pointer_depth == 1 and base_type == "cJSON" and name.startswith("cJSON_Parse"):
+        return ReturnValueOwnership(
+            "owned_pointer", "cJSON", True, True, "cJSON_Delete", "return_value",
+            (f"{name} returns cJSON *", "cJSON parse results are caller-owned"),
+            1.0, "static_signature_and_api_family",
+        )
+    if pointer_depth == 1 and base_type == "char" and name in {
+        "cJSON_Print", "cJSON_PrintUnformatted",
+    }:
+        return ReturnValueOwnership(
+            "owned_pointer", "char", True, True, "cJSON_free", "return_value",
+            (f"{name} returns char *", "cJSON print results are caller-owned"),
+            1.0, "static_signature_and_api_family",
+        )
+    return None
+
+
 def _return_pointer_depth(declarator, function_declarator) -> int:
     depth = 0
     current = declarator
     while current is not None and current != function_declarator:
-        if current.type == "pointer_declarator":
+        if current.type in {"pointer_declarator", "abstract_pointer_declarator"}:
             depth += 1
         current = current.child_by_field_name("declarator")
     return depth

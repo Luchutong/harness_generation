@@ -150,14 +150,19 @@ class Stage3Assembler:
         units = (load_stage2_snippets(snippets, triplet_id=triplet.id)
                  if isinstance(snippets, (str, Path)) else tuple(snippets))
         _validate_snippets(units, triplet)
-        ordered, warnings = _order_snippets(units)
+        ordered, warnings = _order_snippets(units, triplet)
         function_metadata, all_project_functions, project_context = _load_ft_function_metadata(
             Path(functions_json), triplet
         )
 
         prompt = stage3_rough_assembly(
             snippets=[unit.to_dict() for unit in ordered],
-            structural_dependencies=_structural_dependencies(triplet, ordered),
+            structural_dependencies={
+                **_structural_dependencies(triplet, ordered),
+                "ownership_relations": [
+                    relation.to_dict() for relation in triplet.ownership_relations
+                ],
+            },
             function_metadata=function_metadata,
             project_context=project_context,
             validation_feedback=bounded_validation_feedback(retry_context),
@@ -303,8 +308,10 @@ def _validate_snippets(units: Sequence[Stage2Snippet],
         )
 
 
-def _order_snippets(units: Sequence[Stage2Snippet]
-                    ) -> tuple[tuple[Stage2Snippet, ...], tuple[str, ...]]:
+def _order_snippets(
+    units: Sequence[Stage2Snippet],
+    triplet: FunctionTriplet | None = None,
+) -> tuple[tuple[Stage2Snippet, ...], tuple[str, ...]]:
     by_id = {unit.id: unit for unit in units}
     dependencies: dict[str, set[str]] = {unit.id: set() for unit in units}
     warnings = []
@@ -327,6 +334,30 @@ def _order_snippets(units: Sequence[Stage2Snippet]
                 dependencies[consumer.id].add(producer.id)
 
     descendants = _structure_descendants(units)
+    if triplet is not None:
+        by_function = {
+            function: unit.id
+            for unit in units
+            for function in unit.functions
+        }
+        for relation in triplet.ownership_relations:
+            producer_unit = by_function.get(relation.producer_function)
+            cleanup_unit = by_function.get(relation.cleanup_function)
+            if producer_unit is None:
+                warnings.append(
+                    f"ownership {relation.id}: producer is absent from Stage 2 units"
+                )
+            if cleanup_unit is None:
+                warnings.append(
+                    f"ownership {relation.id}: cleanup is absent from Stage 2 units"
+                )
+            if producer_unit and cleanup_unit and producer_unit != cleanup_unit:
+                dependencies[cleanup_unit].add(producer_unit)
+            for consumer in relation.consumers:
+                consumer_unit = by_function.get(consumer)
+                if consumer_unit and cleanup_unit and consumer_unit != cleanup_unit:
+                    dependencies[cleanup_unit].add(consumer_unit)
+
     for cleanup in units:
         if not is_null_node(cleanup.output_structure):
             continue
@@ -388,7 +419,7 @@ def _structural_dependencies(
     triplet: FunctionTriplet,
     ordered: Sequence[Stage2Snippet],
 ) -> dict[str, Any]:
-    return {
+    metadata = {
         "assembly_order": [unit.id for unit in ordered],
         "units": [
             {
@@ -400,8 +431,11 @@ def _structural_dependencies(
             for unit in ordered
         ],
         "ft_edges": [edge.to_dict() for edge in triplet.edges],
+        "ownership_relations": [
+            relation.to_dict() for relation in triplet.ownership_relations
+        ],
     }
-
+    return metadata
 
 def _load_ft_function_metadata(
     path: Path,

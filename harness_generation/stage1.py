@@ -321,6 +321,12 @@ def _usage_context(triplet: FunctionTriplet,
             {"function": item.function, "roles": list(item.roles)}
             for item in triplet.functions
         ],
+        "ownership_relations": [
+            relation.to_dict()
+            for relation in triplet.ownership_relations
+            if relation.producer_function_id == function.function_id
+            or function.function in relation.consumers
+        ],
         "structural_edges": [
             {
                 "source": edge.src,

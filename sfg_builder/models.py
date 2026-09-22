@@ -32,6 +32,65 @@ class AccessHint(Serializable):
 
 
 @dataclass(frozen=True)
+class ReturnValueOwnership(Serializable):
+    """Static, evidence-bearing facts about a function's returned resource."""
+
+    kind: str
+    resource_type: str
+    owned: bool
+    nullable: bool
+    cleanup_function: str | None = None
+    cleanup_argument: str = "return_value"
+    evidence: tuple[str, ...] = ()
+    confidence: float = 0.0
+    source: str = "unknown"
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"owned_pointer", "borrowed_pointer", "unknown"}:
+            raise ValueError("invalid return ownership kind")
+        if not self.resource_type:
+            raise ValueError("return ownership resource_type is required")
+        if not 0 <= self.confidence <= 1:
+            raise ValueError("return ownership confidence must be between 0 and 1")
+        if not isinstance(self.owned, bool) or not isinstance(self.nullable, bool):
+            raise ValueError("return ownership owned/nullable must be booleans")
+        if any(not isinstance(item, str) or not item for item in self.evidence):
+            raise ValueError("return ownership evidence must be non-empty strings")
+
+
+@dataclass(frozen=True)
+class OwnershipRelation(Serializable):
+    """A validated producer-return to cleanup-function relationship."""
+
+    id: str
+    producer_function_id: str
+    producer_function: str
+    resource_type: str
+    cleanup_function_id: str
+    cleanup_function: str
+    cleanup_argument: str = "return_value"
+    consumers: tuple[str, ...] = ()
+    nullable: bool = True
+    evidence: tuple[str, ...] = ()
+    confidence: float = 0.0
+    source: str = "static"
+
+    def __post_init__(self) -> None:
+        if not all((self.id, self.producer_function_id, self.producer_function,
+                    self.resource_type, self.cleanup_function_id,
+                    self.cleanup_function)):
+            raise ValueError("ownership relation identity is required")
+        if self.cleanup_argument not in {"return_value", "address_of_return_value"}:
+            raise ValueError("unsupported ownership cleanup argument")
+        if not 0 <= self.confidence <= 1:
+            raise ValueError("ownership relation confidence must be between 0 and 1")
+        if not isinstance(self.nullable, bool):
+            raise ValueError("ownership relation nullable must be a boolean")
+        if any(not isinstance(item, str) or not item for item in self.evidence):
+            raise ValueError("ownership relation evidence must be non-empty strings")
+
+
+@dataclass(frozen=True)
 class FunctionInfo(Serializable):
     id: str
     name: str
@@ -49,6 +108,8 @@ class FunctionInfo(Serializable):
     storage: tuple[str, ...] = ()
     access_hints: tuple[AccessHint, ...] = ()
     labels: tuple[str, ...] = ()
+    return_ownership: ReturnValueOwnership | None = None
+    return_type_annotations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

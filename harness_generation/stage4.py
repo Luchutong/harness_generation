@@ -19,7 +19,7 @@ from .prompts import stage4_harness_plan, stage4_harness_transform
 from .sfg_adapter import is_null_node
 from .source_paths import SUPPORTED_FUNCTIONS_SCHEMA_VERSIONS
 from .stage4_outcome import record_parse_result
-from .triplet import FunctionTriplet
+from .triplet import FunctionTriplet, TripletOwnershipRelation
 
 
 FUZZ_ENTRY = "LLVMFuzzerTestOneInput"
@@ -99,6 +99,9 @@ class _Call:
     name: str
     arguments: tuple[_Argument, ...]
     start_byte: int
+    assignment_target: str | None = None
+    guard_texts: tuple[str, ...] = ()
+    preceding_returns: tuple[str | None, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -162,6 +165,9 @@ class Stage4Generator:
             bypass_semantics=[
                 semantic.to_dict() for semantic in triplet.bypass_semantics
             ],
+            ownership_relations=[
+                relation.to_dict() for relation in triplet.ownership_relations
+            ],
             project_context=project_context,
             validation_feedback=validation_feedback,
         )
@@ -219,6 +225,9 @@ class Stage4Generator:
                 function_metadata[function.function_id]
                 for function in triplet.functions
             ],
+            ownership_relations=[
+                relation.to_dict() for relation in triplet.ownership_relations
+            ],
             project_context=project_context,
             validation_feedback=validation_feedback,
         )
@@ -255,6 +264,7 @@ class Stage4Generator:
                 triplet,
                 isf_metadata,
                 all_project_functions,
+                harness_plan,
             )
         except Exception as error:
             record_parse_result(attempt_directory, {
@@ -435,12 +445,46 @@ def parse_harness_plan(
     notes = _plan_string_list(document, "notes")
 
     expected = {function.function for function in triplet.functions}
+    ownership_by_id = {relation.id: relation for relation in triplet.ownership_relations}
+    ownership_by_cleanup: dict[str, list[TripletOwnershipRelation]] = {}
+    for relation in triplet.ownership_relations:
+        ownership_by_cleanup.setdefault(relation.cleanup_function, []).append(relation)
     planned_calls = [_plan_function(item, "call_sequence") for item in call_sequence]
     planned_cleanup = [
         _plan_function(item, "cleanup_sequence") for item in cleanup_sequence
     ]
+    relation_items: dict[str, Mapping[str, Any]] = {}
+    for item, function in zip(cleanup_sequence, planned_cleanup):
+        relation_id = item.get("relation_id")
+        matching = ownership_by_id.get(relation_id) if isinstance(relation_id, str) else None
+        if matching is None:
+            candidates = ownership_by_cleanup.get(function, ())
+            if candidates:
+                raise Stage4Error(
+                    f"ownership cleanup {function} requires a valid relation_id"
+                )
+            continue
+        if relation_id in relation_items:
+            raise Stage4Error(f"ownership relation {relation_id} appears more than once")
+        if function != matching.cleanup_function:
+            raise Stage4Error(
+                f"ownership relation {relation_id} requires cleanup function "
+                f"{matching.cleanup_function}"
+            )
+        relation_items[relation_id] = item
+        _validate_ownership_plan_item(item, matching)
+
+    missing_relations = sorted(set(ownership_by_id) - set(relation_items))
+    if missing_relations:
+        raise Stage4Error(
+            "HarnessPlan must include exactly one cleanup for ownership relations: "
+            + ", ".join(missing_relations)
+        )
+    external_cleanup = sorted(
+        set(planned_cleanup) & set(ownership_by_cleanup) - expected
+    )
     all_planned = planned_calls + planned_cleanup
-    unknown = sorted(set(all_planned) - expected)
+    unknown = sorted(set(all_planned) - expected - set(external_cleanup))
     if unknown:
         raise Stage4Error(
             "HarnessPlan references functions outside the FT: " + ", ".join(unknown)
@@ -497,6 +541,58 @@ def parse_harness_plan(
         constraints=tuple(constraints),
         notes=tuple(notes),
     )
+
+
+def _validate_ownership_plan_item(
+    item: Mapping[str, Any], relation: TripletOwnershipRelation
+) -> None:
+    if item.get("producer_function") != relation.producer_function:
+        raise Stage4Error(
+            f"ownership cleanup {relation.cleanup_function} requires its producer_function"
+        )
+    if item.get("resource_type") != relation.resource_type:
+        raise Stage4Error(
+            f"ownership cleanup {relation.cleanup_function} requires its resource_type"
+        )
+    after = item.get("after", [])
+    if not isinstance(after, list) or any(not isinstance(value, str) for value in after):
+        raise Stage4Error(
+            f"HarnessPlan cleanup_sequence after must be strings: {relation.cleanup_function}"
+        )
+    required_after = set(relation.consumers) | {relation.producer_function}
+    if not required_after <= set(after):
+        raise Stage4Error(
+            f"ownership cleanup {relation.cleanup_function} must occur after producer and consumers"
+        )
+    arguments = item.get("arguments", [])
+    if not isinstance(arguments, list) or len(arguments) != 1:
+        raise Stage4Error(
+            f"ownership cleanup {relation.cleanup_function} requires one bound argument"
+        )
+    binding = item.get("producer_return_binding")
+    if not isinstance(binding, Mapping):
+        raise Stage4Error(
+            f"ownership cleanup {relation.cleanup_function} requires producer_return_binding"
+        )
+    identifier = binding.get("identifier")
+    kind = binding.get("kind")
+    if not isinstance(identifier, str) or not identifier or kind != relation.cleanup_argument:
+        raise Stage4Error(
+            f"ownership cleanup {relation.cleanup_function} has invalid producer binding"
+        )
+    expected_argument = identifier if kind == "return_value" else "&" + identifier
+    if arguments[0].strip() != expected_argument:
+        raise Stage4Error(
+            f"ownership cleanup {relation.cleanup_function} argument must bind {expected_argument}"
+        )
+    if relation.nullable:
+        conditions = item.get("conditions")
+        if not isinstance(conditions, list) or not conditions or any(
+            not isinstance(value, str) or not value.strip() for value in conditions
+        ):
+            raise Stage4Error(
+                f"nullable ownership cleanup {relation.cleanup_function} requires explicit conditions"
+            )
 
 
 def _plan_object_list(document: Mapping[str, Any], field: str) -> tuple[Mapping[str, Any], ...]:
@@ -657,6 +753,7 @@ def _validate_harness(
     triplet: FunctionTriplet,
     isf_metadata: Mapping[str, Any],
     all_project_functions: set[str],
+    plan: HarnessPlan,
 ) -> None:
     definitions = [function.name for function in analysis.functions]
     if definitions.count(FUZZ_ENTRY) != 1:
@@ -684,11 +781,28 @@ def _validate_harness(
 
     local_functions = set(definitions)
     expected = {function.function for function in triplet.functions}
-    outside_ft = sorted(calls & (all_project_functions - expected))
+    ownership_cleanup = {
+        relation.cleanup_function: relation for relation in triplet.ownership_relations
+    }
+    planned_cleanup = {
+        item.get("function"): item for item in plan.cleanup_sequence
+    }
+    allowed_cleanup = set(ownership_cleanup) & set(planned_cleanup)
+    for cleanup_name, relation in ownership_cleanup.items():
+        if cleanup_name not in planned_cleanup or cleanup_name in expected:
+            continue
+        item = planned_cleanup[cleanup_name]
+        if relation.nullable and not item.get("conditions"):
+            raise Stage4Error(
+                f"nullable ownership cleanup {cleanup_name} requires explicit conditions"
+            )
+    outside_ft = sorted(
+        calls & (all_project_functions - expected - allowed_cleanup)
+    )
     if outside_ft:
         raise Stage4Error("Stage 4 harness calls project APIs outside the FT: " +
                           ", ".join(outside_ft))
-    allowed = expected | local_functions | _STANDARD_C_CALLS
+    allowed = expected | local_functions | _STANDARD_C_CALLS | allowed_cleanup
     unknown = sorted(calls - allowed)
     if unknown:
         raise Stage4Error("Stage 4 harness calls unknown APIs: " + ", ".join(unknown))
@@ -717,6 +831,7 @@ def _validate_harness(
             for edge in triplet.edges
         )
     }
+    cleanup_names.update(ownership_cleanup)
     cleanup_before_entry = sorted({
         call.name for call in entry_calls
         if call.name in cleanup_names and call.start_byte < first_isf
@@ -725,6 +840,83 @@ def _validate_harness(
         raise Stage4Error("Stage 4 cleanup occurs before ISF initialization: " +
                           ", ".join(cleanup_before_entry))
     _validate_cleanup_order(entry_calls, cleanup_names, triplet)
+    _validate_ownership_calls(entry_calls, triplet, plan)
+
+
+def _validate_ownership_calls(
+    calls: tuple[_Call, ...],
+    triplet: FunctionTriplet,
+    plan: HarnessPlan,
+) -> None:
+    """Require each owned result to be saved and released exactly once."""
+    plan_by_relation = {
+        item.get("relation_id"): item
+        for item in plan.cleanup_sequence
+        if isinstance(item.get("relation_id"), str)
+    }
+    for relation in triplet.ownership_relations:
+        item = plan_by_relation.get(relation.id)
+        if item is None:
+            raise Stage4Error(
+                f"ownership relation {relation.id} has no cleanup plan item"
+            )
+        binding = item.get("producer_return_binding")
+        identifier = binding.get("identifier") if isinstance(binding, Mapping) else None
+        if not isinstance(identifier, str) or not identifier:
+            raise Stage4Error(
+                f"ownership relation {relation.id} has no producer result identifier"
+            )
+        producer_calls = [call for call in calls if call.name == relation.producer_function]
+        if len(producer_calls) != 1:
+            raise Stage4Error(
+                f"ownership producer {relation.producer_function} must be invoked exactly once"
+            )
+        producer = producer_calls[0]
+        if producer.assignment_target != identifier:
+            raise Stage4Error(
+                f"ownership producer {relation.producer_function} must save its return value as {identifier}"
+            )
+        cleanup_calls = [call for call in calls if call.name == relation.cleanup_function]
+        if len(cleanup_calls) != 1:
+            raise Stage4Error(
+                f"ownership cleanup {relation.cleanup_function} must be invoked exactly once"
+            )
+        cleanup = cleanup_calls[0]
+        expected_argument = identifier if relation.cleanup_argument == "return_value" else "&" + identifier
+        if len(cleanup.arguments) != 1 or cleanup.arguments[0].text.strip() != expected_argument:
+            raise Stage4Error(
+                f"ownership cleanup {relation.cleanup_function} must receive {expected_argument}"
+            )
+        if cleanup.start_byte <= producer.start_byte:
+            raise Stage4Error(
+                f"ownership cleanup {relation.cleanup_function} occurs before its producer"
+            )
+        if any(
+            _non_null_guard(condition, identifier)
+            for condition in cleanup.preceding_returns
+            if condition is not None
+        ):
+            raise Stage4Error(
+                f"ownership cleanup {relation.cleanup_function} is unreachable on a non-null return path"
+            )
+        if relation.nullable and not any(
+            _non_null_guard(guard, identifier) for guard in cleanup.guard_texts
+        ):
+            raise Stage4Error(
+                f"nullable ownership cleanup {relation.cleanup_function} lacks a null guard for {identifier}"
+            )
+
+
+def _non_null_guard(condition: str, identifier: str) -> bool:
+    compact = re.sub(r"\s+", "", condition).strip("()")
+    token = re.escape(identifier)
+    comparisons = (
+        rf"{token}(?:!=|>)\s*(?:nullptr|NULL|0)",
+        rf"(?:nullptr|NULL|0)\s*(?:!=|<)\s*{token}",
+    )
+    return any(re.fullmatch(pattern, compact) for pattern in comparisons) \
+        or compact == identifier
+
 
 
 def _validate_cleanup_order(calls: tuple[_Call, ...], cleanup_names: set[str],
@@ -737,9 +929,43 @@ def _validate_cleanup_order(calls: tuple[_Call, ...], cleanup_names: set[str],
         if not is_null_node(edge.src) and not is_null_node(edge.dst):
             outgoing.setdefault(edge.src, set()).add(edge.dst)
 
+    for relation in triplet.ownership_relations:
+        cleanup_positions = positions.get(relation.cleanup_function, [])
+        if not cleanup_positions:
+            continue
+        required = {relation.producer_function, *relation.consumers}
+        late = sorted(
+            name for name in required
+            if positions.get(name)
+            and max(positions[name]) > min(cleanup_positions)
+        )
+        if late:
+            raise Stage4Error(
+                f"Stage 4 ownership cleanup {relation.cleanup_function} occurs before: "
+                + ", ".join(late)
+            )
+
     for cleanup in sorted(cleanup_names):
         cleanup_positions = positions.get(cleanup, [])
         if not cleanup_positions:
+            continue
+        relation = next(
+            (item for item in triplet.ownership_relations
+             if item.cleanup_function == cleanup),
+            None,
+        )
+        if relation is not None:
+            required = {relation.producer_function, *relation.consumers}
+            late = sorted(
+                name for name in required
+                if positions.get(name)
+                and max(positions[name]) > min(cleanup_positions)
+            )
+            if late:
+                raise Stage4Error(
+                    f"Stage 4 ownership cleanup {cleanup} occurs before: "
+                    + ", ".join(late)
+                )
             continue
         sources = {
             edge.src for edge in triplet.edges
@@ -869,11 +1095,83 @@ def _calls(body: Any, source: bytes) -> Iterable[_Call]:
                         for current in _walk(argument)
                     ),
                 ))
+        assignment_target, guard_texts = _call_context(node, source)
+        preceding_returns = _preceding_returns(node, body, source)
         yield _Call(
             name=_node_text(source, callee),
             arguments=tuple(arguments),
             start_byte=node.start_byte,
+            assignment_target=assignment_target,
+            guard_texts=guard_texts,
+            preceding_returns=preceding_returns,
         )
+
+
+def _call_context(node: Any, source: bytes) -> tuple[str | None, tuple[str, ...]]:
+    assignment_target = None
+    current = node
+    while current is not None:
+        parent = current.parent
+        if parent is None:
+            break
+        if parent.type == "init_declarator":
+            value = parent.child_by_field_name("value")
+            if value is not None and _contains_node(value, node):
+                assignment_target = _declarator_identifier(
+                    parent.child_by_field_name("declarator"), source
+                )
+                break
+        if parent.type == "assignment_expression":
+            right = parent.child_by_field_name("right")
+            if right is not None and _contains_node(right, node):
+                left = parent.child_by_field_name("left")
+                assignment_target = _node_text(source, left) if left is not None else None
+                break
+        if parent.type in {
+            "expression_statement", "declaration", "return_statement",
+            "compound_statement", "if_statement",
+        }:
+            break
+        current = parent
+
+    guards: list[str] = []
+    current = node.parent
+    while current is not None:
+        if current.type == "if_statement":
+            condition = current.child_by_field_name("condition")
+            if condition is not None:
+                guards.append(_node_text(source, condition))
+        current = current.parent
+    return assignment_target, tuple(guards)
+
+
+def _preceding_returns(node: Any, body: Any, source: bytes) -> tuple[str | None, ...]:
+    """Return conditions for returns before a call in the same function."""
+    if body is None:
+        return ()
+    result: list[str | None] = []
+    for current in _walk(body):
+        if current.type != "return_statement" or current.start_byte >= node.start_byte:
+            continue
+        condition = None
+        parent = current.parent
+        while parent is not None and parent is not body:
+            if parent.type == "if_statement":
+                condition_node = parent.child_by_field_name("condition")
+                if condition_node is not None:
+                    condition = _node_text(source, condition_node)
+                break
+            parent = parent.parent
+        result.append(condition)
+    return tuple(result)
+
+
+def _contains_node(ancestor: Any, node: Any) -> bool:
+    return (
+        ancestor is not None
+        and ancestor.start_byte <= node.start_byte
+        and ancestor.end_byte >= node.end_byte
+    )
 
 
 def _find_function_declarator(node: Any) -> Any:

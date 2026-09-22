@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -376,8 +377,38 @@ def _stage_handlers(
 
 
 def _publish_harness(layout, result):
-    layout.write_text(layout.harness, result.harness_code.rstrip() + "\n")
-    return result
+    summary_path = layout.validation_summary
+    summary = {}
+    if summary_path.is_file():
+        try:
+            loaded = json.loads(summary_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                summary = loaded
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            summary = {}
+    overall = summary.get("overall")
+    if overall == "passed":
+        layout.write_text(layout.harness, result.harness_code.rstrip() + "\n")
+        return result
+
+    source_hash = hashlib.sha256(result.harness_code.encode("utf-8")).hexdigest()
+    plan_hash = hashlib.sha256(
+        json.dumps(result.harness_plan, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    layout.write_json(layout.generation / "quarantine.json", {
+        "schema_version": 1,
+        "status": "quarantined",
+        "reason": "formal validation did not reach passed",
+        "validation_status": overall or "not_recorded",
+        "component_statuses": {
+            key: value for key, value in summary.items()
+            if key in {"intermediate", "compiler", "linker", "runtime"}
+        },
+        "source_sha256": source_hash,
+        "plan_sha256": plan_hash,
+        "source": str(result.harness_path),
+    })
+    return replace(result, stable_path=None)
 
 
 def _rollback_source(level: int | None) -> str | None:

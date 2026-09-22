@@ -12,6 +12,7 @@ from .graph import (FlowBuilder, SFGBuilder, write_flows_json, write_sfg_dot,
 from .models import (FunctionAnnotation, FunctionCandidate, FunctionFlow,
                      StructuralFlowGraph)
 from .parser import CProjectParser, ParseResult, write_functions_json
+from .ownership import derive_ownership_relations, write_ownership_json
 from .roles import write_annotations_json
 from .semantic import SemanticAnalyzer
 
@@ -23,6 +24,7 @@ class SFGRunResult:
     annotations: tuple[FunctionAnnotation, ...]
     flows: tuple[FunctionFlow, ...]
     graph: StructuralFlowGraph
+    ownership: tuple = ()
 
 
 class SFGPipeline:
@@ -39,11 +41,13 @@ class SFGPipeline:
         annotations = self.annotator.annotate(parsed.functions, candidates, parsed.structs)
         flows = self.flow_builder.build(parsed.functions, annotations)
         graph = self.graph_builder.build(parsed.structs, flows)
+        ownership = derive_ownership_relations(parsed.functions)
         output.mkdir(parents=True, exist_ok=True)
         write_functions_json(parsed, output / "functions.json", project=project)
+        write_ownership_json(ownership, output / "ownership.json")
         write_candidates_json(candidates, output / "candidates.json")
         write_annotations_json(annotations, output / "annotations.json")
         write_flows_json(flows, output / "flows.json")
         write_sfg_json(graph, output / "sfg.json")
         write_sfg_dot(graph, output / "sfg.dot")
-        return SFGRunResult(parsed, candidates, annotations, flows, graph)
+        return SFGRunResult(parsed, candidates, annotations, flows, graph, ownership)

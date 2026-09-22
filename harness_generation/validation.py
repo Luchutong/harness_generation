@@ -10,10 +10,14 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from .artifacts import ArtifactStore
-from .policy import FORBIDDEN_LOGGING_FUNCTIONS
+from .policy import (
+    DEFAULT_ALLOWED_FUNCTIONS,
+    FORBIDDEN_IO_FUNCTIONS,
+    FORBIDDEN_LOGGING_FUNCTIONS,
+)
 from .records import write_json
 from .source_paths import SUPPORTED_FUNCTIONS_SCHEMA_VERSIONS
-from .triplet import FunctionTriplet
+from .triplet import FunctionTriplet, TripletOwnershipRelation
 
 
 VALIDATION_SCHEMA_VERSION = 1
@@ -21,15 +25,6 @@ VALIDATION_STATUSES = frozenset({
     "passed", "failed", "skipped", "unavailable", "passed_with_limitations",
 })
 
-DEFAULT_ALLOWED_FUNCTIONS = frozenset({
-    "abort", "assert", "calloc", "free", "malloc", "memcmp", "memcpy",
-    "memmove", "memset", "realloc", "strchr", "strcmp", "strlen",
-    "strncmp", "strnlen", "strrchr",
-})
-FORBIDDEN_IO_FUNCTIONS = frozenset({
-    "fclose", "fdopen", "fgetpos", "fopen", "fread", "freopen", "fseek",
-    "fsetpos", "ftell", "fwrite", "rewind", "tmpfile",
-})
 
 _CPP_EVIDENCE = re.compile(
     r"(?:\b(?:class|delete|namespace|new|nullptr|template|typename|using)\b|::|"
@@ -137,10 +132,17 @@ class IntermediateValidator:
         validation_path: str | Path,
         stage: str = "intermediate",
         allowed_functions: Iterable[str] = (),
+        ownership_cleanup: Iterable[str] = (),
+        ownership_relations: Iterable[TripletOwnershipRelation] = (),
     ) -> ValidationResult:
         expected = _names(expected_functions, "expected_functions")
         targets = _names(target_functions, "target_functions")
         extra_allowed = _names(allowed_functions, "allowed_functions")
+        scoped_cleanup = _names(ownership_cleanup, "ownership_cleanup")
+        relations = tuple(ownership_relations)
+        relation_cleanup = {relation.cleanup_function for relation in relations}
+        if scoped_cleanup and not scoped_cleanup <= relation_cleanup:
+            raise ValueError("ownership cleanup names require matching relations")
         errors: list[str] = []
         warnings: list[str] = []
 
@@ -192,6 +194,10 @@ class IntermediateValidator:
         forbidden = set(forbidden_logging) | set(forbidden_io)
         unexpected_target = sorted((calls & targets) - expected - extra_allowed)
         unknown = sorted(calls - targets - local_functions - allowed - forbidden)
+        ownership_calls = sorted(calls & scoped_cleanup)
+        unauthorized_ownership = sorted(
+            (calls & scoped_cleanup) - extra_allowed
+        )
         duplicates = {
             name: count for name, count in sorted(definitions.items()) if count > 1
         }
@@ -220,6 +226,11 @@ class IntermediateValidator:
             errors.append("redefined target functions: " + ", ".join(redefined))
         if unknown:
             errors.append("calls to unknown target APIs: " + ", ".join(unknown))
+        if unauthorized_ownership:
+            errors.append(
+                "ownership cleanup calls lack a scoped allowance: "
+                + ", ".join(unauthorized_ownership)
+            )
         if facts.indirect_calls:
             warnings.append(
                 "indirect function calls could not be resolved statically: "
@@ -244,6 +255,9 @@ class IntermediateValidator:
                 set(unexpected_target) | set(unknown) | forbidden
             ),
             "unknown_target_api_calls": unknown,
+            "ownership_cleanup_calls": ownership_calls,
+            "ownership_relations": [relation.to_dict() for relation in relations],
+            "unauthorized_ownership_cleanup_calls": unauthorized_ownership,
             "redefined_target_functions": redefined,
             "forbidden_logging_calls": forbidden_logging,
             "forbidden_io_calls": forbidden_io,
@@ -266,13 +280,17 @@ class IntermediateValidator:
     ) -> ValidationResult:
         targets = _load_target_functions(Path(functions_json))
         layout = ArtifactStore(Path(artifacts)).for_triplet(triplet.id)
+        ownership_cleanup = tuple(relation.cleanup_function for relation in triplet.ownership_relations)
+        allowed = tuple(dict.fromkeys((*allowed_functions, *ownership_cleanup)))
         result = self.validate(
             source,
             expected_functions=(function.function for function in triplet.functions),
             target_functions=targets,
             validation_path=layout.intermediate_validation,
             stage=stage,
-            allowed_functions=allowed_functions,
+            allowed_functions=allowed,
+            ownership_cleanup=ownership_cleanup,
+            ownership_relations=triplet.ownership_relations,
         )
         layout.write_validation("intermediate", result.to_dict())
         return result

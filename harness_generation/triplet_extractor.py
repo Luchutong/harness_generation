@@ -12,7 +12,8 @@ from typing import Any, Mapping
 from sfg_builder.models import SFGEdge
 
 from .sfg_adapter import SFGArtifacts, SFGGraphView, is_null_node
-from .triplet import (FunctionTriplet, TripletBypassSemantic, TripletEdge, TripletFunction,
+from .triplet import (FunctionTriplet, TripletBypassSemantic, TripletEdge,
+                      TripletFunction, TripletOwnershipRelation,
                       stable_triplet_id)
 
 
@@ -105,6 +106,7 @@ class FunctionTripletExtractor:
         )
         edges = tuple(_triplet_edge(edge) for edge in selected_edges)
         bypass_semantics = _bypass_semantics(artifacts, functions)
+        ownership_relations = _ownership_relations(artifacts, functions)
         metadata = {
             "algorithm": ALGORITHM_VERSION,
             "bypass_semantics_version": BYPASS_SEMANTICS_VERSION,
@@ -134,6 +136,7 @@ class FunctionTripletExtractor:
             metadata=metadata,
             id=_stable_anchor_id(artifacts, anchor_id),
             bypass_semantics=bypass_semantics,
+            ownership_relations=ownership_relations,
         )
 
 
@@ -260,6 +263,77 @@ def _triplet_edge(edge: SFGEdge) -> TripletEdge:
         inferred=edge.inferred,
         inference_reason=edge.inference_reason,
     )
+
+
+def _ownership_relations(
+    artifacts: SFGArtifacts,
+    functions: tuple[TripletFunction, ...],
+) -> tuple[TripletOwnershipRelation, ...]:
+    """Keep only validated ownership closures whose producer is in this FT."""
+    function_ids = {function.function_id for function in functions}
+    function_names = {function.function_id: function.function for function in functions}
+    relations = []
+    for record in artifacts.ownership:
+        if not isinstance(record, Mapping):
+            raise FunctionTripletExtractionError("ownership relation must be an object")
+        producer_id = record.get("producer_function_id")
+        if producer_id not in function_ids:
+            continue
+        cleanup_id = record.get("cleanup_function_id")
+        cleanup_name = record.get("cleanup_function")
+        if not isinstance(cleanup_id, str) or not cleanup_id:
+            raise FunctionTripletExtractionError("ownership cleanup id is invalid")
+        if not isinstance(cleanup_name, str) or not cleanup_name:
+            raise FunctionTripletExtractionError("ownership cleanup name is invalid")
+        producer_name = record.get("producer_function", function_names[producer_id])
+        if producer_name != function_names[producer_id]:
+            raise FunctionTripletExtractionError(
+                f"ownership producer does not match FT: {producer_id}"
+            )
+        consumers = _ownership_strings(record, "consumers")
+        unknown_consumers = sorted(set(consumers) - set(function_names.values()))
+        if unknown_consumers:
+            raise FunctionTripletExtractionError(
+                "ownership consumers are outside the FT: "
+                + ", ".join(unknown_consumers)
+            )
+        try:
+            relation = TripletOwnershipRelation(
+                id=_required_ownership_string(record, "id"),
+                producer_function_id=producer_id,
+                producer_function=producer_name,
+                resource_type=_required_ownership_string(record, "resource_type"),
+                cleanup_function_id=cleanup_id,
+                cleanup_function=cleanup_name,
+                cleanup_argument=record.get("cleanup_argument", "return_value"),
+                consumers=consumers,
+                nullable=record.get("nullable", True),
+                evidence=_ownership_strings(record, "evidence"),
+                confidence=record.get("confidence", 0.0),
+                source=record.get("source", "static"),
+            )
+        except (TypeError, ValueError) as error:
+            raise FunctionTripletExtractionError(
+                f"invalid ownership relation {record.get('id', '<unknown>')}: {error}"
+            ) from error
+        relations.append(relation)
+    return tuple(sorted(relations, key=lambda relation: relation.id))
+
+
+def _required_ownership_string(record: Mapping[str, Any], field: str) -> str:
+    value = record.get(field)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"ownership {field} must be a non-empty string")
+    return value
+
+
+def _ownership_strings(record: Mapping[str, Any], field: str) -> tuple[str, ...]:
+    values = record.get(field, ())
+    if not isinstance(values, (list, tuple)) or any(
+        not isinstance(value, str) or not value for value in values
+    ):
+        raise ValueError(f"ownership {field} must be an array of strings")
+    return tuple(values)
 
 
 def _bypass_semantics(

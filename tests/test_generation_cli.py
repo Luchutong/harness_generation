@@ -12,8 +12,10 @@ from unittest.mock import patch
 from harness_generation.cli import main
 from harness_generation.llm import MockLLM
 from harness_generation.llm import OpenAICompatibleLLM
-from harness_generation.generation_cli import _resolve_llm
+from harness_generation.artifacts import ArtifactStore
+from harness_generation.generation_cli import _publish_harness, _resolve_llm
 from harness_generation.pipeline_validation import PipelineValidationConfig
+from harness_generation.stage4 import Stage4Result
 from harness_generation.triplet import load_triplets_json
 from tests.toolchain_probe import LIBFUZZER_AVAILABLE, LIBFUZZER_SKIP_REASON
 
@@ -437,6 +439,66 @@ class GenerationCLITests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(llm.calls, [])
         self.assertIn("unknown FunctionTriplet", stderr.getvalue())
+
+    def test_limited_build_is_quarantined_without_overwriting_stable_harness(self):
+        store = ArtifactStore(self.artifacts)
+        layout = store.for_triplet(self.triplet.id)
+        layout.ensure_generation()
+        layout.harness.parent.mkdir(parents=True, exist_ok=True)
+        old_source = "/* previously accepted harness */\n"
+        layout.harness.write_text(old_source, encoding="utf-8")
+        layout.write_json(layout.validation_summary, {
+            "schema_version": 1,
+            "overall": "passed_with_limitations",
+            "intermediate": "passed",
+            "compiler": "passed",
+            "linker": "unavailable",
+            "runtime": "skipped",
+        })
+        generated = "int LLVMFuzzerTestOneInput(const unsigned char *data, unsigned long size) { return 0; }\n"
+        result = Stage4Result(
+            triplet_id=self.triplet.id,
+            harness_code=generated,
+            harness_path=layout.stage4_harness,
+            stable_path=None,
+            generation_metadata={},
+            attempt_directory=layout.stage4_attempts / "attempt_001",
+            harness_plan={"schema_version": 1, "triplet_id": self.triplet.id},
+        )
+
+        published = _publish_harness(layout, result)
+
+        self.assertIsNone(published.stable_path)
+        self.assertEqual(layout.harness.read_text(encoding="utf-8"), old_source)
+        quarantine = json.loads((layout.generation / "quarantine.json").read_text())
+        self.assertEqual(quarantine["status"], "quarantined")
+        self.assertEqual(quarantine["validation_status"], "passed_with_limitations")
+        self.assertEqual(quarantine["component_statuses"]["linker"], "unavailable")
+        self.assertEqual(quarantine["component_statuses"]["runtime"], "skipped")
+        self.assertTrue(quarantine["source_sha256"])
+        self.assertTrue(quarantine["plan_sha256"])
+
+    def test_unrecorded_validation_is_quarantined(self):
+        store = ArtifactStore(self.artifacts)
+        layout = store.for_triplet(self.triplet.id)
+        layout.ensure_generation()
+        generated = "int LLVMFuzzerTestOneInput(const unsigned char *data, unsigned long size) { return 0; }\n"
+        result = Stage4Result(
+            triplet_id=self.triplet.id,
+            harness_code=generated,
+            harness_path=layout.stage4_harness,
+            stable_path=None,
+            generation_metadata={},
+            attempt_directory=layout.stage4_attempts / "attempt_001",
+            harness_plan={"schema_version": 1, "triplet_id": self.triplet.id},
+        )
+
+        published = _publish_harness(layout, result)
+
+        self.assertIsNone(published.stable_path)
+        self.assertFalse(layout.harness.exists())
+        quarantine = json.loads((layout.generation / "quarantine.json").read_text())
+        self.assertEqual(quarantine["validation_status"], "not_recorded")
 
     def test_real_provider_requires_explicit_environment_configuration(self):
         stderr = io.StringIO()

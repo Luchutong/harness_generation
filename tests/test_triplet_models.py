@@ -66,7 +66,7 @@ class FunctionTripletSerializationTests(unittest.TestCase):
             set(value),
             {
                 "id", "isf", "prfs", "hpfs", "functions", "structures",
-                "edges", "bypass_semantics", "metadata",
+                "edges", "bypass_semantics", "ownership_relations", "metadata",
             },
         )
         self.assertEqual(value["isf"]["function_id"], self.isf.function_id)
@@ -100,7 +100,7 @@ class FunctionTripletSerializationTests(unittest.TestCase):
             self.assertEqual(first_path.read_bytes(), second_path.read_bytes())
             document = json.loads(first_path.read_text(encoding="utf-8"))
         self.assertEqual(document, triplets_document((first,)))
-        self.assertEqual(document["schema_version"], 3)
+        self.assertEqual(document["schema_version"], 4)
 
     def test_zero_prfs_and_hpfs_are_valid(self):
         triplet = FunctionTriplet(
