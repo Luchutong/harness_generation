@@ -6,12 +6,42 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 from typing import Iterable
 
 from .models import FunctionInfo, OwnershipRelation
 
 OWNERSHIP_SCHEMA_VERSION = 1
+
+
+def _cleanup_contract(function: FunctionInfo) -> tuple[str, str] | None:
+    """Return resource type and argument mode from explicit cleanup evidence."""
+    text = function.signature + " " + function.body + " " + function.documentation
+    if re.search(
+        r"\b(?:do\s+not|does\s+not|never)\s+(?:free|release|destroy|delete)\b",
+        function.documentation, re.I,
+    ):
+        return None
+    parameter = function.parameters[0] if len(function.parameters) == 1 else None
+    match = re.search(
+        r"(?:takes_ownership|cleanup_for)\s*\(\s*(?:const\s+)?([A-Za-z_]\w*(?:\s+[A-Za-z_]\w*)?)\s*\*",
+        text,
+    )
+    if match is None:
+        if not re.search(r"\b(?:free|release|destroy|delete|deallocat\w*)\w*\b", function.documentation, re.IGNORECASE):
+            return None
+        declared_type = parameter.base_type if len(function.parameters) == 1 else None
+    else:
+        declared_type = " ".join(match.group(1).split())
+    if len(function.parameters) != 1:
+        return None
+    if parameter is None or parameter.pointer_depth != 1 or parameter.is_const:
+        return None
+    if declared_type != parameter.base_type:
+        return None
+    mode = "address_of_return_value" if "address_of_return_value" in text else "return_value"
+    return parameter.base_type, mode
 
 
 def derive_ownership_relations(
@@ -33,40 +63,42 @@ def derive_ownership_relations(
             continue
         if not (function.defined or function.id in linkable_ids):
             continue
-        if function.name == "cJSON_Delete" and len(function.parameters) == 1:
-            parameter = function.parameters[0]
-            if parameter.base_type == "cJSON" and parameter.pointer_depth == 1:
-                cleanup_by_type.setdefault("cJSON", []).append(function)
-        if function.name == "cJSON_free" and len(function.parameters) == 1:
-            parameter = function.parameters[0]
-            if parameter.base_type == "void" and parameter.pointer_depth == 1:
-                cleanup_by_type.setdefault("char", []).append(function)
+        contract = _cleanup_contract(function)
+        if contract is None:
+            continue
+        resource_type, _argument = contract
+        cleanup_by_type.setdefault(resource_type, []).append(function)
 
     relations = []
     for producer in records:
         ownership = producer.return_ownership
         if ownership is None or not ownership.owned or not ownership.cleanup_function:
             continue
-        for cleanup in cleanup_by_type.get(ownership.resource_type, ()):
-            identity = "\0".join((producer.id, cleanup.id, ownership.resource_type))
-            digest = hashlib.sha256(("ownership-v1\0" + identity).encode("utf-8")).hexdigest()[:12]
-            relations.append(OwnershipRelation(
-                id=f"own_{producer.name}_{digest}",
-                producer_function_id=producer.id,
-                producer_function=producer.name,
-                resource_type=ownership.resource_type,
-                cleanup_function_id=cleanup.id,
-                cleanup_function=cleanup.name,
-                cleanup_argument=ownership.cleanup_argument,
-                nullable=ownership.nullable,
-                evidence=tuple(sorted(set(ownership.evidence + (
-                    f"cleanup declaration accepts {ownership.resource_type} pointer",
-                    f"matched cleanup function: {cleanup.name}",
-                    "cleanup has external linkage plus a project definition or explicit link manifest entry",
-                )))),
-                confidence=min(ownership.confidence, 1.0),
-                source=ownership.source,
-            ))
+        candidates = [cleanup for cleanup in cleanup_by_type.get(ownership.resource_type, ())
+                      if cleanup.name == ownership.cleanup_function
+                      and (_cleanup_contract(cleanup) or (None, None))[1] == ownership.cleanup_argument]
+        if len(candidates) != 1:
+            continue
+        cleanup = candidates[0]
+        identity = "\0".join((producer.id, cleanup.id, ownership.resource_type))
+        digest = hashlib.sha256(("ownership-v1\0" + identity).encode("utf-8")).hexdigest()[:12]
+        relations.append(OwnershipRelation(
+            id=f"own_{producer.name}_{digest}",
+            producer_function_id=producer.id,
+            producer_function=producer.name,
+            resource_type=ownership.resource_type,
+            cleanup_function_id=cleanup.id,
+            cleanup_function=cleanup.name,
+            cleanup_argument=ownership.cleanup_argument,
+            nullable=ownership.nullable,
+            evidence=tuple(sorted(set(ownership.evidence + (
+                f"cleanup contract accepts {ownership.resource_type} pointer",
+                f"matched cleanup function: {cleanup.name}",
+                "cleanup has external linkage plus a project definition or explicit link manifest entry",
+            )))),
+            confidence=min(ownership.confidence, 1.0),
+            source=ownership.source,
+        ))
     return tuple(sorted(relations, key=lambda relation: relation.id))
 
 

@@ -4,14 +4,31 @@ import tempfile
 import unittest
 
 from harness_generation.artifacts import ArtifactStore
+from harness_generation.target_build import TargetBuildConfig
 from harness_generation.triplet import load_triplets_json
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SIMPLE_ARTIFACTS = ROOT / "artifacts" / "simple"
 
-
 class ArtifactPersistenceTests(unittest.TestCase):
+    def test_target_build_recipe_is_persisted_and_loaded(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "artifacts"
+            config = TargetBuildConfig.for_simple_project(SIMPLE_ARTIFACTS.parent / ".." / "tests" / "fixtures" / "simple_project")
+            store = ArtifactStore(root)
+            path = store.write_target_build(config)
+            document = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(document["schema_version"], 1)
+            self.assertEqual(document["recipe"]["source_files"], ["src/parser.c"])
+            loaded = store.load_target_build(project_root=config.project_root)
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded.to_recipe().identity, config.to_recipe().identity)
+
+    def test_missing_target_build_remains_absent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertIsNone(ArtifactStore(Path(temporary)).load_target_build())
+
     def test_additive_layout_preserves_existing_phase1_artifacts(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "project-artifacts"

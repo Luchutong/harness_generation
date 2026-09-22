@@ -26,6 +26,12 @@ VALIDATION_STATUSES = frozenset({
 })
 
 
+def is_stable_eligible(status: str | None) -> bool:
+    """Return whether a validation status may publish a stable artifact."""
+
+    return status == "passed"
+
+
 _CPP_EVIDENCE = re.compile(
     r"(?:\b(?:class|delete|namespace|new|nullptr|template|typename|using)\b|::|"
     r"\[[=&, ]*\]\s*\()"
@@ -76,6 +82,12 @@ class ValidationResult:
         """Accept only a passed policy, with declared limitations if needed."""
 
         return self.status in {"passed", "passed_with_limitations"}
+
+    @property
+    def stable_eligible(self) -> bool:
+        """Stable publication requires an unqualified validation pass."""
+
+        return is_stable_eligible(self.status)
 
     def to_dict(self) -> dict[str, Any]:
         validator = self.metadata.get("validator", "intermediate")

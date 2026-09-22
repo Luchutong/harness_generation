@@ -197,12 +197,12 @@ class FuzzerBuildValidator:
         )
 
         link_config = CompilerConfig(
-            compiler=self.config.link_compiler,
-            link_flags=self.config.link_flags,
+            compiler=target.linker or self.config.link_compiler,
+            link_flags=_unique_flags(target.link_flags, self.config.link_flags),
             working_directory=target.project_root,
             timeout=target.timeout,
         )
-        link_inputs = (*target_result.object_files, harness_object)
+        link_inputs = (*target_result.link_inputs, harness_object)
         link_command = self.build_adapter.objects_link_command(
             link_inputs, fuzzer, link_config
         )

@@ -4,8 +4,8 @@ import tempfile
 import unittest
 
 from harness_generation.triplet import (FunctionTriplet, TripletBypassSemantic,
-    TripletEdge, TripletFunction, load_triplets_json, stable_triplet_id, triplets_document,
-    write_triplets_json)
+    TripletEdge, TripletFunction, TripletOwnershipRelation, load_triplets_json,
+    stable_triplet_id, triplets_document, write_triplets_json)
 
 
 def function(function_id, name, roles, line):
@@ -108,6 +108,41 @@ class FunctionTripletSerializationTests(unittest.TestCase):
         )
         self.assertEqual(triplet.prfs, ())
         self.assertEqual(triplet.hpfs, ())
+
+    def test_multiple_owned_producers_may_share_cleanup_function(self):
+        alternate = function("src/parser.c:30:parse_alt", "parse_alt", ("PRF",), 30)
+        first = TripletOwnershipRelation(
+            "own_1",
+            self.isf.function_id,
+            self.isf.function,
+            "Context",
+            self.hpf.function_id,
+            self.hpf.function,
+            evidence=("parse returns owned Context",),
+        )
+        second = TripletOwnershipRelation(
+            "own_2",
+            alternate.function_id,
+            alternate.function,
+            "Context",
+            self.hpf.function_id,
+            self.hpf.function,
+            evidence=("parse_alt returns owned Context",),
+        )
+        triplet = FunctionTriplet(
+            self.isf,
+            (alternate,),
+            (self.hpf,),
+            (self.isf, alternate, self.hpf),
+            ("Context",),
+            (self.parse_edge, self.destroy_edge),
+            {},
+            ownership_relations=(second, first),
+        )
+        self.assertEqual(
+            [relation.cleanup_function for relation in triplet.ownership_relations],
+            ["destroy", "destroy"],
+        )
 
     def test_schema_v1_triplets_remain_loadable(self):
         document = triplets_document((self.make_triplet(),))

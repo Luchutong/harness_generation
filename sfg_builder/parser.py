@@ -13,6 +13,7 @@ from typing import Any, Iterable
 
 from .models import (AccessHint, FunctionInfo, ParameterInfo, ReturnValueOwnership,
                      StructInfo)
+from project_catalog import ProjectCatalog
 
 
 DEFAULT_IGNORES = (".git", "build", "out", "cmake-build*", "third_party",
@@ -67,19 +68,20 @@ class CProjectParser:
                 warnings.append(f"{relative}: could not read source ({type(exc).__name__})")
         resolver = TypeResolver(structs)
         functions = tuple(_resolve_function(item.function, resolver) for item in raw_functions)
-        functions = _deduplicate_functions(functions)
+        functions = _apply_documented_family_ownership(
+            _deduplicate_functions(functions)
+        )
         return ParseResult(functions, resolver.structs, tuple(
             path.relative_to(project).as_posix() for path in paths), tuple(warnings))
 
     def _source_files(self, project: Path) -> Iterable[Path]:
-        for path in sorted(project.rglob("*")):
-            if not path.is_file() or path.suffix.lower() not in SOURCE_SUFFIXES:
-                continue
-            relative_parts = path.relative_to(project).parts[:-1]
-            if any(any(fnmatch.fnmatch(part, pattern) for pattern in self.ignored_directories)
-                   for part in relative_parts):
-                continue
-            yield path
+        catalog = ProjectCatalog.discover(
+            project,
+            ignored_directories=self.ignored_directories,
+            source_suffixes=SOURCE_SUFFIXES,
+            header_suffixes=(),
+        )
+        yield from catalog.sources
 
 
 class TypeResolver:
@@ -234,8 +236,10 @@ def _extract_functions(root, source: bytes, relative: str) -> list[_ParsedFuncti
             function_id, name, relative, node.start_point[0] + 1, node.end_point[0] + 1,
             return_type, return_base, return_depth, False, parameters,
             signature, body, defined, storage,
-            return_ownership=_return_ownership(name, return_base, return_depth, signature),
+            return_ownership=_return_ownership(source, node, name, return_base,
+                                               return_depth, signature),
             return_type_annotations=annotations,
+            documentation=_leading_comment_text(source, node.start_byte),
         )
         result.append(_ParsedFunction(function, return_base))
     return result
@@ -283,7 +287,8 @@ def _return_type_details(source: bytes, node, declarator, function_declarator,
     name = _text(source, name_node)
     prefix = signature.split(name, 1)[0].strip() if name in signature else ast_base
     macro = re.search(
-        r"\b(CJSON_PUBLIC)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)",
+        r"\b([A-Z][A-Z0-9_]*(?:_PUBLIC|_API)|API|EXPORT)\s*"
+        r"\(([^()]*(?:\([^()]*\)[^()]*)*)\)",
         prefix,
     )
     if macro:
@@ -305,23 +310,75 @@ def _return_type_details(source: bytes, node, declarator, function_declarator,
     return base, depth, _render_type(base, depth, qualifiers), tuple(dict.fromkeys(annotations))
 
 
-def _return_ownership(name: str, base_type: str, pointer_depth: int,
-                      signature: str) -> ReturnValueOwnership | None:
-    if pointer_depth == 1 and base_type == "cJSON" and name.startswith("cJSON_Parse"):
-        return ReturnValueOwnership(
-            "owned_pointer", "cJSON", True, True, "cJSON_Delete", "return_value",
-            (f"{name} returns cJSON *", "cJSON parse results are caller-owned"),
-            1.0, "static_signature_and_api_family",
+def _return_ownership(source: bytes, node, name: str, base_type: str,
+                      pointer_depth: int, signature: str) -> ReturnValueOwnership | None:
+    """Extract ownership only from explicit, source-level contract evidence.
+
+    Names and return types are deliberately insufficient.  A producer must carry
+    an ownership annotation that names the cleanup API. This keeps parser output
+    useful for generic projects while failing closed for borrowed or undocumented
+    pointers.
+    """
+    if pointer_depth != 1 or not base_type:
+        return None
+    contract_text = _text(source, node)
+    leading_comments = _leading_comment_text(source, node.start_byte)
+    contract_text = leading_comments + "\n" + contract_text
+    cleanup_match = re.search(
+        r"(?:returns_owned|ownership_returns|cleanup_function)\s*\(\s*([A-Za-z_]\w*)\s*\)",
+        contract_text,
+    )
+    if cleanup_match is None:
+        cleanup_match = re.search(
+            r"(?:free|freed|release|released|destroy|destroyed|delete|deleted|"
+            r"deallocat\w*)[^.;\n]{0,160}?(?:with|using|via|by calling|call(?:ed)?)\s+"
+            r"([A-Za-z_]\w*)\s*(?:\(|\b)",
+            leading_comments,
+            flags=re.IGNORECASE,
         )
-    if pointer_depth == 1 and base_type == "char" and name in {
-        "cJSON_Print", "cJSON_PrintUnformatted",
-    }:
-        return ReturnValueOwnership(
-            "owned_pointer", "char", True, True, "cJSON_free", "return_value",
-            (f"{name} returns char *", "cJSON print results are caller-owned"),
-            1.0, "static_signature_and_api_family",
-        )
-    return None
+    malloc_evidence = bool(re.search(r"__attribute__\s*\(\(\s*malloc\b", contract_text))
+    if cleanup_match is None:
+        return None
+    cleanup_function = cleanup_match.group(1)
+    evidence = [
+        "explicit return ownership contract names cleanup function " + cleanup_function,
+    ]
+    if malloc_evidence:
+        evidence.append("malloc return attribute")
+    return ReturnValueOwnership(
+        "owned_pointer", base_type, True, True, cleanup_function, "return_value",
+        tuple(evidence), 1.0 if malloc_evidence else 0.9, "explicit_source_contract",
+    )
+
+
+def _leading_comment_text(source: bytes, start_byte: int) -> str:
+    """Return contiguous comments immediately preceding a declaration."""
+    prefix = source[:start_byte].decode("utf-8", errors="replace")
+    lines = prefix.splitlines()
+    comments: list[str] = []
+    in_block = False
+    for line in reversed(lines):
+        stripped = line.strip()
+        if in_block:
+            comments.append(stripped)
+            if "/*" in stripped:
+                in_block = False
+            continue
+        if stripped.startswith("//"):
+            comments.append(stripped[2:].strip())
+            continue
+        if stripped.endswith("*/") or stripped.startswith("*"):
+            in_block = True
+            comments.append(stripped.strip("/* "))
+            if "/*" in stripped:
+                in_block = False
+            continue
+        if not stripped:
+            if comments:
+                break
+            continue
+        break
+    return " ".join(reversed(comments))
 
 
 def _return_pointer_depth(declarator, function_declarator) -> int:
@@ -473,11 +530,91 @@ def _deduplicate_functions(functions: tuple[FunctionInfo, ...]) -> tuple[Functio
     result = []
     for values in groups.values():
         definitions = [value for value in values if value.defined]
+        documentation = "\n".join(dict.fromkeys(
+            value.documentation for value in values if value.documentation
+        ))
+        ownership_claims = tuple(dict.fromkeys(
+            value.return_ownership for value in values
+            if value.return_ownership is not None
+        ))
         if definitions:
-            result.extend(definitions)
+            for definition in definitions:
+                result.append(replace(
+                    definition,
+                    documentation=documentation,
+                    return_ownership=(
+                        definition.return_ownership
+                        or (ownership_claims[0] if len(ownership_claims) == 1 else None)
+                    ),
+                ))
         else:
-            result.append(values[0])
+            result.append(replace(
+                values[0],
+                documentation=documentation,
+                return_ownership=(
+                    values[0].return_ownership
+                    or (ownership_claims[0] if len(ownership_claims) == 1 else None)
+                ),
+            ))
     return tuple(sorted(result, key=lambda item: (item.file, item.start_line, item.name)))
+
+
+def _apply_documented_family_ownership(
+    functions: tuple[FunctionInfo, ...],
+) -> tuple[FunctionInfo, ...]:
+    """Apply explicit family-wide ownership prose to matching return types.
+
+    A project's header may document a family once rather than repeat the
+    contract on every overload or variant. The cleanup name still has to pass
+    the independent type/linkage check in derive_ownership_relations.
+    """
+    claims: dict[str, set[tuple[str, str]]] = {}
+    family_members = {function.name: function for function in functions}
+    for function in functions:
+        documentation = function.documentation
+        if not re.search(r"\bcaller\b[^.]*\bresponsible\b[^.]*\bfree\b", documentation, re.I):
+            continue
+        for family, cleanup in re.findall(
+            r"\ball\s+(?:variants|forms)\s+of\s+([A-Za-z_]\w*)\s*"
+            r"\(\s*with\s+([A-Za-z_]\w*)\s*\)",
+            documentation,
+            flags=re.I,
+        ):
+            exemplar = family_members.get(family)
+            if exemplar is None or exemplar.return_pointer_depth != 1:
+                continue
+            claims.setdefault(family, set()).add((cleanup, exemplar.return_base_type))
+    resolved: list[FunctionInfo] = []
+    for function in functions:
+        if function.return_ownership is not None or function.return_pointer_depth != 1:
+            resolved.append(function)
+            continue
+        if re.search(
+            r"\b(?:borrowed|not\s+owned|(?:do\s+not|must\s+not|never)\s+"
+            r"(?:free|release|destroy|delete))\b",
+            function.documentation,
+            flags=re.I,
+        ):
+            resolved.append(function)
+            continue
+        matches = {
+            (cleanup, resource_type)
+            for family, family_claims in claims.items()
+            if function.name.startswith(family)
+            for cleanup, resource_type in family_claims
+            if resource_type == function.return_base_type
+        }
+        if len(matches) != 1:
+            resolved.append(function)
+            continue
+        cleanup, resource_type = next(iter(matches))
+        resolved.append(replace(function, return_ownership=ReturnValueOwnership(
+            "owned_pointer", resource_type, True, True, cleanup, "return_value",
+            (f"project documentation assigns caller-owned results from the "
+             f"{function.name} family to {cleanup}",),
+            0.9, "documented_family_contract",
+        )))
+    return tuple(resolved)
 
 
 def write_functions_json(result: ParseResult, path: Path, *, project: Path | None = None) -> Path:

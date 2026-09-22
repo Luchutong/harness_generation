@@ -208,7 +208,6 @@ class FunctionTriplet(Serializable):
         relation_ids = set()
         function_names = {function.function_id: function.function for function in functions}
         known_names = set(function_names.values())
-        cleanup_names: set[str] = set()
         for relation in self.ownership_relations:
             if relation.id in relation_ids:
                 raise ValueError(f"duplicate ownership relation: {relation.id}")
@@ -219,12 +218,6 @@ class FunctionTriplet(Serializable):
                 raise ValueError("ownership relation producer name does not match its id")
             if any(consumer not in known_names for consumer in relation.consumers):
                 raise ValueError("ownership relation consumer is outside functions")
-            if relation.cleanup_function in cleanup_names:
-                raise ValueError(
-                    "ambiguous ownership relations share cleanup function: "
-                    + relation.cleanup_function
-                )
-            cleanup_names.add(relation.cleanup_function)
 
         structures = tuple(sorted(set(self.structures)))
         if any(not structure for structure in structures):

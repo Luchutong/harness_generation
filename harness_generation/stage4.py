@@ -15,14 +15,29 @@ from .generation_context import (bounded_validation_feedback,
                                  project_type_context)
 from .llm import LLMClient, LLMGeneration
 from .policy import FORBIDDEN_LOGGING_FUNCTIONS
+from .project_functions import ProjectFunctionIndex
+from .protocol_ir import ProtocolIR, ProtocolIRError
+from .protocol_plan_validation import (
+    protocol_contract_projection,
+    validate_plan_contract,
+)
+from .protocol_reconciliation import reconcile_protocol_ir
 from .prompts import stage4_harness_plan, stage4_harness_transform
 from .sfg_adapter import is_null_node
 from .source_paths import SUPPORTED_FUNCTIONS_SCHEMA_VERSIONS
 from .stage4_outcome import record_parse_result
+from .target_contract import TargetContract, TargetContractError
 from .triplet import FunctionTriplet, TripletOwnershipRelation
 
 
 FUZZ_ENTRY = "LLVMFuzzerTestOneInput"
+HARNESS_PLAN_SCHEMA_VERSION = 2
+SUPPORTED_HARNESS_PLAN_SCHEMA_VERSIONS = frozenset({1, HARNESS_PLAN_SCHEMA_VERSION})
+_PLAN_V2_IMMUTABLE_FIELDS = frozenset({
+    "triplet_id", "entrypoint", "contract_fact_ids", "state_objects", "call_sequence",
+    "cleanup_sequence", "constraints",
+})
+_PLAN_V2_TUNABLE_FIELDS = frozenset({"input_strategy", "notes"})
 _FILE_IO_CALLS = {
     "fopen", "freopen", "fdopen", "fclose", "fread", "fwrite",
     "fseek", "ftell", "fgetpos", "fsetpos", "rewind", "tmpfile",
@@ -51,10 +66,24 @@ class HarnessPlan:
     constraints: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
     generation_metadata: Mapping[str, Any] = field(default_factory=dict)
+    protocol_contract_bindings: Mapping[str, Any] | None = None
     schema_version: int = 1
+    contract_id: str | None = None
+    contract_fact_ids: tuple[str, ...] = ()
+    immutable_fields: tuple[str, ...] = ()
+    tunable_fields: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if isinstance(self.schema_version, bool) or self.schema_version not in SUPPORTED_HARNESS_PLAN_SCHEMA_VERSIONS:
+            raise Stage4Error("HarnessPlan requires schema_version 1 or 2")
+        if self.schema_version == HARNESS_PLAN_SCHEMA_VERSION:
+            _validate_v2_mutability(
+                self.contract_id, self.immutable_fields, self.tunable_fields,
+                self.contract_fact_ids,
+            )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        document = {
             "schema_version": self.schema_version,
             "triplet_id": self.triplet_id,
             "entrypoint": self.entrypoint,
@@ -65,7 +94,17 @@ class HarnessPlan:
             "constraints": list(self.constraints),
             "notes": list(self.notes),
             "generation_metadata": dict(self.generation_metadata),
+            **({"protocol_contract_bindings": dict(self.protocol_contract_bindings)}
+               if self.protocol_contract_bindings is not None else {}),
         }
+        if self.schema_version == HARNESS_PLAN_SCHEMA_VERSION:
+            document.update({
+                "contract_id": self.contract_id,
+                "contract_fact_ids": list(self.contract_fact_ids),
+                "immutable_fields": list(self.immutable_fields),
+                "tunable_fields": list(self.tunable_fields),
+            })
+        return document
 
 
 @dataclass(frozen=True)
@@ -105,12 +144,22 @@ class _Call:
 
 
 @dataclass(frozen=True)
+class _Assignment:
+    target: str
+    dependencies: tuple[str, ...]
+    expression: str
+    start_byte: int
+    whole_target: bool
+
+
+@dataclass(frozen=True)
 class _FunctionDefinition:
     name: str
     return_type: str
     parameters: tuple[_Parameter, ...]
     calls: tuple[_Call, ...]
     identifiers: tuple[str, ...]
+    assignments: tuple[_Assignment, ...]
 
 
 @dataclass(frozen=True)
@@ -132,15 +181,39 @@ class Stage4Generator:
         rough_code: str | Path,
         functions_json: str | Path,
         artifacts: str | Path,
-        publish: bool = True,
+        publish: bool = False,
         rollback_source: str | None = None,
         retry_reason: str | None = None,
         retry_context: Mapping[str, Any] | None = None,
+        parent_plan: Mapping[str, Any] | None = None,
+        optimization_feedback: Mapping[str, Any] | None = None,
     ) -> Stage4Result:
+        if publish:
+            raise Stage4Error("stable publication requires formal pipeline validation")
         rough_source = _load_rough_code(rough_code)
         function_metadata, all_project_functions, project_context = _load_function_metadata(
             Path(functions_json), triplet
         )
+        protocol_ir = load_protocol_ir(artifacts)
+        project_index = ProjectFunctionIndex.from_records(
+            json.loads(Path(functions_json).read_text(encoding="utf-8")).get("functions", [])
+        )
+        reconciliation = reconcile_protocol_ir(protocol_ir, triplet, project_index)
+        if not reconciliation.ok:
+            raise Stage4Error(
+                "protocol_ir.json does not reconcile with the FT: "
+                + "; ".join(reconciliation.diagnostics)
+            )
+        projection = protocol_contract_projection(
+            protocol_ir, callable_helpers=reconciliation.callable_helpers
+        )
+        protocol_contract = None if protocol_ir is None else protocol_ir.to_protocol_contract()
+        target_contract = _load_target_contract(artifacts, triplet)
+        contract_id = target_contract.contract_id
+        contract_fact_ids = tuple(sorted(
+            {fact.id for fact in target_contract.facts}
+            | {resource.id for resource in target_contract.resources}
+        ))
         isf_metadata = function_metadata[triplet.isf.function_id]
         validation_feedback = _stage4_validation_feedback(
             retry_context,
@@ -169,7 +242,16 @@ class Stage4Generator:
                 relation.to_dict() for relation in triplet.ownership_relations
             ],
             project_context=project_context,
+            protocol_contract=protocol_contract,
+            protocol_contract_bindings=(
+                None if projection is None else projection.renderable()
+            ),
+            contract_id=contract_id,
+            contract_fact_ids=contract_fact_ids,
+            target_contract=target_contract.to_dict(),
             validation_feedback=validation_feedback,
+            parent_plan=parent_plan,
+            optimization_feedback=optimization_feedback,
         )
         layout = ArtifactStore(Path(artifacts)).for_triplet(triplet.id)
         layout.ensure_generation()
@@ -181,6 +263,15 @@ class Stage4Generator:
                 plan_generation.content,
                 triplet=triplet,
                 isf_metadata=isf_metadata,
+                protocol_projection=projection,
+                contract_id=contract_id,
+                contract_fact_ids=contract_fact_ids,
+                target_contract=target_contract,
+            )
+            _validate_parent_plan_revision(
+                parent_plan,
+                harness_plan.to_dict(),
+                contract_id=contract_id,
             )
             harness_plan = replace(
                 harness_plan,
@@ -229,6 +320,13 @@ class Stage4Generator:
                 relation.to_dict() for relation in triplet.ownership_relations
             ],
             project_context=project_context,
+            protocol_contract=protocol_contract,
+            protocol_contract_bindings=(
+                None if projection is None else projection.renderable()
+            ),
+            contract_id=contract_id,
+            contract_fact_ids=contract_fact_ids,
+            target_contract=target_contract.to_dict(),
             validation_feedback=validation_feedback,
         )
         layout.write_text(attempt_directory / "prompt.txt", prompt.content)
@@ -265,6 +363,8 @@ class Stage4Generator:
                 isf_metadata,
                 all_project_functions,
                 harness_plan,
+                protocol_helpers=reconciliation.callable_helpers,
+                project_index=project_index,
             )
         except Exception as error:
             record_parse_result(attempt_directory, {
@@ -280,9 +380,8 @@ class Stage4Generator:
         layout.write_json(layout.stage4_harness_plan, harness_plan.to_dict())
         layout.write_text(harness_path, persisted)
         stable_path = None
-        if publish:
-            stable_path = layout.harness
-            layout.write_text(stable_path, persisted)
+        # Stage 4 only writes the candidate artifact. Stable publication is owned
+        # by the formal validation/promotion gate in the generation pipeline.
         record_parse_result(attempt_directory, {
             "status": "passed",
             "harness_plan": harness_plan.to_dict(),
@@ -307,7 +406,7 @@ def generate_stage4_harness(
     rough_code: str | Path,
     functions_json: str | Path,
     artifacts: str | Path,
-    publish: bool = True,
+    publish: bool = False,
 ) -> Stage4Result:
     return Stage4Generator(llm).run(
         triplet,
@@ -316,6 +415,134 @@ def generate_stage4_harness(
         artifacts=artifacts,
         publish=publish,
     )
+
+
+def _load_protocol_ir(artifacts: str | Path) -> ProtocolIR | None:
+    path = ArtifactStore(Path(artifacts)).protocol_ir
+    if not path.is_file():
+        return None
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        return ProtocolIR.from_json(document)
+    except (OSError, UnicodeError, json.JSONDecodeError, ProtocolIRError) as error:
+        raise Stage4Error(f"cannot load protocol_ir.json: {type(error).__name__}") from error
+
+load_protocol_ir = _load_protocol_ir
+
+
+def _load_harness_contract_id(
+    artifacts: str | Path, triplet: FunctionTriplet,
+) -> str:
+    """Load the persisted target identity, with a deterministic FT fallback."""
+
+    path = ArtifactStore(Path(artifacts)).contract
+    if path.is_file():
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+            return TargetContract.from_dict(document).contract_id
+        except (OSError, UnicodeError, json.JSONDecodeError, TargetContractError) as error:
+            raise Stage4Error(
+                f"cannot load target_contract.json: {type(error).__name__}"
+            ) from error
+    return TargetContract.from_triplet(triplet).contract_id
+
+
+def _load_target_contract(
+    artifacts: str | Path, triplet: FunctionTriplet,
+) -> TargetContract:
+    path = ArtifactStore(Path(artifacts)).contract
+    if not path.is_file():
+        return TargetContract.from_triplet(triplet)
+    try:
+        contract = TargetContract.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, UnicodeError, json.JSONDecodeError, TargetContractError) as error:
+        raise Stage4Error(f"cannot load target_contract.json: {type(error).__name__}") from error
+    if contract.entry_function != triplet.isf.function:
+        raise Stage4Error("target contract entry_function does not match the FT")
+    return contract
+
+
+def _load_harness_contract_fact_ids(
+    artifacts: str | Path, triplet: FunctionTriplet,
+) -> tuple[str, ...]:
+    """Load immutable fact identities used by a v2 plan."""
+    path = ArtifactStore(Path(artifacts)).contract
+    if not path.is_file():
+        return tuple(relation.id for relation in triplet.ownership_relations)
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        contract = TargetContract.from_dict(document)
+    except (OSError, UnicodeError, json.JSONDecodeError, TargetContractError) as error:
+        raise Stage4Error(
+            f"cannot load target_contract.json: {type(error).__name__}"
+        ) from error
+    return tuple(sorted({fact.id for fact in contract.facts} | {
+        resource.id for resource in contract.resources
+    }))
+
+def _validate_v2_mutability(
+    contract_id: Any,
+    immutable_fields: Iterable[str],
+    tunable_fields: Iterable[str],
+    contract_fact_ids: Any = (),
+) -> None:
+    if not isinstance(contract_id, str) or not contract_id.strip():
+        raise Stage4Error("HarnessPlan schema_version 2 requires contract_id")
+    immutable = tuple(immutable_fields)
+    tunable = tuple(tunable_fields)
+    if any(not isinstance(item, str) for item in (*immutable, *tunable)):
+        raise Stage4Error("HarnessPlan v2 field classifications must be strings")
+    if set(immutable) != _PLAN_V2_IMMUTABLE_FIELDS:
+        raise Stage4Error("HarnessPlan v2 immutable_fields must classify the frozen plan fields")
+    contract_fact_ids = tuple(contract_fact_ids)
+    if any(not isinstance(item, str) or not item.strip() for item in contract_fact_ids):
+        raise Stage4Error("HarnessPlan v2 contract_fact_ids must be strings")
+    if len(set(contract_fact_ids)) != len(contract_fact_ids):
+        raise Stage4Error("HarnessPlan v2 contract_fact_ids must be unique")
+    if set(tunable) != _PLAN_V2_TUNABLE_FIELDS:
+        raise Stage4Error("HarnessPlan v2 tunable_fields must classify input_strategy and notes")
+    if set(immutable) & set(tunable):
+        raise Stage4Error("HarnessPlan v2 immutable and tunable fields must be disjoint")
+
+
+def _validate_parent_plan_revision(
+    parent_plan: Mapping[str, Any] | None,
+    child_plan: Mapping[str, Any],
+    *,
+    contract_id: str,
+) -> None:
+    """Allow optimization retries to change only explicitly tunable fields."""
+    if parent_plan is None:
+        return
+    if not isinstance(parent_plan, Mapping):
+        raise Stage4Error("parent_plan must be an object")
+    if not isinstance(child_plan, Mapping):
+        raise Stage4Error("generated HarnessPlan must be an object")
+    parent_schema = parent_plan.get("schema_version", 1)
+    child_schema = child_plan.get("schema_version", 1)
+    if parent_schema != child_schema:
+        raise Stage4Error("parent and child HarnessPlan schema versions must match")
+    if parent_schema == HARNESS_PLAN_SCHEMA_VERSION:
+        if parent_plan.get("contract_id") != contract_id:
+            raise Stage4Error("parent HarnessPlan contract_id does not match the target contract")
+        if child_plan.get("contract_id") != contract_id:
+            raise Stage4Error("child HarnessPlan contract_id does not match the target contract")
+        immutable = _PLAN_V2_IMMUTABLE_FIELDS
+    elif parent_schema == 1:
+        # Legacy plans have no classification metadata; preserve their frozen
+        # fields conservatively while allowing input strategy and notes to vary.
+        immutable = _PLAN_V2_IMMUTABLE_FIELDS
+    else:
+        raise Stage4Error("parent HarnessPlan requires schema_version 1 or 2")
+    changed = [
+        field for field in sorted(immutable)
+        if parent_plan.get(field) != child_plan.get(field)
+    ]
+    if changed:
+        raise Stage4Error(
+            "HarnessPlan revision may change only tunable fields: "
+            + ", ".join(changed)
+        )
 
 
 def _load_rough_code(value: str | Path) -> str:
@@ -405,6 +632,10 @@ def parse_harness_plan(
     *,
     triplet: FunctionTriplet,
     isf_metadata: Mapping[str, Any],
+    protocol_projection: Any = None,
+    contract_id: str | None = None,
+    contract_fact_ids: Iterable[str] = (),
+    target_contract: TargetContract | None = None,
 ) -> HarnessPlan:
     """Parse and validate the strict JSON HarnessPlan returned by the LLM."""
 
@@ -418,8 +649,24 @@ def parse_harness_plan(
         raise Stage4Error(f"HarnessPlan is not valid JSON: {error}") from error
     if not isinstance(document, Mapping):
         raise Stage4Error("HarnessPlan must be a JSON object")
-    if document.get("schema_version") != 1:
-        raise Stage4Error("HarnessPlan requires schema_version 1")
+    schema_version = document.get("schema_version")
+    if schema_version not in SUPPORTED_HARNESS_PLAN_SCHEMA_VERSIONS:
+        raise Stage4Error("HarnessPlan requires schema_version 1 or 2")
+    if schema_version == HARNESS_PLAN_SCHEMA_VERSION:
+        if contract_id is None:
+            raise Stage4Error("HarnessPlan schema_version 2 requires a target contract")
+        if document.get("contract_id") != contract_id:
+            raise Stage4Error("HarnessPlan contract_id does not match the target contract")
+        _validate_v2_mutability(
+            document.get("contract_id"),
+            document.get("immutable_fields", ()),
+            document.get("tunable_fields", ()),
+            document.get("contract_fact_ids", ()),
+        )
+        expected_fact_ids = tuple(sorted(set(contract_fact_ids)))
+        observed_fact_ids = tuple(sorted(set(document.get("contract_fact_ids", ()))))
+        if observed_fact_ids != expected_fact_ids:
+            raise Stage4Error("HarnessPlan contract_fact_ids do not match the target contract")
     if document.get("triplet_id") != triplet.id:
         raise Stage4Error("HarnessPlan triplet_id does not match the FT")
     if document.get("entrypoint") != FUZZ_ENTRY:
@@ -434,6 +681,25 @@ def parse_harness_plan(
     input_strategy = document.get("input_strategy")
     if not isinstance(input_strategy, Mapping):
         raise Stage4Error("HarnessPlan input_strategy must be an object")
+    if input_strategy.get("mode") == "grammar" and not (
+        target_contract is not None and target_contract.input is not None
+        and target_contract.input.mode == "grammar"
+        and target_contract.input.status in {"known", "inferred"}
+    ):
+        raise Stage4Error("grammar input mode requires a known grammar contract")
+    if (target_contract is not None and target_contract.input is not None
+            and target_contract.input.mode == "grammar"
+            and target_contract.input.status in {"known", "inferred"}):
+        if input_strategy.get("mode") != "grammar":
+            raise Stage4Error("HarnessPlan must select the declared grammar input mode")
+        if input_strategy.get("start_symbol") != target_contract.input.grammar["start"]:
+            raise Stage4Error("HarnessPlan grammar start_symbol must match the contract")
+        for field_name in ("max_depth", "max_output_bytes"):
+            value = input_strategy.get(field_name)
+            if type(value) is not int or value < 1:
+                raise Stage4Error(
+                    f"grammar input strategy requires positive {field_name}"
+                )
     if input_strategy.get("data_identifier") != "data" or \
             input_strategy.get("size_identifier") != "size":
         raise Stage4Error("HarnessPlan must bind fuzzer data and size identifiers")
@@ -443,6 +709,18 @@ def parse_harness_plan(
     state_objects = _plan_object_list(document, "state_objects")
     constraints = _plan_string_list(document, "constraints")
     notes = _plan_string_list(document, "notes")
+    protocol_bindings = document.get("protocol_contract_bindings")
+    if protocol_bindings is not None and not isinstance(protocol_bindings, Mapping):
+        raise Stage4Error("HarnessPlan protocol_contract_bindings must be an object")
+    conformance = validate_plan_contract(
+        protocol_bindings,
+        projection=protocol_projection,
+        input_strategy=input_strategy,
+    )
+    if not conformance.ok:
+        raise Stage4Error("HarnessPlan violates protocol contract: " + "; ".join(
+            conformance.violations
+        ))
 
     expected = {function.function for function in triplet.functions}
     ownership_by_id = {relation.id: relation for relation in triplet.ownership_relations}
@@ -493,7 +771,14 @@ def parse_harness_plan(
     if missing:
         raise Stage4Error("HarnessPlan omits FT functions: " + ", ".join(missing))
     duplicated = sorted(
-        name for name in set(all_planned) if all_planned.count(name) > 1
+        name for name in set(all_planned)
+        if _is_disallowed_duplicate_plan_function(
+            name,
+            planned_calls,
+            list(cleanup_sequence),
+            planned_cleanup,
+            ownership_by_id,
+        )
     )
     if duplicated:
         raise Stage4Error(
@@ -540,6 +825,14 @@ def parse_harness_plan(
         cleanup_sequence=tuple(dict(item) for item in cleanup_sequence),
         constraints=tuple(constraints),
         notes=tuple(notes),
+        protocol_contract_bindings=(
+            None if protocol_bindings is None else dict(protocol_bindings)
+        ),
+        schema_version=schema_version,
+        contract_id=(contract_id if schema_version == HARNESS_PLAN_SCHEMA_VERSION else None),
+        contract_fact_ids=tuple(document.get("contract_fact_ids", ())) if schema_version == HARNESS_PLAN_SCHEMA_VERSION else (),
+        immutable_fields=tuple(document.get("immutable_fields", ())) if schema_version == HARNESS_PLAN_SCHEMA_VERSION else (),
+        tunable_fields=tuple(document.get("tunable_fields", ())) if schema_version == HARNESS_PLAN_SCHEMA_VERSION else (),
     )
 
 
@@ -593,6 +886,37 @@ def _validate_ownership_plan_item(
             raise Stage4Error(
                 f"nullable ownership cleanup {relation.cleanup_function} requires explicit conditions"
             )
+
+
+def _is_disallowed_duplicate_plan_function(
+    name: str,
+    planned_calls: list[str],
+    cleanup_sequence: list[Mapping[str, Any]],
+    planned_cleanup: list[str],
+    ownership_by_id: Mapping[str, TripletOwnershipRelation],
+) -> bool:
+    occurrences = planned_calls.count(name) + planned_cleanup.count(name)
+    if occurrences <= 1:
+        return False
+    cleanup_items = [
+        item for item, function in zip(cleanup_sequence, planned_cleanup)
+        if function == name
+    ]
+    relation_ids = [
+        relation_id for relation_id in (item.get("relation_id") for item in cleanup_items)
+        if isinstance(relation_id, str)
+    ]
+    return not (
+        planned_calls.count(name) == 0
+        and len(cleanup_items) == occurrences
+        and len(relation_ids) == occurrences
+        and len(set(relation_ids)) == occurrences
+        and all(
+            relation_id in ownership_by_id
+            and ownership_by_id[relation_id].cleanup_function == name
+            for relation_id in relation_ids
+        )
+    )
 
 
 def _plan_object_list(document: Mapping[str, Any], field: str) -> tuple[Mapping[str, Any], ...]:
@@ -744,6 +1068,7 @@ def _analyze_cpp(source: str) -> _HarnessAnalysis:
                 for current in _walk(body)
                 if current.type == "identifier"
             })) if body is not None else (),
+            assignments=tuple(_assignments(body, encoded)) if body is not None else (),
         ))
     return _HarnessAnalysis(tuple(functions), tuple(all_calls))
 
@@ -754,6 +1079,9 @@ def _validate_harness(
     isf_metadata: Mapping[str, Any],
     all_project_functions: set[str],
     plan: HarnessPlan,
+    *,
+    protocol_helpers: Iterable[str] = (),
+    project_index: ProjectFunctionIndex | None = None,
 ) -> None:
     definitions = [function.name for function in analysis.functions]
     if definitions.count(FUZZ_ENTRY) != 1:
@@ -782,27 +1110,47 @@ def _validate_harness(
     local_functions = set(definitions)
     expected = {function.function for function in triplet.functions}
     ownership_cleanup = {
-        relation.cleanup_function: relation for relation in triplet.ownership_relations
+        relation.cleanup_function for relation in triplet.ownership_relations
     }
-    planned_cleanup = {
-        item.get("function"): item for item in plan.cleanup_sequence
+    planned_by_relation = {
+        item.get("relation_id"): item
+        for item in plan.cleanup_sequence
+        if isinstance(item.get("relation_id"), str)
     }
-    allowed_cleanup = set(ownership_cleanup) & set(planned_cleanup)
-    for cleanup_name, relation in ownership_cleanup.items():
-        if cleanup_name not in planned_cleanup or cleanup_name in expected:
+    allowed_cleanup = {
+        relation.cleanup_function
+        for relation in triplet.ownership_relations
+        if relation.id in planned_by_relation
+    }
+    protocol_allowed = set(protocol_helpers)
+    for relation in triplet.ownership_relations:
+        if relation.cleanup_function in expected:
             continue
-        item = planned_cleanup[cleanup_name]
+        item = planned_by_relation.get(relation.id)
+        if item is None:
+            continue
         if relation.nullable and not item.get("conditions"):
             raise Stage4Error(
-                f"nullable ownership cleanup {cleanup_name} requires explicit conditions"
+                f"nullable ownership cleanup {relation.cleanup_function} requires explicit conditions"
             )
+    non_linkable = []
+    if project_index is not None:
+        non_linkable = sorted(
+            name for name in calls
+            if name not in expected | allowed_cleanup | protocol_allowed
+            and project_index.resolve(name).status != "linkable"
+            and name in project_index.names
+        )
+    if non_linkable:
+        reasons = "; ".join(project_index.resolve(name).why() for name in non_linkable)
+        raise Stage4Error("Stage 4 harness calls non-linkable project APIs: " + reasons)
     outside_ft = sorted(
-        calls & (all_project_functions - expected - allowed_cleanup)
+        calls & (all_project_functions - expected - allowed_cleanup - protocol_allowed)
     )
     if outside_ft:
         raise Stage4Error("Stage 4 harness calls project APIs outside the FT: " +
                           ", ".join(outside_ft))
-    allowed = expected | local_functions | _STANDARD_C_CALLS | allowed_cleanup
+    allowed = expected | local_functions | _STANDARD_C_CALLS | allowed_cleanup | protocol_allowed
     unknown = sorted(calls - allowed)
     if unknown:
         raise Stage4Error("Stage 4 harness calls unknown APIs: " + ", ".join(unknown))
@@ -816,7 +1164,9 @@ def _validate_harness(
     isf_calls = [call for call in entry_calls if call.name == triplet.isf.function]
     if not isf_calls:
         raise Stage4Error("Stage 4 harness does not invoke the unique ISF")
-    if not any(_isf_uses_external_input(call, isf_metadata) for call in isf_calls):
+    if not any(_isf_uses_external_input(
+        call, isf_metadata, entry.assignments, plan.input_strategy,
+    ) for call in isf_calls):
         raise Stage4Error("Stage 4 ISF call is not connected to external data/size")
 
     first_isf = min(call.start_byte for call in isf_calls)
@@ -876,20 +1226,31 @@ def _validate_ownership_calls(
             raise Stage4Error(
                 f"ownership producer {relation.producer_function} must save its return value as {identifier}"
             )
-        cleanup_calls = [call for call in calls if call.name == relation.cleanup_function]
+        expected_argument = identifier if relation.cleanup_argument == "return_value" else "&" + identifier
+        cleanup_calls = [
+            call for call in calls
+            if call.name == relation.cleanup_function
+            and len(call.arguments) == 1
+            and call.arguments[0].text.strip() == expected_argument
+        ]
         if len(cleanup_calls) != 1:
             raise Stage4Error(
-                f"ownership cleanup {relation.cleanup_function} must be invoked exactly once"
+                f"ownership cleanup {relation.cleanup_function} must release {expected_argument} exactly once"
             )
         cleanup = cleanup_calls[0]
-        expected_argument = identifier if relation.cleanup_argument == "return_value" else "&" + identifier
-        if len(cleanup.arguments) != 1 or cleanup.arguments[0].text.strip() != expected_argument:
-            raise Stage4Error(
-                f"ownership cleanup {relation.cleanup_function} must receive {expected_argument}"
-            )
         if cleanup.start_byte <= producer.start_byte:
             raise Stage4Error(
                 f"ownership cleanup {relation.cleanup_function} occurs before its producer"
+            )
+        late_consumers = sorted(
+            name for name in relation.consumers
+            for call in calls
+            if call.name == name and call.start_byte >= cleanup.start_byte
+        )
+        if late_consumers:
+            raise Stage4Error(
+                f"ownership cleanup {relation.cleanup_function} occurs before consumers: "
+                + ", ".join(dict.fromkeys(late_consumers))
             )
         if any(
             _non_null_guard(condition, identifier)
@@ -929,43 +1290,14 @@ def _validate_cleanup_order(calls: tuple[_Call, ...], cleanup_names: set[str],
         if not is_null_node(edge.src) and not is_null_node(edge.dst):
             outgoing.setdefault(edge.src, set()).add(edge.dst)
 
-    for relation in triplet.ownership_relations:
-        cleanup_positions = positions.get(relation.cleanup_function, [])
-        if not cleanup_positions:
-            continue
-        required = {relation.producer_function, *relation.consumers}
-        late = sorted(
-            name for name in required
-            if positions.get(name)
-            and max(positions[name]) > min(cleanup_positions)
-        )
-        if late:
-            raise Stage4Error(
-                f"Stage 4 ownership cleanup {relation.cleanup_function} occurs before: "
-                + ", ".join(late)
-            )
-
+    ownership_cleanup_names = {
+        relation.cleanup_function for relation in triplet.ownership_relations
+    }
     for cleanup in sorted(cleanup_names):
         cleanup_positions = positions.get(cleanup, [])
         if not cleanup_positions:
             continue
-        relation = next(
-            (item for item in triplet.ownership_relations
-             if item.cleanup_function == cleanup),
-            None,
-        )
-        if relation is not None:
-            required = {relation.producer_function, *relation.consumers}
-            late = sorted(
-                name for name in required
-                if positions.get(name)
-                and max(positions[name]) > min(cleanup_positions)
-            )
-            if late:
-                raise Stage4Error(
-                    f"Stage 4 ownership cleanup {cleanup} occurs before: "
-                    + ", ".join(late)
-                )
+        if cleanup in ownership_cleanup_names:
             continue
         sources = {
             edge.src for edge in triplet.edges
@@ -1013,7 +1345,40 @@ def _validate_entry_signature(entry: _FunctionDefinition) -> None:
         raise Stage4Error("second fuzzer parameter must be size_t size")
 
 
-def _isf_uses_external_input(call: _Call, metadata: Mapping[str, Any]) -> bool:
+def _assignments(body: Any, source: bytes) -> Iterable[_Assignment]:
+    """Record local data dependencies before each target call."""
+    for node in _walk(body):
+        if node.type == "assignment_expression":
+            left = node.child_by_field_name("left")
+            right = node.child_by_field_name("right")
+        elif node.type == "init_declarator":
+            left = node.child_by_field_name("declarator")
+            right = node.child_by_field_name("value")
+        else:
+            continue
+        if left is None or right is None:
+            continue
+        targets = [
+            _node_text(source, current) for current in _walk(left)
+            if current.type == "identifier"
+        ]
+        if not targets:
+            continue
+        dependencies = tuple(dict.fromkeys(
+            _node_text(source, current) for current in _walk(right)
+            if current.type == "identifier"
+        ))
+        yield _Assignment(
+            targets[0], dependencies, _node_text(source, right),
+            node.start_byte, left.type == "identifier",
+        )
+
+
+def _isf_uses_external_input(
+    call: _Call, metadata: Mapping[str, Any],
+    assignments: tuple[_Assignment, ...] = (),
+    input_strategy: Mapping[str, Any] | None = None,
+) -> bool:
     parameters = metadata.get("parameters", [])
     if len(call.arguments) != len(parameters):
         return False
@@ -1034,16 +1399,48 @@ def _isf_uses_external_input(call: _Call, metadata: Mapping[str, Any]) -> bool:
     ]
     if not stream_indexes:
         return False
+    data_tainted = {"data"}
+    size_tainted = {"size"}
+    before_call = tuple(sorted(
+        (item for item in assignments if item.start_byte < call.start_byte),
+        key=lambda item: item.start_byte,
+    ))
+    for assignment in before_call:
+        for tainted in (data_tainted, size_tainted):
+            if tainted.intersection(assignment.dependencies):
+                tainted.add(assignment.target)
+            elif assignment.whole_target:
+                tainted.discard(assignment.target)
     if not any(
-        "data" in call.arguments[index].identifiers
+        data_tainted.intersection(call.arguments[index].identifiers)
         and not call.arguments[index].has_string_literal
         for index in stream_indexes
     ):
         return False
-    return not length_indexes or any(
-        "size" in call.arguments[index].identifiers
+    if not length_indexes or any(
+        size_tainted.intersection(call.arguments[index].identifiers)
         for index in length_indexes
-    )
+    ):
+        return True
+    strategy = input_strategy or {}
+    if strategy.get("mode") not in {"grammar", "framed"}:
+        return False
+    cap = strategy.get("max_output_bytes")
+    if type(cap) is not int or cap < 1:
+        return False
+    for index in length_indexes:
+        argument = call.arguments[index]
+        expression = argument.text.strip()
+        if expression.isdecimal() and 0 < int(expression) <= cap:
+            return True
+        if any(
+            item.target in argument.identifiers
+            and item.expression.strip().isdecimal()
+            and 0 < int(item.expression.strip()) <= cap
+            for item in before_call
+        ):
+            return True
+    return False
 
 
 def _parameters(function_declarator: Any, source: bytes) -> Iterable[_Parameter]:

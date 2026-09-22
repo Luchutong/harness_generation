@@ -1,6 +1,8 @@
 """Public extension API for evidence-based Harness evaluation."""
 
 from .coverage import TargetCoverageEvaluator
+from .optimizer import (CandidateEvaluation, EvaluationOptimizer, OptimizationConfig,
+                        OptimizationResult, OPTIMIZER_SCHEMA_VERSION)
 from .registry import METRIC_SPECS, EvaluationEngine, MetricEvaluator, MetricSpec
 from .signals import (QUALITY_SIGNAL_VERSION, CrashFidelityEvaluator,
                       DeepReachabilityEvaluator, ExecutionSpeedEvaluator,
@@ -10,7 +12,7 @@ from .signals import (QUALITY_SIGNAL_VERSION, CrashFidelityEvaluator,
                       StaticReachabilityEvaluator, TargetIsolationEvaluator,
                       analyze_harness_ast, default_quality_evaluators,
                       target_call_graph)
-from .types import (AggregateResult, EvaluationContext, EvaluationReport, Evidence,
+from .types import (AggregateResult, EvaluationContext, EvaluationRecipe, EvaluationReport, Evidence,
                     Measurement, MetricId, MetricResult, MetricStatus,
                     evaluation_report_from_dict)
 
@@ -27,9 +29,11 @@ def default_quality_engine(
     return EvaluationEngine(default_quality_evaluators(config))
 
 __all__ = ["METRIC_SPECS", "EvaluationEngine", "MetricEvaluator", "MetricSpec",
-           "AggregateResult", "EvaluationContext", "EvaluationReport", "Evidence",
+           "AggregateResult", "EvaluationContext", "EvaluationRecipe", "EvaluationReport", "Evidence",
            "Measurement", "MetricId", "MetricResult", "MetricStatus",
            "evaluation_report_from_dict",
+           "CandidateEvaluation", "EvaluationOptimizer", "OptimizationConfig",
+           "OptimizationResult", "OPTIMIZER_SCHEMA_VERSION",
            "TargetCoverageEvaluator", "QUALITY_SIGNAL_VERSION",
            "CrashFidelityEvaluator", "DeepReachabilityEvaluator",
            "ExecutionSpeedEvaluator", "HarnessSignalError", "HarnessStaticFacts",

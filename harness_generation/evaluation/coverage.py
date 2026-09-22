@@ -32,7 +32,10 @@ class TargetCoverageEvaluator(MetricEvaluator):
         self.engine_feature_reference = engine_feature_reference
 
     def evaluate(self, context: EvaluationContext) -> MetricResult:
-        path = latest_target_coverage_summary(context.artifact(self.artifact))
+        path = latest_target_coverage_summary(
+            context.artifact(self.artifact),
+            recipe_identity=context.execution_result.get("recipe_identity"),
+        )
         if path is None:
             proxy = _engine_coverage_proxy(
                 context, self.metrics_artifact,

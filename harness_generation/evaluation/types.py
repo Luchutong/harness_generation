@@ -29,10 +29,56 @@ class MetricStatus(str, Enum):
 
 
 @dataclass(frozen=True)
+class EvaluationRecipe:
+    """Frozen identity and budget for comparable candidate evaluations."""
+
+    project_root: str
+    recipe_identity: str
+    contract_identity: str
+    target_sources: tuple[str, ...]
+    input_language: str = "raw_bytes"
+    corpus_transformation: str = "identity"
+    budget: int = 1
+    seeds: tuple[int, ...] = ()
+    holdout_seeds: tuple[int, ...] = ()
+    toolchain: str = "default"
+
+    def __post_init__(self) -> None:
+        if not self.project_root or not self.recipe_identity or not self.contract_identity:
+            raise ValueError("evaluation recipe identities must be non-empty")
+        if not self.target_sources or any(not item for item in self.target_sources):
+            raise ValueError("evaluation recipe requires target sources")
+        if not isinstance(self.budget, int) or isinstance(self.budget, bool) or self.budget < 1:
+            raise ValueError("evaluation recipe budget must be positive")
+        if set(self.seeds) & set(self.holdout_seeds):
+            raise ValueError("evaluation seeds and holdout seeds must be disjoint")
+
+    @property
+    def identity(self) -> str:
+        import hashlib, json
+        payload = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "project_root": self.project_root,
+            "recipe_identity": self.recipe_identity,
+            "contract_identity": self.contract_identity,
+            "target_sources": list(self.target_sources),
+            "input_language": self.input_language,
+            "corpus_transformation": self.corpus_transformation,
+            "budget": self.budget,
+            "seeds": list(self.seeds),
+            "holdout_seeds": list(self.holdout_seeds),
+            "toolchain": self.toolchain,
+        }
+
+
+@dataclass(frozen=True)
 class Evidence:
-    artifact: str  # Candidate-relative artifact path, or explicitly documented URI.
+    artifact: str
     description: str
-    locator: str | None = None  # e.g. a line number, JSON pointer, or testcase ID.
+    locator: str | None = None
 
 
 @dataclass(frozen=True)

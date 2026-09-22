@@ -165,7 +165,7 @@ Previous validation feedback (empty on the first attempt):
 
 STAGE4_HARNESS_TRANSFORM = PromptTemplate(
     name="stage4_harness_transform",
-    version="stage4-harness-transform-v6",
+    version="stage4-harness-transform-v7",
     template="""Implement the supplied HarnessPlan as a C++ libFuzzer harness.
 The final harness is a C++ translation unit, but it fuzzes the C target through
 C-compatible declarations. It must include <stddef.h> and <stdint.h> explicitly
@@ -202,10 +202,13 @@ If a protocol contract is supplied, implement its input model directly. For
 framed command protocols, build a bounded multi-frame command loop, keep one
 stateful context alive for the whole libFuzzer iteration, and populate declared
 magic/version/opcode/length/checksum/payload fields exactly.
-When no protocol contract is supplied, use raw byte/text passthrough. Do not
-invent a length prefix, magic, checksum, padding, or multi-frame framing. For
-explicit-length APIs, pass the fuzzer-controlled buffer and length directly,
-for example cJSON_ParseWithLengthOpts((const char *)data, size, ..., 0).
+When a known target contract declares a grammar, construct bounded inputs from
+its start symbol and rules. Keep depth and output size bounded as specified by
+the HarnessPlan, and preserve fuzzer-controlled choices at grammar branches.
+When no protocol or known grammar contract is supplied, use raw byte/text
+passthrough. Do not invent a length prefix, magic, checksum, padding, or
+multi-frame framing. For explicit-length APIs, pass the fuzzer-controlled
+buffer and length directly, using casts only when declared types require them.
 
 HarnessPlan JSON:
 {harness_plan}
@@ -225,8 +228,23 @@ Project headers and exact type declarations:
 FT-scoped ownership relations:
 {ownership_relations}
 
+Project headers and exact type declarations:
+{project_context}
+
 Protocol contract, if supplied:
 {protocol_contract}
+
+Typed protocol contract bindings, if supplied:
+{protocol_contract_bindings}
+
+Target input and resource contract, if supplied:
+{target_contract}
+
+Target contract identity for schema_version 2:
+{contract_id}
+
+Contract fact IDs bound by schema_version 2:
+{contract_fact_ids}
 
 Previous validation feedback (empty on the first attempt):
 {validation_feedback}""",
@@ -234,7 +252,7 @@ Previous validation feedback (empty on the first attempt):
 
 STAGE4_HARNESS_PLAN = PromptTemplate(
     name="stage4_harness_plan",
-    version="stage4-harness-plan-v4",
+    version="stage4-harness-plan-v5",
     template="""Create a structured HarnessPlan before any final C harness is
 written. Use the rough program, Function Triplet, and exact project declarations
 to decide state objects, fuzzer-input decoding, call order, data/size binding,
@@ -248,8 +266,14 @@ Do not use a function id, source location, path, line number, or unique_isf.id a
 triplet_id. In particular, values like "src/file.c:line:function" are function
 identifiers, not FunctionTriplet ids.
 
-Return only one strict JSON object with exactly this shape:
-{{"schema_version":1,"triplet_id":"{triplet_id}","entrypoint":"LLVMFuzzerTestOneInput",
+Return only one strict JSON object with exactly this shape. Use schema_version 1 for
+legacy plans. For schema_version 2, retain every field below and additionally include
+"contract_id":"{contract_id}",
+"contract_fact_ids":[],
+"immutable_fields":["triplet_id","entrypoint","contract_fact_ids","state_objects","call_sequence","cleanup_sequence","constraints"],
+"tunable_fields":["input_strategy","notes"]. The v2 field classifications are
+closed: immutable_fields and tunable_fields must be disjoint and must contain exactly
+those names.{{"schema_version":1,"triplet_id":"{triplet_id}","entrypoint":"LLVMFuzzerTestOneInput",
 "input_strategy":{{"description":"...","data_identifier":"data",
 "size_identifier":"size","bounded_steps":0,"notes":["..."]}},
 "state_objects":[{{"name":"...","type":"...","initialization":"..."}}],
@@ -279,7 +303,12 @@ set input_strategy.bounded_steps to a positive cap, keep state_objects alive
 across commands, and include exact protocol fields such as magic, version,
 opcode, length endianness, checksum, and payload offset in constraints or call
 arguments.
-When no protocol contract is supplied, the plan must use raw byte/text passthrough:
+When a known target contract declares a grammar, select input_strategy.mode
+"grammar", supply positive max_depth and max_output_bytes, and name the
+grammar start symbol in the strategy. The grammar may coexist with frame or
+sequence facts; preserve all supplied facts.
+When no protocol or known grammar contract is supplied, the plan must use raw
+byte/text passthrough:
 do not invent a length prefix, magic, checksum, padding, or multi-frame framing.
 For explicit-length APIs, bind the fuzzer-controlled buffer and size directly.
 
@@ -292,6 +321,9 @@ Unique ISF:
 Function metadata:
 {function_metadata}
 
+Project headers and exact type declarations:
+{project_context}
+
 FT bypass semantics (non-SFG sidecar evidence; use these for scalar guards,
 byte-stream/length binding, constants, return status, and struct access hints):
 {bypass_semantics}
@@ -299,14 +331,34 @@ byte-stream/length binding, constants, return status, and struct access hints):
 FT-scoped ownership relations (the only authority for external cleanup calls):
 {ownership_relations}
 
-Project headers and exact type declarations:
-{project_context}
-
 Protocol contract, if supplied:
 {protocol_contract}
 
+Typed protocol contract bindings, if supplied:
+{protocol_contract_bindings}
+
+Target input and resource contract, if supplied:
+{target_contract}
+
+Target contract identity for schema_version 2:
+{contract_id}
+
+Contract fact IDs bound by schema_version 2:
+{contract_fact_ids}
+
 Previous validation feedback (empty on the first attempt):
-{validation_feedback}""",
+{validation_feedback}
+
+Parent HarnessPlan for refinement (empty on initial generation):
+{parent_plan}
+
+Measured optimization feedback (empty on initial generation):
+{optimization_feedback}
+
+When refining, preserve the parent's triplet, call and cleanup sequence,
+state objects, constraints, contract identity and contract fact IDs exactly.
+Change only input_strategy and notes, and ground each change in the measured
+feedback. Do not treat missing measurements as a low score.""",
 )
 
 PROTOCOL_CONVENTION_REFINEMENT = PromptTemplate(
@@ -412,7 +464,13 @@ def stage4_harness_plan(*, triplet_id: Any, rough_code: Any, unique_isf: Any,
                         ownership_relations: Any = (),
                         project_context: Any = (),
                         protocol_contract: Any = None,
-                        validation_feedback: Any = None) -> RenderedPrompt:
+                        protocol_contract_bindings: Any = None,
+                        contract_id: Any = None,
+                        contract_fact_ids: Any = (),
+                        target_contract: Any = None,
+                        validation_feedback: Any = None,
+                        parent_plan: Any = None,
+                        optimization_feedback: Any = None) -> RenderedPrompt:
     return STAGE4_HARNESS_PLAN.render(
         triplet_id=triplet_id,
         rough_code=rough_code,
@@ -422,7 +480,13 @@ def stage4_harness_plan(*, triplet_id: Any, rough_code: Any, unique_isf: Any,
         ownership_relations=ownership_relations,
         project_context=project_context,
         protocol_contract=protocol_contract or {},
+        protocol_contract_bindings=protocol_contract_bindings,
+        contract_id=contract_id,
+        contract_fact_ids=contract_fact_ids,
+        target_contract=target_contract or {},
         validation_feedback=validation_feedback or {},
+        parent_plan=parent_plan or {},
+        optimization_feedback=optimization_feedback or {},
     )
 
 
@@ -431,7 +495,11 @@ def stage4_harness_transform(*, harness_plan: Any, rough_code: Any,
                              ownership_relations: Any = (),
                              project_context: Any = (),
                              protocol_contract: Any = None,
-                             validation_feedback: Any = None) -> RenderedPrompt:
+                             protocol_contract_bindings: Any = None,
+                             contract_id: Any = None,
+                             contract_fact_ids: Any = (),
+                             validation_feedback: Any = None,
+                             target_contract: Any = None) -> RenderedPrompt:
     return STAGE4_HARNESS_TRANSFORM.render(
         harness_plan=harness_plan,
         rough_code=rough_code,
@@ -440,7 +508,11 @@ def stage4_harness_transform(*, harness_plan: Any, rough_code: Any,
         ownership_relations=ownership_relations,
         project_context=project_context,
         protocol_contract=protocol_contract or {},
+        protocol_contract_bindings=protocol_contract_bindings,
+        contract_id=contract_id,
+        contract_fact_ids=contract_fact_ids,
         validation_feedback=validation_feedback or {},
+        target_contract=target_contract or {},
     )
 
 

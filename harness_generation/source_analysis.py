@@ -479,7 +479,6 @@ def _add_unique(values: list[Any], value: Any, limit: int) -> None:
 def _harness_hints(target: _FunctionRecord, functions: list[_FunctionRecord]) -> list[str]:
     hints = []
     params = list(target.parameters)
-    helper_names = {record.name for record in functions if record.name != target.name}
     for param in params:
         if param["role_hint"] == "writable_pointer":
             hints.append(f"initialize valid writable storage for parameter {param['name'] or param['declaration']}")
@@ -490,10 +489,6 @@ def _harness_hints(target: _FunctionRecord, functions: list[_FunctionRecord]) ->
         if (left["role_hint"] == "input_pointer" and right["type"] in {"size_t", "int", "uint32_t", "uint16_t"}
                 and (right["name"] or "").lower() in {"size", "len", "length", "n"}):
             hints.append(f"{left['name']} and {right['name']} look like a buffer plus length pair")
-    if "mp_init" in helper_names and "mp_destroy" in helper_names:
-        hints.append("mp_init/mp_destroy are available helpers for mp_context lifetime management")
-    if "mp_checksum" in helper_names:
-        hints.append("mp_checksum is available as a helper for constructing parser inputs")
     return hints[:MAX_FACTS]
 
 

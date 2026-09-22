@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 
-from harness_generation.fuzzer_build import FuzzerBuildValidator
+from harness_generation.fuzzer_build import FuzzerBuildConfig, FuzzerBuildValidator
 from harness_generation.target_build import TargetBuildConfig
 from tests.toolchain_probe import LIBFUZZER_AVAILABLE, LIBFUZZER_SKIP_REASON
 
@@ -90,7 +90,29 @@ class FuzzerBuildValidatorTests(unittest.TestCase):
         )
         self.assertEqual(smoke.returncode, 0, smoke.stderr)
 
-    def test_compile_failure_is_bounded_but_full_stderr_is_persisted(self):
+    def test_recipe_linker_and_flags_are_used_for_fuzzer_link(self):
+        config = TargetBuildConfig(
+            project_root=SIMPLE_PROJECT,
+            source_files=(SIMPLE_PROJECT / "src/parser.c",),
+            header_files=(SIMPLE_PROJECT / "include/parser.h",),
+            include_paths=(SIMPLE_PROJECT / "include",),
+            link_flags=("-Wl,--as-needed",),
+        )
+        harness = self.write_harness(VALID_HARNESS)
+        result = FuzzerBuildValidator(
+            FuzzerBuildConfig(link_flags=("-fsanitize=fuzzer,address,undefined",))
+        ).validate(
+            harness,
+            config,
+            artifacts=self.artifacts,
+            ft_id=self.ft_id,
+        )
+        self.assertTrue(result.success, result.errors)
+        linker = json.loads((
+            self.artifacts / "generation" / self.ft_id / "validation/linker.json"
+        ).read_text(encoding="utf-8"))
+        self.assertIn("-Wl,--as-needed", linker["command"])
+
         invalid = VALID_HARNESS.replace(
             "    return 0;", "    undefined_function();\n    return 0;"
         )

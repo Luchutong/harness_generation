@@ -4,6 +4,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from harness_generation.artifacts import ArtifactStore
+from harness_generation.fuzzer_build import FuzzerBuildValidator
 from harness_generation.llm import MockLLM
 from harness_generation.policy import FORBIDDEN_LOGGING_FUNCTIONS
 from harness_generation.sfg_adapter import load_sfg_artifacts
@@ -13,14 +15,18 @@ from harness_generation.stage4 import (
     Stage4Generator,
     _analyze_cpp,
     _validate_ownership_calls,
+    _validate_parent_plan_revision,
     generate_stage4_harness,
     parse_harness_plan,
 )
+from harness_generation.target_contract import TargetContract
+from harness_generation.target_build import TargetBuildConfig
 from harness_generation.triplet import TripletOwnershipRelation
 from harness_generation.triplet_extractor import extract_function_triplets
 from sfg_builder.parser import DEFAULT_IGNORES
 from sfg_builder.pipeline import SFGPipeline
 from sfg_builder.semantic import MockSemanticAnalyzer
+from tests.toolchain_probe import LIBFUZZER_AVAILABLE, LIBFUZZER_SKIP_REASON
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -135,7 +141,39 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             "notes": [],
         })
 
-    def test_stage4_generates_and_publishes_an_audited_harness(self):
+    def test_v2_plan_binds_contract_and_fact_ids(self):
+        contract = TargetContract.from_triplet(self.triplet)
+        fact_ids = sorted(resource.id for resource in contract.resources)
+        plan = json.loads(self.harness_plan())
+        plan.update({
+            "schema_version": 2,
+            "contract_id": contract.contract_id,
+            "contract_fact_ids": fact_ids,
+            "immutable_fields": [
+                "triplet_id", "entrypoint", "contract_fact_ids", "state_objects",
+                "call_sequence", "cleanup_sequence", "constraints",
+            ],
+            "tunable_fields": ["input_strategy", "notes"],
+        })
+        parsed = parse_harness_plan(
+            json.dumps(plan), triplet=self.triplet,
+            isf_metadata=json.loads(
+                (self.phase1_artifacts / "functions.json").read_text()
+            )["functions"][0],
+            contract_id=contract.contract_id,
+            contract_fact_ids=fact_ids,
+        )
+        self.assertEqual(parsed.schema_version, 2)
+        self.assertEqual(parsed.contract_fact_ids, tuple(fact_ids))
+
+    def test_plan_revision_rejects_immutable_changes(self):
+        parent = json.loads(self.harness_plan())
+        child = json.loads(self.harness_plan())
+        child["constraints"] = ["changed immutable binding"]
+        with self.assertRaisesRegex(Stage4Error, "only tunable"):
+            _validate_parent_plan_revision(parent, child, contract_id="unused")
+
+    def test_stage4_generates_an_audited_candidate_without_publishing(self):
         llm = MockLLM([self.harness_plan(), self.harness_code()])
         with tempfile.TemporaryDirectory() as temporary:
             artifacts = Path(temporary) / "artifacts" / "project"
@@ -147,7 +185,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
                 artifacts=artifacts,
             )
             generated = result.harness_path.read_text(encoding="utf-8")
-            stable = result.stable_path.read_text(encoding="utf-8")
+            stable_exists = (artifacts / "harnesses" / f"{self.triplet.id}.c").exists()
             stable_plan = json.loads((
                 artifacts / "generation" / self.triplet.id /
                 "stage4_harness_plan.json"
@@ -165,7 +203,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             ["stage4_harness_plan", "stage4_harness_transform"],
         )
         self.assertEqual(generated, expected)
-        self.assertEqual(stable, expected)
+        self.assertFalse(stable_exists)
         self.assertEqual(result.harness_plan["entrypoint"], "LLVMFuzzerTestOneInput")
         self.assertEqual(plan["call_sequence"][0]["function"], "parser_from_memory")
         self.assertEqual(stable_plan, plan)
@@ -180,13 +218,10 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             result.harness_path,
             artifacts / "generation" / self.triplet.id / "stage4_harness.c",
         )
-        self.assertEqual(
-            result.stable_path,
-            artifacts / "harnesses" / f"{self.triplet.id}.c",
-        )
+        self.assertIsNone(result.stable_path)
         self.assertEqual(
             result.generation_metadata["prompt_version"],
-            "stage4-harness-transform-v6",
+            "stage4-harness-transform-v7",
         )
         self.assertEqual(
             attempt_files,
@@ -202,14 +237,86 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         self.assertEqual(attempt_metadata["provider"], "mock")
         self.assertEqual(attempt_metadata["model"], "mock-model")
         self.assertEqual(
-            attempt_metadata["prompt_version"], "stage4-harness-transform-v6"
+            attempt_metadata["prompt_version"], "stage4-harness-transform-v7"
         )
         self.assertEqual(
-            attempt_metadata["plan_prompt_version"], "stage4-harness-plan-v4"
+            attempt_metadata["plan_prompt_version"], "stage4-harness-plan-v5"
         )
         self.assertIn("timestamp", attempt_metadata)
         self.assertIsNone(attempt_metadata["rollback_source"])
         self.assertIsNone(attempt_metadata["retry_reason"])
+
+    def test_stage4_cannot_publish_before_formal_validation(self):
+        llm = MockLLM([])
+        with tempfile.TemporaryDirectory() as temporary:
+            artifacts = Path(temporary) / "artifacts"
+            with self.assertRaisesRegex(Stage4Error, "formal pipeline validation"):
+                Stage4Generator(llm).run(
+                    self.triplet, rough_code=self.rough_code(),
+                    functions_json=self.phase1_artifacts / "functions.json",
+                    artifacts=artifacts, publish=True,
+                )
+            self.assertFalse((artifacts / "harnesses").exists())
+        self.assertEqual(llm.calls, [])
+
+    @unittest.skipUnless(LIBFUZZER_AVAILABLE, LIBFUZZER_SKIP_REASON)
+    def test_grammar_contract_can_build_fuzzer_controlled_payload(self):
+        contract = TargetContract.from_protocol_document({
+            "entry_function": self.triplet.isf.function,
+            "contract": {"grammar": {
+                "start": "value", "rules": {"value": "'{' digit '}'",
+                                              "digit": "'0' | '1'"},
+            }},
+        })
+        plan = json.loads(self.harness_plan())
+        plan["input_strategy"].update(
+            mode="grammar", start_symbol="value", max_depth=2,
+            max_output_bytes=16,
+        )
+        plan["call_sequence"][0]["arguments"] = [
+            "&parser", "payload", "payload_len",
+        ]
+        code = '''#include <stddef.h>
+#include <stdint.h>
+extern "C" {
+#include "parser.h"
+}
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+{
+    Parser parser = {0};
+    unsigned char payload[16] = {'{', '0', '}'};
+    if (size > 0) payload[1] = (unsigned char)('0' + data[0] % 10);
+    unsigned long payload_len = 3;
+    parser_from_memory(&parser, payload, payload_len);
+    Node node = parser_next(&parser);
+    node_process(&node);
+    parser_free(&parser);
+    return 0;
+}'''
+        with tempfile.TemporaryDirectory() as temporary:
+            artifacts = Path(temporary) / "artifacts"
+            ArtifactStore(artifacts).write_target_contract(contract)
+            result = Stage4Generator(MockLLM([json.dumps(plan), code])).run(
+                self.triplet, rough_code=self.rough_code(),
+                functions_json=self.phase1_artifacts / "functions.json",
+                artifacts=artifacts,
+            )
+            build = FuzzerBuildValidator().validate(
+                result.harness_path,
+                TargetBuildConfig.for_simple_project(SIMPLE_PROJECT),
+                artifacts=artifacts, ft_id=self.triplet.id,
+            )
+            unconnected = code.replace(
+                "Parser parser = {0};",
+                "Parser parser = {0}; (void)data;",
+            ).replace("data[0] % 10", "7 % 10")
+            with self.assertRaisesRegex(Stage4Error, "not connected"):
+                Stage4Generator(MockLLM([json.dumps(plan), unconnected])).run(
+                    self.triplet, rough_code=self.rough_code(),
+                    functions_json=self.phase1_artifacts / "functions.json",
+                    artifacts=artifacts,
+                )
+        self.assertEqual(build.status, "passed", build.errors)
 
     def test_failed_then_successful_attempts_are_both_preserved(self):
         invalid = self.harness_code().replace("    node_process(&node);\n", "")
@@ -434,7 +541,30 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
                         artifacts=Path(temporary),
                     )
 
-    def test_accepts_cpp_harness_with_standard_library_and_constexpr(self):
+    def test_rejects_non_linkable_project_api(self):
+        document = json.loads((self.phase1_artifacts / "functions.json").read_text())
+        document["functions"].append({
+            "id": "src/parser.c:99:internal_api",
+            "name": "internal_api",
+            "defined": True,
+            "storage": ["static"],
+            "file": "src/parser.c",
+            "start_line": 99,
+        })
+        functions = self.phase1_artifacts / "functions_non_linkable.json"
+        functions.write_text(json.dumps(document), encoding="utf-8")
+        code = self.harness_code().replace(
+            "    parser_free(&parser);", "    internal_api();\n    parser_free(&parser);"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(Stage4Error, "non-linkable project APIs"):
+                Stage4Generator(MockLLM([self.harness_plan(), code])).run(
+                    self.triplet,
+                    rough_code=self.rough_code(),
+                    functions_json=functions,
+                    artifacts=Path(temporary),
+                )
+
         code = self.harness_code().replace(
             "#include <stdint.h>",
             "#include <stdint.h>\n#include <algorithm>\n#include <vector>",
@@ -582,6 +712,131 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
                     functions_json=self.phase1_artifacts / "functions.json",
                     artifacts=Path(temporary),
                 )
+
+    def test_stage4_allows_multiple_ownership_relations_with_same_cleanup(self):
+        first = TripletOwnershipRelation(
+            id="own_parser_from_memory",
+            producer_function_id=self.triplet.isf.function_id,
+            producer_function=self.triplet.isf.function,
+            resource_type="Parser",
+            cleanup_function_id="src/parser.c:1:parser_free",
+            cleanup_function="parser_free",
+            consumers=("parser_next", "node_process"),
+            nullable=True,
+            evidence=("test evidence",),
+            confidence=1.0,
+        )
+        second = TripletOwnershipRelation(
+            id="own_parser_next",
+            producer_function_id="src/parser.c:13:parser_next",
+            producer_function="parser_next",
+            resource_type="Node",
+            cleanup_function_id="src/parser.c:1:parser_free",
+            cleanup_function="parser_free",
+            consumers=("node_process",),
+            nullable=True,
+            evidence=("test evidence",),
+            confidence=1.0,
+        )
+        triplet = replace(self.triplet, ownership_relations=(first, second))
+        plan = json.loads(self.harness_plan())
+        plan["cleanup_sequence"] = [
+            {
+                "function": "parser_free",
+                "purpose": "release parser_from_memory result",
+                "relation_id": first.id,
+                "producer_function": first.producer_function,
+                "resource_type": first.resource_type,
+                "producer_return_binding": {
+                    "kind": "return_value", "identifier": "item"
+                },
+                "arguments": ["item"],
+                "after": ["parser_from_memory", "parser_next", "node_process"],
+                "conditions": ["item != NULL"],
+            },
+            {
+                "function": "parser_free",
+                "purpose": "release parser_next result",
+                "relation_id": second.id,
+                "producer_function": second.producer_function,
+                "resource_type": second.resource_type,
+                "producer_return_binding": {
+                    "kind": "return_value", "identifier": "node_item"
+                },
+                "arguments": ["node_item"],
+                "after": ["parser_next", "node_process"],
+                "conditions": ["node_item != NULL"],
+            },
+        ]
+        code = """#include <stddef.h>
+#include <stdint.h>
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+{
+    if (size == 0) return 0;
+    Parser parser = {0};
+    Parser *item = (Parser *)parser_from_memory(&parser, data, (unsigned long)size);
+    Node *node_item = (Node *)parser_next(&parser);
+    node_process(node_item);
+    if (item != NULL) { parser_free(item); }
+    if (node_item != NULL) { parser_free(node_item); }
+    return 0;
+}"""
+        with tempfile.TemporaryDirectory() as temporary:
+            Stage4Generator(MockLLM([json.dumps(plan), code])).run(
+                triplet,
+                rough_code=self.rough_code(),
+                functions_json=self.phase1_artifacts / "functions.json",
+                artifacts=Path(temporary),
+            )
+
+    def test_stage4_rejects_missing_cleanup_for_one_shared_cleanup_relation(self):
+        triplet, plan_text = self._ownership_triplet_and_plan("own_missing_argument")
+        relation = triplet.ownership_relations[0]
+        second = TripletOwnershipRelation(
+            id="own_missing_second",
+            producer_function_id="src/parser.c:13:parser_next",
+            producer_function="parser_next",
+            resource_type="Node",
+            cleanup_function_id=relation.cleanup_function_id,
+            cleanup_function=relation.cleanup_function,
+            consumers=("node_process",),
+            nullable=True,
+            evidence=("test evidence",),
+            confidence=1.0,
+        )
+        triplet = replace(triplet, ownership_relations=(relation, second))
+        plan = json.loads(plan_text)
+        plan["cleanup_sequence"].append({
+            "function": "parser_free",
+            "purpose": "release parser_next result",
+            "relation_id": second.id,
+            "producer_function": second.producer_function,
+            "resource_type": second.resource_type,
+            "producer_return_binding": {
+                "kind": "return_value", "identifier": "node_item"
+            },
+            "arguments": ["node_item"],
+            "after": ["parser_next", "node_process"],
+            "conditions": ["node_item != NULL"],
+        })
+        parsed_plan = parse_harness_plan(
+            json.dumps(plan), triplet=triplet,
+            isf_metadata=json.loads(
+                (self.phase1_artifacts / "functions.json").read_text()
+            )["functions"][0],
+        )
+        code = """#include <stddef.h>
+#include <stdint.h>
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+{
+    Parser *item = (Parser *)parser_from_memory((Parser *)data, data, (unsigned long)size);
+    Node *node_item = (Node *)parser_next((Parser *)data);
+    node_process(node_item);
+    if (item != NULL) { parser_free(item); }
+    return 0;
+}"""
+        with self.assertRaisesRegex(Stage4Error, "parser_free must release node_item exactly once"):
+            _validate_ownership_calls(_analyze_cpp(code).calls, triplet, parsed_plan)
 
     def test_rejects_ownership_cleanup_on_null_branch(self):
         relation = TripletOwnershipRelation(

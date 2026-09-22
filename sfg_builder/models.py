@@ -110,6 +110,7 @@ class FunctionInfo(Serializable):
     labels: tuple[str, ...] = ()
     return_ownership: ReturnValueOwnership | None = None
     return_type_annotations: tuple[str, ...] = ()
+    documentation: str = ""
 
 
 @dataclass(frozen=True)

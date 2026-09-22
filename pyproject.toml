@@ -17,6 +17,9 @@ dependencies = [
 harness-generation = "harness_generation.cli:main"
 sfg-builder = "sfg_builder.cli:main"
 
+[tool.setuptools]
+py-modules = ["project_catalog"]
+
 [tool.setuptools.packages.find]
 include = ["harness_generation*", "sfg_builder*"]
 

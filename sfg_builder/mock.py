@@ -30,6 +30,8 @@ class MockSemanticAnalyzer:
                             "payload", "stream", "src"))
             if not accepted:
                 accepted = parameter.base_type in {"uint8_t", "int8_t", "unsigned char"}
+            if not accepted and _looks_like_parser_input(function, parameter):
+                accepted = True
             reason = ("byte-compatible pointer and stream-like declaration"
                       if accepted else "ambiguous pointer")
         data = {"is_byte_stream": accepted, "kind": kind, "confidence": 0.95,
@@ -86,3 +88,23 @@ class MockSemanticAnalyzer:
         data = {"parameter": parameter.name, "struct_type": parameter.base_type,
                 "direction": direction, "reason": reason, "confidence": confidence}
         return SemanticDecision(data, prompt, DIRECTION_PROMPT_VERSION, data, confidence)
+
+
+def _looks_like_parser_input(function: FunctionInfo, parameter: ParameterInfo) -> bool:
+    if parameter.pointer_depth != 1 or parameter.base_type not in {"char", "unsigned char"}:
+        return False
+    function_name = function.name.lower()
+    if not any(token in function_name for token in (
+        "parse", "decode", "deserialize", "load", "read", "scan"
+    )):
+        return False
+    parameter_name = (parameter.name or "").lower()
+    if any(token in parameter_name for token in ("end", "out", "result", "error")):
+        return False
+    has_length_parameter = any(
+        not item.is_pointer and item.name and item.name.lower() in {
+            "size", "len", "length", "n", "buffer_length", "input_size",
+        }
+        for item in function.parameters
+    )
+    return parameter.is_const or has_length_parameter or function.return_is_struct_like

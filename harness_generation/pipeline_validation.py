@@ -36,6 +36,7 @@ class PipelineValidationConfig:
 
     compiler: CompilerConfig | None = None
     target_build: TargetBuildConfig | None = None
+    target_build_path: Path | None = None
     executable: Path | None = None
     runtime_arguments: tuple[str, ...] = ()
     runtime_timeout: float = 30.0
@@ -46,6 +47,10 @@ class PipelineValidationConfig:
     def __post_init__(self) -> None:
         if type(self.build_enabled) is not bool:
             raise ValueError("build_enabled must be boolean")
+        if self.target_build is not None and self.target_build_path is not None:
+            raise ValueError("target_build and target_build_path are mutually exclusive")
+        if self.target_build_path is not None:
+            object.__setattr__(self, "target_build_path", Path(self.target_build_path))
         if not self.build_enabled and self.fuzz_smoke is not None:
             raise ValueError("fuzz smoke requires build validation")
 
@@ -72,6 +77,15 @@ class PipelineStageValidator:
         )
         self.target_functions = _target_function_names(self.functions_json)
         self.target_build = self.config.target_build
+        if self.target_build is None and self.config.target_build_path is not None:
+            self.target_build = TargetBuildConfig.load(
+                self.config.target_build_path,
+                project_root=self.project_root,
+            )
+        if self.target_build is None and self.config.compiler is None:
+            self.target_build = ArtifactStore(self.artifacts).load_target_build(
+                project_root=self.project_root,
+            )
         if self.target_build is None and self.config.compiler is None:
             self.target_build = _discover_target_build(self.project_root)
 
@@ -240,6 +254,16 @@ class PipelineStageValidator:
         return _with_failure_type(validation, "stage3_validation")
 
     def validate_stage4(self, result: Stage4Result) -> ValidationResult:
+        # Stage 3 and previous Stage 4 attempts may have left validation files.
+        # A new candidate must earn every component status afresh.
+        for path in (
+            self.layout.intermediate_validation,
+            self.layout.compiler_validation,
+            self.layout.linker_validation,
+            self.layout.runtime_validation,
+            self.layout.validation_summary,
+        ):
+            path.unlink(missing_ok=True)
         try:
             validation = self._validate_stage4(result)
         except Exception as error:

@@ -395,7 +395,8 @@ class DeepReachabilityEvaluator:
 
     def evaluate(self, context: EvaluationContext) -> MetricResult:
         coverage_path = latest_target_coverage_summary(
-            context.artifact(self.config.target_coverage_artifact)
+            context.artifact(self.config.target_coverage_artifact),
+            recipe_identity=context.execution_result.get("recipe_identity"),
         )
         if coverage_path is None:
             proxy = _engine_deep_reachability_proxy(context, self.config.metrics_artifact)

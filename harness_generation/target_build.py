@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import subprocess
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .artifacts import ArtifactStore
 from .compiler_validation import BuildAdapter, CommandResult, CompilerConfig
+from project_catalog import BuildRecipe, ProjectCatalog
 
 
 BUILD_SCHEMA_VERSION = 1
@@ -28,6 +30,9 @@ class TargetBuildConfig:
     compiler_flags: tuple[str, ...] = ("-std=c11",)
     archive_name: str = "libtarget.a"
     timeout: float = 30.0
+    linker: str | None = None
+    link_flags: tuple[str, ...] = ()
+    provenance: str = "target_build_config"
 
     def __post_init__(self) -> None:
         root = Path(self.project_root).resolve()
@@ -65,6 +70,73 @@ class TargetBuildConfig:
         if any(not isinstance(flag, str) or not flag for flag in flags):
             raise ValueError("compiler_flags must contain non-empty strings")
         object.__setattr__(self, "compiler_flags", flags)
+        if self.linker is not None and (
+            not isinstance(self.linker, str) or not self.linker.strip()
+        ):
+            raise ValueError("linker must be non-empty text when provided")
+        if isinstance(self.link_flags, (str, bytes)):
+            raise ValueError("link_flags must be a sequence of arguments")
+        link_flags = tuple(self.link_flags)
+        if any(not isinstance(flag, str) or not flag for flag in link_flags):
+            raise ValueError("link_flags must contain non-empty strings")
+        object.__setattr__(self, "link_flags", link_flags)
+
+    @classmethod
+    def from_recipe(cls, recipe: BuildRecipe) -> "TargetBuildConfig":
+        return cls(
+            project_root=recipe.project_root,
+            source_files=recipe.source_files,
+            header_files=recipe.header_files,
+            include_paths=recipe.include_paths,
+            compiler=recipe.compiler,
+            archiver=recipe.archiver,
+            compiler_flags=recipe.compiler_flags,
+            archive_name=recipe.archive_name,
+            timeout=recipe.timeout,
+            linker=recipe.linker,
+            link_flags=recipe.link_flags,
+            provenance=recipe.provenance,
+        )
+
+    @classmethod
+    def from_dict(
+        cls,
+        value: Mapping[str, Any],
+        *,
+        project_root: str | Path | None = None,
+    ) -> "TargetBuildConfig":
+        if not isinstance(value, Mapping):
+            raise ValueError("target build config must be an object")
+        recipe_value = value.get("recipe")
+        if isinstance(recipe_value, Mapping):
+            recipe = BuildRecipe.from_dict(recipe_value, project_root=project_root)
+        else:
+            recipe = BuildRecipe.from_dict(value, project_root=project_root)
+        return cls.from_recipe(recipe)
+
+    @classmethod
+    def load(cls, path: str | Path, *, project_root: str | Path | None = None) -> "TargetBuildConfig":
+        try:
+            document = json.loads(Path(path).read_text(encoding="utf-8"))
+            return cls.from_dict(document, project_root=project_root)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+            raise ValueError(f"cannot load target build config: {type(error).__name__}") from error
+
+    def to_recipe(self) -> BuildRecipe:
+        return BuildRecipe(
+            project_root=self.project_root,
+            source_files=self.source_files,
+            header_files=self.header_files,
+            include_paths=self.include_paths,
+            compiler=self.compiler,
+            archiver=self.archiver,
+            compiler_flags=self.compiler_flags,
+            archive_name=self.archive_name,
+            timeout=self.timeout,
+            linker=self.linker,
+            link_flags=self.link_flags,
+            provenance=self.provenance,
+        )
 
     @classmethod
     def for_simple_project(cls, project_root: str | Path) -> "TargetBuildConfig":
@@ -74,33 +146,11 @@ class TargetBuildConfig:
         discovery; callers can still provide an explicit configuration.
         """
 
-        root = Path(project_root).resolve()
-        ignored = {"build", "out", "vendor", "third_party", "generated", "artifacts"}
-        candidates = []
-        for path in (root / "src").rglob("*.c") if (root / "src").is_dir() else ():
-            if not any(part.casefold() in ignored for part in path.relative_to(root).parts):
-                candidates.append(path)
-        for path in root.glob("*.c"):
-            if path.name != "harness.c":
-                candidates.append(path)
-        sources = tuple(sorted(set(candidates)))
-        headers = tuple(sorted(
-            path for path in ((root / "include").rglob("*.h")
-                              if (root / "include").is_dir() else ())
-            if not any(part.casefold() in ignored for part in path.relative_to(root).parts)
+        catalog = ProjectCatalog.discover(project_root)
+        return cls.from_recipe(BuildRecipe.from_catalog(
+            catalog, compiler="clang", archiver="ar",
+            compiler_flags=("-std=c11",), archive_name="libsimple_target.a",
         ))
-        include_paths = tuple(
-            path for path in ((root,) if any(path.parent == root for path in sources) else ())
-            + ((root / "include",) if (root / "include").is_dir() else ())
-        )
-        return cls(
-            project_root=root,
-            source_files=sources,
-            header_files=headers,
-            include_paths=include_paths,
-            compiler_flags=("-std=c11",),
-            archive_name="libsimple_target.a",
-        )
 
     @property
     def compiler_config(self) -> CompilerConfig:
@@ -138,6 +188,8 @@ class TargetBuildConfig:
             "compiler_flags": list(self.compiler_flags),
             "archive_name": self.archive_name,
             "timeout": self.timeout,
+            "linker": self.linker,
+            "link_flags": list(self.link_flags),
         }
 
 
@@ -155,15 +207,29 @@ class TargetBuildResult:
     def success(self) -> bool:
         return self.status == "passed"
 
+    @property
+    def link_inputs(self) -> tuple[Path, ...]:
+        """The object files used by the current direct-object link strategy."""
+        return self.object_files
+
+    @property
+    def link_strategy(self) -> str:
+        return "objects_direct"
+
     def to_dict(self, *, config: TargetBuildConfig, ft_id: str) -> dict[str, Any]:
+        recipe = config.to_recipe()
         return {
             "schema_version": BUILD_SCHEMA_VERSION,
             "ft_id": ft_id,
             "status": self.status,
             "success": self.success,
             "config": config.to_dict(),
+            "recipe": recipe.to_dict(),
+            "recipe_identity": recipe.identity,
             "output_directory": str(self.output_directory),
             "object_files": [str(path) for path in self.object_files],
+            "link_strategy": self.link_strategy,
+            "link_inputs": [str(path) for path in self.link_inputs],
             "library": None if self.library is None else str(self.library),
             "commands": [command.to_dict() for command in self.commands],
             "errors": list(self.errors),

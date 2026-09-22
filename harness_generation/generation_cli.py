@@ -32,10 +32,12 @@ from .pipeline_validation import (
     PipelineValidationConfig,
 )
 from .pipeline_result import PipelineResult
+from .promotion import promote_harness
 from .stage1 import Stage1Generator
 from .stage2 import Stage2Generator
 from .stage3 import Stage3Assembler
 from .stage4 import Stage4Generator
+from .target_contract import TargetContract
 from .triplet import FunctionTriplet, load_triplets_json
 
 
@@ -75,6 +77,15 @@ def main(
         "--project-root",
         type=Path,
         help="Override the source root recorded by functions.json",
+    )
+    parser.add_argument(
+        "--target-build",
+        type=Path,
+        help="Load an explicit target build recipe/configuration",
+    )
+    parser.add_argument(
+        "--target-contract", type=Path,
+        help="Load an explicit typed target input/resource contract",
     )
     parser.add_argument("--resume", action="store_true")
     if run_command:
@@ -129,6 +140,13 @@ def main(
         )
         build_requested = not run_command or args.build
         effective_validation = validation_config or PipelineValidationConfig()
+        if args.target_build is not None:
+            if validation_config is not None and validation_config.target_build is not None:
+                raise ValueError("cannot combine --target-build with target_build config")
+            effective_validation = replace(
+                effective_validation,
+                target_build_path=args.target_build,
+            )
         if run_command:
             effective_validation = replace(
                 effective_validation,
@@ -151,6 +169,13 @@ def main(
             if all_triplets
             else (_select_triplet(triplets, args.triplet_id),)
         )
+        if args.target_contract is not None:
+            contract = TargetContract.from_dict(json.loads(
+                args.target_contract.read_text(encoding="utf-8")
+            ))
+            if any(item.isf.function != contract.entry_function for item in selected):
+                raise ValueError("target contract entry_function does not match selected FT")
+            store.write_target_contract(contract)
         client = _resolve_llm(
             llm,
             provider=(
@@ -286,6 +311,9 @@ def _stage_handlers(
         project_root=project_root,
         config=validation_config,
     )
+    contract_identity = (
+        store.load_target_contract() or TargetContract.from_triplet(triplet)
+    ).id
     validate_stage1 = validators.validate_stage1 if validate_enabled else _generated
     validate_stage2 = validators.validate_stage2 if validate_enabled else _generated
     validate_stage3 = validators.validate_stage3 if validate_enabled else _generated
@@ -371,12 +399,21 @@ def _stage_handlers(
                 ),
             ),
             validate_stage4,
-            lambda result: _publish_harness(layout, result),
+            lambda result: _publish_harness(
+                layout, result,
+                recipe_identity=(
+                    validators.target_build.to_recipe().identity
+                    if validators.target_build is not None else None
+                ),
+                contract_identity=contract_identity,
+            ),
         ),
     )
 
 
-def _publish_harness(layout, result):
+def _publish_harness(
+    layout, result, *, recipe_identity=None, contract_identity=None,
+):
     summary_path = layout.validation_summary
     summary = {}
     if summary_path.is_file():
@@ -386,11 +423,18 @@ def _publish_harness(layout, result):
                 summary = loaded
         except (OSError, UnicodeError, json.JSONDecodeError):
             summary = {}
-    overall = summary.get("overall")
-    if overall == "passed":
-        layout.write_text(layout.harness, result.harness_code.rstrip() + "\n")
-        return result
+    promoted = promote_harness(
+        layout,
+        harness_code=result.harness_code,
+        harness_plan=result.harness_plan,
+        validation_summary=summary,
+        recipe_identity=recipe_identity,
+        contract_identity=contract_identity,
+    )
+    if promoted:
+        return replace(result, stable_path=layout.harness)
 
+    overall = summary.get("overall")
     source_hash = hashlib.sha256(result.harness_code.encode("utf-8")).hexdigest()
     plan_hash = hashlib.sha256(
         json.dumps(result.harness_plan, sort_keys=True).encode("utf-8")

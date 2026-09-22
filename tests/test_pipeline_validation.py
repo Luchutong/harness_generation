@@ -4,6 +4,7 @@ import shutil
 import tempfile
 import unittest
 
+from harness_generation.artifacts import ArtifactStore
 from harness_generation.pipeline_validation import PipelineStageValidator
 from harness_generation.stage1 import Stage1Result
 from harness_generation.stage2 import Stage2Result, required_processing_units
@@ -16,8 +17,32 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ARTIFACTS = ROOT / "artifacts" / "simple"
 SIMPLE_PROJECT = ROOT / "tests" / "fixtures" / "simple_project"
 
-
 class PipelineStageValidatorTests(unittest.TestCase):
+    def test_persisted_target_build_is_preferred_over_simple_discovery(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifacts = Path(temporary) / "artifacts"
+            artifacts.mkdir()
+            for name in ("functions.json", "triplets.json"):
+                shutil.copy2(SOURCE_ARTIFACTS / name, artifacts / name)
+            store = ArtifactStore(artifacts)
+            from harness_generation.target_build import TargetBuildConfig
+            config = TargetBuildConfig(
+                project_root=SIMPLE_PROJECT,
+                source_files=(SIMPLE_PROJECT / "src" / "parser.c",),
+                archive_name="libpersisted.a",
+                provenance="explicit_recipe",
+            )
+            store.write_target_build(config)
+            triplet = load_triplets_json(artifacts / "triplets.json")[0]
+            validator = PipelineStageValidator(
+                triplet,
+                artifacts=artifacts,
+                functions_json=artifacts / "functions.json",
+                project_root=SIMPLE_PROJECT,
+            )
+            self.assertEqual(validator.target_build.archive_name, "libpersisted.a")
+            self.assertEqual(validator.target_build.provenance, "explicit_recipe")
+
     def test_existing_but_incomplete_stage1_artifact_is_failed(self):
         with tempfile.TemporaryDirectory() as temporary:
             artifacts = Path(temporary) / "artifacts"

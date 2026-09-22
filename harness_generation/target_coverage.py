@@ -40,6 +40,7 @@ class TargetCoverageConfig:
     """
 
     runs: int = 64
+    seed: int = 1
     timeout: float = 30.0
     compiler_flags: tuple[str, ...] = DEFAULT_FUZZER_COMPILE_FLAGS
     harness_language: str = "c++"
@@ -53,6 +54,8 @@ class TargetCoverageConfig:
     def __post_init__(self) -> None:
         if type(self.runs) is not int or self.runs < 1:
             raise ValueError("runs must be a positive integer")
+        if type(self.seed) is not int or self.seed < 0:
+            raise ValueError("seed must be a non-negative integer")
         if self.harness_language not in {"c", "c++"}:
             raise ValueError("harness_language must be 'c' or 'c++'")
         if (
@@ -215,8 +218,10 @@ class TargetCoverageCollector:
         executable = directory / "coverage_fuzzer"
         if not errors:
             link_config = CompilerConfig(
-                compiler=harness_compiler_name,
-                link_flags=_unique_flags(self.config.link_flags, _PROFILE_FLAGS),
+                compiler=target.linker or harness_compiler_name,
+                link_flags=_unique_flags(
+                    target.link_flags, self.config.link_flags, _PROFILE_FLAGS
+                ),
                 working_directory=target.project_root,
                 timeout=self.config.timeout,
             )
@@ -235,7 +240,7 @@ class TargetCoverageCollector:
             command = (
                 str(executable),
                 f"-runs={self.config.runs}",
-                "-seed=1",
+                f"-seed={self.config.seed}",
                 str(corpus_directory),
             )
             result = self._run(
@@ -356,8 +361,10 @@ class TargetCoverageCollector:
             "started_at": started_at.isoformat(),
             "finished_at": finished_at.isoformat(),
             "runs": self.config.runs,
+            "seed": self.config.seed,
             "scope": "target_code",
             "target_files": [str(path) for path in target_files],
+            "recipe_identity": target.to_recipe().identity,
             "compile_target_sources": self.config.compile_target_sources,
             "executable": None if executable is None else str(executable),
             "profraw": None if profraw is None else str(profraw),
@@ -474,17 +481,31 @@ def _finalize_totals(
     return result
 
 
-def latest_target_coverage_summary(coverage_root: str | Path) -> Path | None:
+def latest_target_coverage_summary(
+    coverage_root: str | Path,
+    *,
+    recipe_identity: str | None = None,
+) -> Path | None:
     root = Path(coverage_root)
     if root.is_file():
         return root
     if not root.is_dir():
         return None
     candidates = sorted(
-        path for path in root.glob("run_*/target_coverage.json") if path.is_file()
+        path for path in root.glob("run_*/target_coverage.json")
+        if path.is_file() and (
+            recipe_identity is None or _coverage_matches_recipe(path, recipe_identity)
+        )
     )
     return candidates[-1] if candidates else None
 
+
+def _coverage_matches_recipe(path: Path, recipe_identity: str) -> bool:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return isinstance(document, Mapping) and document.get("recipe_identity") == recipe_identity
 
 def _persist_summary(
     directory: Path,
@@ -565,13 +586,10 @@ def _is_target_file(filename: str, targets: Sequence[Path]) -> bool:
     for target in targets:
         if resolved == target:
             return True
-        try:
-            if candidate.is_absolute() and candidate.resolve() == target:
-                return True
-        except OSError:
-            pass
-        if candidate.as_posix() == target.as_posix() or candidate.name == target.name:
+        if candidate.as_posix() == target.as_posix():
             return True
+        if not candidate.is_absolute() and candidate.name == target.name:
+            continue
     return False
 
 

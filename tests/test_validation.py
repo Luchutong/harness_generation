@@ -9,6 +9,7 @@ from harness_generation.triplet_extractor import extract_function_triplets
 from harness_generation.validation import (
     IntermediateValidator,
     ValidationResult,
+    is_stable_eligible,
     validate_intermediate,
 )
 from sfg_builder.parser import DEFAULT_IGNORES
@@ -275,7 +276,15 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         )
         self.assertTrue(limited.success)
         self.assertTrue(limited.accepted)
+        self.assertFalse(limited.stable_eligible)
         self.assertEqual(limited.to_dict()["status"], "passed_with_limitations")
+
+    def test_only_unqualified_pass_is_stable_eligible(self):
+        for status in ("passed_with_limitations", "skipped", "unavailable"):
+            with self.subTest(status=status):
+                self.assertFalse(is_stable_eligible(status))
+        self.assertTrue(is_stable_eligible("passed"))
+        self.assertFalse(is_stable_eligible(None))
 
 
 if __name__ == "__main__":

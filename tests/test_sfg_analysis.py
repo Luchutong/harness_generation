@@ -105,6 +105,28 @@ class AnnotationTests(unittest.TestCase):
         self.assertNotIn("ISF", annotation.labels)
         self.assertEqual(annotation.stream_parameters[0].kind, "filename")
 
+    def test_parser_value_parameter_is_stream_input(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            (project / "parser.c").write_text(
+                """
+                typedef struct Node { int type; } Node;
+                Node *parse_value(const char *value, size_t buffer_length,
+                                  const char **return_parse_end) {
+                    (void)return_parse_end;
+                    return value && buffer_length ? (Node *)value : 0;
+                }
+                """
+            )
+            parsed = CProjectParser().parse(project)
+        candidates = CandidateDetector().detect(parsed.functions)
+        annotation = FunctionAnnotator(MockSemanticAnalyzer()).annotate(
+            parsed.functions, candidates, parsed.structs)[0]
+        streams = {item.parameter: item for item in annotation.stream_parameters}
+        self.assertIn("ISF", annotation.labels)
+        self.assertTrue(streams["value"].is_byte_stream)
+        self.assertFalse(streams["return_parse_end"].is_byte_stream)
+
 
 if __name__ == "__main__":
     unittest.main()

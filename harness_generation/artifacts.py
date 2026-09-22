@@ -9,6 +9,7 @@ import re
 from typing import Any, Iterable
 
 from .records import write_json
+from .target_contract import TargetContract
 from .triplet import FunctionTriplet, triplets_document
 
 
@@ -46,6 +47,30 @@ class ArtifactStore:
     @property
     def triplets(self) -> Path:
         return self.root / "triplets.json"
+
+    @property
+    def protocol_ir(self) -> Path:
+        return self.root / "protocol_ir.json"
+
+    @property
+    def protocol_contract(self) -> Path:
+        return self.root / "protocol.json"
+
+    @property
+    def protocol_conventions(self) -> Path:
+        return self.root / "protocol_conventions.json"
+
+    @property
+    def contract(self) -> Path:
+        return self.root / "target_contract.json"
+
+    @property
+    def target_build(self) -> Path:
+        return self.root / "target_build.json"
+
+    @property
+    def promotion(self) -> Path:
+        return self.root / "promotion.json"
 
     @property
     def triplets_directory(self) -> Path:
@@ -111,6 +136,86 @@ class ArtifactStore:
                 )
         return self.triplets
 
+    def write_target_contract(self, contract: TargetContract) -> Path:
+        """Persist the additive target contract at the project artifact root."""
+
+        if not isinstance(contract, TargetContract):
+            raise TypeError("contract must be a TargetContract")
+        self.ensure_catalogs()
+        write_json(self.contract, contract.to_dict(), sort_keys=True, allow_nan=False)
+        return self.contract
+
+    def write_target_build(self, config: Any) -> Path:
+        """Persist the explicit target build recipe used by later stages."""
+
+        from .target_build import TargetBuildConfig
+
+        if not isinstance(config, TargetBuildConfig):
+            raise TypeError("config must be a TargetBuildConfig")
+        self.ensure_catalogs()
+        write_json(self.target_build, {
+            "schema_version": 1,
+            "provenance": config.provenance,
+            "recipe": config.to_recipe().to_dict(),
+        }, sort_keys=True, allow_nan=False)
+        return self.target_build
+
+    def load_target_build(self, *, project_root: str | Path | None = None) -> Any | None:
+        """Load an explicit target build recipe, preserving absence as unknown."""
+
+        if not self.target_build.is_file():
+            return None
+        from .target_build import TargetBuildConfig
+
+        try:
+            document = json.loads(self.target_build.read_text(encoding="utf-8"))
+            return TargetBuildConfig.from_dict(document, project_root=project_root)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+            raise ValueError(
+                f"cannot load target build config: {type(error).__name__}"
+            ) from error
+
+    def load_target_contract(self) -> TargetContract | None:
+        """Load a target contract, preserving absence as an explicit no-op."""
+
+        if not self.contract.is_file():
+            return None
+        try:
+            document = json.loads(self.contract.read_text(encoding="utf-8"))
+            return TargetContract.from_dict(document)
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise ValueError(
+                f"cannot load target contract: {type(error).__name__}"
+            ) from error
+
+    def write_protocol_contract(self, document: Any) -> Path:
+        """Persist a legacy protocol.json document without normalizing it."""
+
+        if not isinstance(document, dict):
+            raise TypeError("protocol contract must be an object")
+        self.ensure_catalogs()
+        write_json(self.protocol_contract, document, sort_keys=True, allow_nan=False)
+        return self.protocol_contract
+
+    def write_protocol(
+        self, facts: Any, conventions: Any, ir: Any,
+    ) -> tuple[Path, Path, Path]:
+        """Persist protocol inputs, canonical IR, and the additive contract."""
+
+        self.ensure_catalogs()
+        facts_path = self.root / "protocol_facts.json"
+        conventions_path = self.protocol_conventions
+        write_json(facts_path, facts.to_json(), sort_keys=True, allow_nan=False)
+        convention_document = (
+            {"status": "not_inferred", "entry_function": ir.entry_function}
+            if conventions is None else conventions.to_json()
+        )
+        write_json(conventions_path, convention_document, sort_keys=True, allow_nan=False)
+        write_json(self.protocol_ir, ir.to_json(), sort_keys=True, allow_nan=False)
+        self.write_protocol_contract(ir.to_protocol_contract())
+        self.write_target_contract(TargetContract.from_protocol_ir(ir))
+        return facts_path, conventions_path, self.protocol_ir
+
 
 @dataclass(frozen=True)
 class TripletArtifacts:
@@ -131,6 +236,14 @@ class TripletArtifacts:
     @property
     def harness(self) -> Path:
         return self.store.harnesses_directory / f"{self.ft_id}.c"
+
+    @property
+    def stable_harness_plan(self) -> Path:
+        return self.store.harnesses_directory / f"{self.ft_id}.plan.json"
+
+    @property
+    def promotion(self) -> Path:
+        return self.generation / "promotion.json"
 
     @property
     def build(self) -> Path:
@@ -397,7 +510,7 @@ class TripletArtifacts:
         values = set(statuses.values())
         if "failed" in values:
             overall = "failed"
-        elif values <= {"passed"}:
+        elif len(statuses) == len(VALIDATION_KINDS) and values == {"passed"}:
             overall = "passed"
         elif "passed_with_limitations" in values or "passed" in values:
             overall = "passed_with_limitations"

@@ -22,6 +22,12 @@ def main(
     if arguments[:1] == ["feedback-loop"]:
         from .feedback_loop import main as feedback_loop_main
         return feedback_loop_main(arguments[1:])
+    if arguments[:1] == ["plan-optimize"]:
+        from .plan_optimization import main as plan_optimization_main
+        return plan_optimization_main(arguments[1:], llm=llm)
+    if arguments[:1] == ["protocol-mine"]:
+        from .protocol_cli import main as protocol_main
+        return protocol_main(arguments[1:], llm=llm)
     if arguments[:1] == ["triplets"]:
         from .triplet_cli import main as triplet_main
         return triplet_main(arguments[1:])
