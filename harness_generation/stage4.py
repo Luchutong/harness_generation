@@ -13,6 +13,7 @@ from typing import Any, Iterable, Mapping
 from .artifacts import ArtifactStore
 from .generation_output import normalize_c_response
 from .generation_context import (bounded_validation_feedback,
+                                 callback_table_declarations,
                                  project_type_context)
 from .llm import LLMClient, LLMGeneration
 from .policy import FORBIDDEN_LOGGING_FUNCTIONS
@@ -28,7 +29,11 @@ from .sfg_adapter import is_null_node
 from .source_paths import SUPPORTED_FUNCTIONS_SCHEMA_VERSIONS
 from .stage4_outcome import record_parse_result
 from .target_contract import TargetContract, TargetContractError
-from .triplet import FunctionTriplet, TripletOwnershipRelation
+from .triplet import (
+    FunctionTriplet,
+    TripletOwnershipRelation,
+    missing_structural_steps,
+)
 
 
 FUZZ_ENTRY = "LLVMFuzzerTestOneInput"
@@ -151,6 +156,7 @@ class _Assignment:
     expression: str
     start_byte: int
     whole_target: bool
+    target_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -242,6 +248,7 @@ class Stage4Generator:
             ownership_relations=[
                 relation.to_dict() for relation in triplet.ownership_relations
             ],
+            structural_steps=[step.to_dict() for step in triplet.structural_steps()],
             project_context=project_context,
             protocol_contract=protocol_contract,
             protocol_contract_bindings=(
@@ -366,6 +373,7 @@ class Stage4Generator:
                 harness_plan,
                 protocol_helpers=reconciliation.callable_helpers,
                 project_index=project_index,
+                project_context=project_context,
             )
         except Exception as error:
             record_parse_result(attempt_directory, {
@@ -756,7 +764,20 @@ def parse_harness_plan(
             planned_calls, planned_cleanup, matching
         )
 
-    missing_relations = sorted(set(ownership_by_id) - set(relation_items))
+    all_planned = planned_calls + planned_cleanup
+    planned_all = set(all_planned)
+    # A relation is owed a cleanup only when the plan acquires its resource,
+    # that is when the plan calls that relation's own producer.  ``json_parse``
+    # and ``json_parse_ex`` are alternative implementations of one structural
+    # step, so a plan calling ``json_parse`` acquires one value and owes one
+    # release; demanding a cleanup per sibling relation would ask the harness to
+    # free the same value twice.  A relation left unpaid here is reported by
+    # ``_validate_ownership_calls`` instead once the harness exists.
+    missing_relations = sorted(
+        relation.id for relation in triplet.ownership_relations
+        if relation.id not in relation_items
+        and relation.producer_function in planned_all
+    )
     if missing_relations:
         raise Stage4Error(
             "HarnessPlan must include exactly one cleanup for ownership relations: "
@@ -765,13 +786,16 @@ def parse_harness_plan(
     external_cleanup = sorted(
         set(planned_cleanup) & set(ownership_by_cleanup) - expected
     )
-    all_planned = planned_calls + planned_cleanup
     unknown = sorted(set(all_planned) - expected - set(external_cleanup))
     if unknown:
         raise Stage4Error(
             "HarnessPlan references functions outside the FT: " + ", ".join(unknown)
         )
-    missing = sorted(expected - set(all_planned))
+    missing = missing_structural_steps(
+        expected,
+        (step.functions for step in triplet.structural_steps()),
+        all_planned,
+    )
     if missing:
         raise Stage4Error("HarnessPlan omits FT functions: " + ", ".join(missing))
     duplicated = sorted(
@@ -807,6 +831,10 @@ def parse_harness_plan(
 
     prf_names = {function.function for function in triplet.prfs}
     for function in triplet.functions:
+        if _step_realized(triplet, function.function, planned_all):
+            # The step is realized by one of its implementations; this function
+            # is an alternative for it, not a separate obligation.
+            continue
         if "PRF" in function.roles and "HPF" in function.roles:
             if function.function not in planned_calls:
                 raise Stage4Error(
@@ -919,6 +947,22 @@ def _validate_observed_plan_sequence(
         raise Stage4Error(
             f"HarnessPlan must preserve observed cleanup for {relation.id}"
         )
+
+
+def _step_realized(
+    triplet: FunctionTriplet, function: str, planned: set[str]
+) -> bool:
+    """Return whether any implementation of ``function``'s structural step is planned.
+
+    One snippet or plan owes a step a single call, not a call per alternative
+    implementation: ``json_parse`` and ``json_parse_ex`` perform the same
+    transformation, so a plan that calls either one has realized the step.
+    """
+
+    for step in triplet.structural_steps():
+        if function in step.functions:
+            return bool(planned.intersection(step.functions))
+    return function in planned
 
 
 def _is_disallowed_duplicate_plan_function(
@@ -1055,7 +1099,14 @@ def _load_function_metadata(
             "file": record.get("file"),
             "start_line": record.get("start_line"),
         }
-    return selected, all_names, project_type_context(document)
+    source_files = tuple(
+        record.get("file") for record in selected.values()
+        if isinstance(record.get("file"), str)
+    )
+    return selected, all_names, project_type_context(
+        document, functions_path=path, source_files=source_files,
+        functions=tuple(selected.values()),
+    )
 
 
 def _analyze_cpp(source: str) -> _HarnessAnalysis:
@@ -1122,6 +1173,7 @@ def _validate_harness(
     *,
     protocol_helpers: Iterable[str] = (),
     project_index: ProjectFunctionIndex | None = None,
+    project_context: Mapping[str, Any] | None = None,
 ) -> None:
     definitions = [function.name for function in analysis.functions]
     if definitions.count(FUZZ_ENTRY) != 1:
@@ -1197,7 +1249,11 @@ def _validate_harness(
 
     entry_calls = tuple(entry.calls)
     invoked_in_entry = {call.name for call in entry_calls}
-    missing = sorted(expected - invoked_in_entry)
+    missing = missing_structural_steps(
+        expected,
+        (step.functions for step in triplet.structural_steps()),
+        invoked_in_entry,
+    )
     if missing:
         raise Stage4Error("Stage 4 harness omits FT functions: " + ", ".join(missing))
 
@@ -1208,6 +1264,9 @@ def _validate_harness(
         call, isf_metadata, entry.assignments, plan.input_strategy,
     ) for call in isf_calls):
         raise Stage4Error("Stage 4 ISF call is not connected to external data/size")
+    _validate_callback_bindings(
+        analysis, entry, isf_calls, isf_metadata, project_context or {}
+    )
 
     first_isf = min(call.start_byte for call in isf_calls)
     prf_names = {function.function for function in triplet.prfs}
@@ -1233,6 +1292,252 @@ def _validate_harness(
     _validate_ownership_calls(entry_calls, triplet, plan)
 
 
+def _validate_callback_bindings(
+    analysis: _HarnessAnalysis,
+    entry: _FunctionDefinition,
+    isf_calls: list[_Call],
+    isf_metadata: Mapping[str, Any],
+    project_context: Mapping[str, Any],
+) -> None:
+    """Require every callback the target will invoke to be a real, matching function.
+
+    A callback the target dereferences unconditionally must not be left null, and
+    a slot fed a function of the wrong signature is undefined behaviour even when
+    the pointer is non-null: md4c calls its rendering callbacks through
+    ``MD_PARSER``, and ``fmt_html`` calls ``onCodeBlock`` through
+    ``JSTextFilterFun``. Both have to agree with the declared type.
+    """
+    tables = _callback_tables_by_type(project_context)
+    typedefs = _callback_typedefs_by_name(project_context)
+    if not tables and not typedefs:
+        return
+    parameters = isf_metadata.get("parameters", [])
+    if not isinstance(parameters, list):
+        return
+    table_parameters = [
+        (index, str(parameter.get("base_type")), tables[str(parameter.get("base_type"))])
+        for index, parameter in enumerate(parameters)
+        if isinstance(parameter, Mapping)
+        and parameter.get("is_struct_like") is True
+        and parameter.get("is_pointer") is True
+        and str(parameter.get("base_type")) in tables
+    ]
+    typedef_parameters = [
+        (index, str(parameter.get("base_type")), typedefs[str(parameter.get("base_type"))])
+        for index, parameter in enumerate(parameters)
+        if isinstance(parameter, Mapping)
+        and str(parameter.get("base_type")) in typedefs
+    ]
+    if not table_parameters and not typedef_parameters:
+        return
+    definitions = {function.name: function for function in analysis.functions}
+    assignments = tuple(sorted(entry.assignments, key=lambda item: item.start_byte))
+    for call in isf_calls:
+        before_call = tuple(item for item in assignments if item.start_byte < call.start_byte)
+        for index, type_name, fields in table_parameters:
+            for variable in _table_argument_variables(call, index):
+                for field in fields:
+                    signature = _callback_signature(field["return_type"], field["parameter_types"])
+                    expression = _callback_field_expression(before_call, variable, field["name"])
+                    if expression is None:
+                        if field["required"]:
+                            raise Stage4Error(
+                                f"callback table {type_name}.{field['name']} must be "
+                                f"initialized before {call.name}: the target calls it "
+                                f"through {type_name}, and it must have signature {signature}"
+                            )
+                        continue
+                    if _is_null_expression(expression):
+                        if field["required"]:
+                            raise Stage4Error(
+                                f"callback table {type_name}.{field['name']} must not be null "
+                                f"before {call.name}: the target calls it through "
+                                f"{type_name}, and it must have signature {signature}"
+                            )
+                        continue
+                    if _callback_target_name(expression) not in definitions:
+                        raise Stage4Error(
+                            f"callback table {type_name}.{field['name']} must be a function "
+                            f"defined by the harness with signature {signature}, got "
+                            f"{expression.strip()!r}"
+                        )
+                    _require_callback_signature(
+                        definitions[_callback_target_name(expression)],
+                        field["return_type"],
+                        field["parameter_types"],
+                        f"callback table {type_name}.{field['name']}",
+                    )
+        for index, typedef_name, typedef in typedef_parameters:
+            if index >= len(call.arguments):
+                continue
+            expression = call.arguments[index].text
+            if _is_null_expression(expression):
+                continue
+            name = _callback_target_name(expression)
+            signature = _callback_signature(
+                typedef["return_type"], typedef["parameter_types"]
+            )
+            if name not in definitions:
+                raise Stage4Error(
+                    f"{call.name} argument {index} is typed {typedef_name} and must be "
+                    f"null or a function defined by the harness with signature "
+                    f"{signature}, got {expression.strip()!r}"
+                )
+            _require_callback_signature(
+                definitions[name],
+                typedef["return_type"],
+                typedef["parameter_types"],
+                f"argument {index} of {call.name} ({typedef_name})",
+            )
+
+
+def _table_argument_variables(call: _Call, index: int) -> tuple[str, ...]:
+    """Return the identifiers an ISF call passes in a callback table slot."""
+    if index >= len(call.arguments):
+        return ()
+    return tuple(
+        identifier for identifier in call.arguments[index].identifiers
+        if identifier not in {"data", "size", "nullptr", "NULL", "0"}
+    )
+
+
+def _callback_tables_by_type(
+    project_context: Mapping[str, Any],
+) -> dict[str, tuple[Mapping[str, Any], ...]]:
+    """Return the declared callback members of every callback table type."""
+    tables = project_context.get("callback_tables")
+    if not isinstance(tables, list):
+        # Older context payloads carry declarations but no derived tables.
+        types = project_context.get("types", [])
+        tables = callback_table_declarations(types) if isinstance(types, list) else []
+    result = {}
+    for table in tables:
+        if not isinstance(table, Mapping):
+            continue
+        name = table.get("type")
+        fields = table.get("fields")
+        if not isinstance(name, str) or not isinstance(fields, list):
+            continue
+        declared = tuple(field for field in fields if isinstance(field, Mapping))
+        if declared:
+            result[name] = declared
+    return result
+
+
+def _callback_typedefs_by_name(
+    project_context: Mapping[str, Any],
+) -> dict[str, Mapping[str, Any]]:
+    """Return the function-pointer typedefs the project's headers declare."""
+    typedefs = project_context.get("callback_typedefs")
+    if not isinstance(typedefs, list):
+        return {}
+    result = {}
+    for typedef in typedefs:
+        if not isinstance(typedef, Mapping):
+            continue
+        name = typedef.get("name")
+        if isinstance(name, str) and name:
+            result[name] = typedef
+    return result
+
+
+_CALLBACK_TYPE_ALIASES = {
+    "u8": "uint8_t", "u16": "uint16_t", "u32": "uint32_t", "u64": "uint64_t",
+    "i8": "int8_t", "i16": "int16_t", "i32": "int32_t", "i64": "int64_t",
+}
+
+
+def _declared_type_key(declared: str) -> str:
+    """Reduce a declared type to a comparable ``base/pointer-depth`` key."""
+    text = re.sub(r"/\*.*?\*/", " ", declared, flags=re.DOTALL)
+    text = re.sub(r"\b(?:const|volatile|struct|enum|union)\b", " ", text)
+    depth = text.count("*")
+    tokens = text.replace("*", " ").replace("(", " ").replace(")", " ").split()
+    base = tokens[-1] if tokens else "void"
+    return f"{_CALLBACK_TYPE_ALIASES.get(base, base)}/{depth}"
+
+
+def _parameter_declared_type(parameter: _Parameter) -> str:
+    qualifiers = " ".join(parameter.qualifiers)
+    return f"{qualifiers} {parameter.base_type} {'*' * parameter.pointer_depth}"
+
+
+def _callback_signature(return_type: str, parameter_types: Any) -> str:
+    """Render a declared callback type the way the failure message reads it."""
+    declared = ", ".join(str(item) for item in parameter_types) or "void"
+    return f"{return_type} (*)({declared})"
+
+
+def _without_casts(expression: str) -> str:
+    """Strip leading casts so ``(cb_t)foo`` and ``(void*)0`` read as ``foo``/``0``."""
+    text = expression.strip()
+    while True:
+        stripped = re.sub(r"^\([^()]*\)\s*", "", text)
+        if stripped == text:
+            return text
+        text = stripped
+
+
+def _callback_target_name(expression: str) -> str:
+    """Return the function an assigned callback expression names."""
+    text = _without_casts(expression).lstrip("&").strip()
+    return text if text.isidentifier() else ""
+
+
+def _require_callback_signature(
+    definition: _FunctionDefinition,
+    return_type: str,
+    parameter_types: Any,
+    subject: str,
+) -> None:
+    """Reject a harness function whose signature cannot serve as this callback."""
+    expected = [str(item) for item in parameter_types]
+    signature = _callback_signature(return_type, expected)
+    if _declared_type_key(definition.return_type) != _declared_type_key(return_type):
+        raise Stage4Error(
+            f"{subject} must have signature {signature}, but {definition.name} "
+            f"returns {definition.return_type}"
+        )
+    if len(definition.parameters) != len(expected):
+        raise Stage4Error(
+            f"{subject} must have signature {signature}, but {definition.name} "
+            f"takes {len(definition.parameters)} parameter(s)"
+        )
+    for parameter, declared in zip(definition.parameters, expected):
+        if _declared_type_key(_parameter_declared_type(parameter)) != _declared_type_key(declared):
+            raise Stage4Error(
+                f"{subject} must have signature {signature}, but {definition.name} "
+                f"declares parameter {parameter.name or '?'} as "
+                f"{_parameter_declared_type(parameter).strip()}"
+            )
+
+
+def _callback_field_expression(
+    assignments: tuple[_Assignment, ...], variable: str, field: str
+) -> str | None:
+    dotted = (f"{variable}.{field}", f"{variable}->{field}")
+    for assignment in reversed(assignments):
+        target = assignment.target_text.replace(" ", "")
+        if target in dotted:
+            return assignment.expression
+        if assignment.target == variable and f".{field}" in assignment.expression:
+            match = re.search(
+                rf"\.{re.escape(field)}\s*=\s*([^,}}]+)",
+                assignment.expression,
+            )
+            if match:
+                return match.group(1).strip()
+    return None
+
+
+def _is_null_expression(expression: str) -> bool:
+    """Return whether an expression is a null, however it is spelled."""
+    return bool(re.fullmatch(
+        r"\(?\s*(?:nullptr|NULL|0+[uUlL]*)\s*\)?",
+        _without_casts(expression),
+    ))
+
+
 def _validate_ownership_calls(
     calls: tuple[_Call, ...],
     triplet: FunctionTriplet,
@@ -1244,7 +1549,11 @@ def _validate_ownership_calls(
         for item in plan.cleanup_sequence
         if isinstance(item.get("relation_id"), str)
     }
+    invoked = {call.name for call in calls}
     for relation in triplet.ownership_relations:
+        if relation.producer_function not in invoked:
+            # Nothing acquired through a producer the harness never calls.
+            continue
         item = plan_by_relation.get(relation.id)
         if item is None:
             raise Stage4Error(
@@ -1443,7 +1752,7 @@ def _assignments(body: Any, source: bytes) -> Iterable[_Assignment]:
         ))
         yield _Assignment(
             targets[0], dependencies, _node_text(source, right),
-            node.start_byte, left.type == "identifier",
+            node.start_byte, left.type == "identifier", _node_text(source, left),
         )
 
 
@@ -1516,6 +1825,9 @@ def _isf_uses_external_input(
     return False
 
 
+_POINTER_DECLARATORS = frozenset({"pointer_declarator", "abstract_pointer_declarator"})
+
+
 def _parameters(function_declarator: Any, source: bytes) -> Iterable[_Parameter]:
     parameters = function_declarator.child_by_field_name("parameters")
     if parameters is None:
@@ -1533,8 +1845,10 @@ def _parameters(function_declarator: Any, source: bytes) -> Iterable[_Parameter]
                 for child in node.named_children
                 if child.type == "type_qualifier"
             ),
+            # An unnamed parameter still carries its pointer depth, just in an
+            # abstract declarator: ``void*`` parses as abstract_pointer_declarator.
             pointer_depth=sum(
-                current.type == "pointer_declarator"
+                current.type in _POINTER_DECLARATORS
                 for current in _walk(declarator)
             ) if declarator is not None else 0,
         )
@@ -1548,6 +1862,10 @@ def _calls(body: Any, source: bytes) -> Iterable[_Call]:
             continue
         callee = node.child_by_field_name("function")
         if callee is None or callee.type != "identifier":
+            continue
+        if _node_text(source, callee) in {
+            "reinterpret_cast", "static_cast", "const_cast", "dynamic_cast"
+        }:
             continue
         arguments_node = node.child_by_field_name("arguments")
         arguments = []

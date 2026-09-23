@@ -7,6 +7,7 @@ from .config import CandidateConfig
 from .core import compile_harness
 from .fuzz import run_fuzzer
 from .records import write_json
+from .runtime_validation import POTENTIAL_TARGET_CRASH
 from .smoke import run_smoke
 
 
@@ -120,4 +121,4 @@ def _stage_result_is_accepted_target_finding(stage_result: dict) -> bool:
     classification = stage_result.get("crash_classification")
     if not isinstance(classification, dict):
         return False
-    return classification.get("classification") == "potential_target_crash"
+    return classification.get("classification") == POTENTIAL_TARGET_CRASH

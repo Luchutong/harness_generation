@@ -5,22 +5,73 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 
 from .models import CandidateParameter, FunctionCandidate, FunctionInfo
 
 
-_BYTE_BASE_TYPES = {"void", "char", "signed char", "unsigned char", "uint8_t", "int8_t"}
+_BYTE_BASE_TYPES = {"char", "signed char", "unsigned char", "uint8_t", "int8_t"}
+
+# `void *` is deliberately absent from the set above.  A void pointer carries no
+# element type, so it is indistinguishable from an opaque cookie -- the allocator
+# callbacks `void * (*mem_alloc)(size_t, int, void * user_data)` and
+# `void (*mem_free)(void *, void * user_data)` are the canonical examples, and
+# admitting them costs two of the four FTs on a project with one real byte stream.
+# It is admitted only with separate evidence that the callee treats it as a
+# buffer: a scalar length argument paired with a plausible buffer parameter.
+LENGTH_PARAMETER_NAMES = {
+    "size", "len", "length", "n", "buffer_length", "buffer_size",
+    "input_size", "input_len", "data_size", "data_len", "buf_size",
+    "buf_len", "nbytes", "byte_count",
+}
+_BUFFER_NAME_TOKENS = frozenset({
+    "data", "buffer", "buf", "bytes", "input", "memory", "payload", "stream", "src",
+})
+_OPAQUE_NAME_TOKENS = frozenset({
+    "user", "userdata", "cookie", "context", "ctx", "opaque", "private",
+})
+
+
+def _identifier_tokens(name: str | None) -> frozenset[str]:
+    words = re.findall(
+        r"[A-Z]+(?=[A-Z][a-z]|\b)|[A-Z]?[a-z]+|[0-9]+",
+        (name or "").replace("_", " "),
+    )
+    return frozenset(word.lower() for word in words)
+
+
+def has_byte_buffer_length(function: FunctionInfo, index: int) -> bool:
+    """Require a plausible scalar length and reject named opaque cookies."""
+    parameter = function.parameters[index]
+    tokens = _identifier_tokens(parameter.name)
+    if tokens & _OPAQUE_NAME_TOKENS:
+        return False
+    for length_index, length in enumerate(function.parameters):
+        if (length.is_pointer or length.is_struct_like
+                or length.base_type in {"float", "double", "long double"}
+                or (length.name or "").lower() not in LENGTH_PARAMETER_NAMES):
+            continue
+        if length_index == index + 1 or tokens & _BUFFER_NAME_TOKENS:
+            return True
+    return False
 
 
 class ISFCandidateDetector:
     """Select byte-compatible pointer parameters without assigning an ISF label."""
 
     def candidate_parameters(self, function: FunctionInfo) -> tuple[CandidateParameter, ...]:
+        selected = []
+        for index, parameter in enumerate(function.parameters):
+            if not parameter.is_pointer:
+                continue
+            if parameter.base_type in _BYTE_BASE_TYPES:
+                selected.append(parameter)
+            elif parameter.base_type == "void" and has_byte_buffer_length(function, index):
+                selected.append(parameter)
         return tuple(
             CandidateParameter(parameter.name, parameter.type, parameter.base_type)
-            for parameter in function.parameters
-            if parameter.is_pointer and parameter.base_type in _BYTE_BASE_TYPES
+            for parameter in selected
         )
 
     def detect(self, functions: tuple[FunctionInfo, ...]) -> tuple[FunctionCandidate, ...]:

@@ -42,6 +42,8 @@ number of FT functions + number of Stage 2 structural units + 3
 
 The final `3` covers Stage 3 once and Stage 4 twice. Regeneration, validation,
 and fuzzing are not included. The manifest records this limitation explicitly.
+Each Stage 2 unit is a distinct API step. APIs with the same graph endpoints
+are grouped only when an observed wrapper delegates directly to the other API.
 
 ## Budgeted selection
 
@@ -88,7 +90,7 @@ The manifest contains a SHA-256 fingerprint of the canonical FT catalog;
 3. Measure target coverage for successful harnesses.
 4. Remove project regions already covered and rank the remaining FTs again.
 5. Treat repeated compile/runtime failures as new evidence for a future policy
-   revision; `ft-priority-v3` intentionally uses only pre-generation evidence,
+   revision; `ft-priority-v4` intentionally uses only pre-generation evidence,
    including mined in-project usage.
 
 Keep the `policy_version` with experiment results. Scores from different policy

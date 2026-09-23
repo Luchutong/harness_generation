@@ -34,13 +34,13 @@ class LLMAbstractionTests(unittest.TestCase):
         first = mock.generate(prompt)
         second = mock.generate("plain prompt", prompt_version="manual-v3")
         self.assertEqual(first.content, "first")
-        self.assertEqual(first.prompt_version, "stage1-function-doc-v1")
+        self.assertEqual(first.prompt_version, prompt.prompt_version)
         self.assertEqual(first.to_dict()["prompt_version"], prompt.prompt_version)
         self.assertEqual(first.metadata["prompt_name"], "stage1_function_doc")
         self.assertEqual(second.content, "second")
         self.assertEqual(second.prompt_version, "manual-v3")
         self.assertEqual([call["prompt_version"] for call in mock.calls],
-                         ["stage1-function-doc-v1", "manual-v3"])
+                         [prompt.prompt_version, "manual-v3"])
         with self.assertRaisesRegex(LLMError, "exhausted"):
             mock.generate(prompt)
 
@@ -52,10 +52,11 @@ class LLMAbstractionTests(unittest.TestCase):
             MockLLM(["unused"]).generate("unversioned")
 
     def test_recorded_response_replay_preserves_metadata(self):
+        prompt = _prompt()
         response = LLMGeneration(
             content="recorded output",
             model="recorded-model",
-            prompt_version="stage1-function-doc-v1",
+            prompt_version=prompt.prompt_version,
             provider="recorded-fixture",
             response_id="response-1",
             finish_reason="stop",
@@ -70,12 +71,12 @@ class LLMAbstractionTests(unittest.TestCase):
 
         self.assertEqual(document["schema_version"], 1)
         self.assertEqual(document["responses"][0]["prompt_version"],
-                         "stage1-function-doc-v1")
-        generated = replay.generate(_prompt())
+                         prompt.prompt_version)
+        generated = replay.generate(prompt)
         self.assertEqual(generated, response)
         self.assertEqual(generated.metadata["experiment"], "baseline")
         with self.assertRaisesRegex(LLMError, "exhausted"):
-            replay.generate(_prompt())
+            replay.generate(prompt)
 
     def test_recorded_response_rejects_prompt_version_mismatch(self):
         replay = RecordedResponseLLM([
@@ -86,6 +87,7 @@ class LLMAbstractionTests(unittest.TestCase):
 
     def test_openai_compatible_client_uses_config_and_injected_transport(self):
         captured = {}
+        prompt = _prompt()
 
         def transport(url, payload, headers, timeout):
             captured.update(
@@ -118,7 +120,7 @@ class LLMAbstractionTests(unittest.TestCase):
             transport=transport,
             environ={"UNIT_TEST_LLM_KEY": "unit-test-placeholder"},
         )
-        generated = client.generate(_prompt())
+        generated = client.generate(prompt)
 
         self.assertEqual(captured["url"], "http://localhost:9000/v1/chat/completions")
         self.assertEqual(captured["payload"]["model"], "configured-model")
@@ -131,7 +133,7 @@ class LLMAbstractionTests(unittest.TestCase):
                          "Bearer unit-test-placeholder")
         self.assertEqual(generated.content, "generated C")
         self.assertEqual(generated.model, "served-model")
-        self.assertEqual(generated.prompt_version, "stage1-function-doc-v1")
+        self.assertEqual(generated.prompt_version, prompt.prompt_version)
         self.assertEqual(generated.response_id, "chatcmpl-test")
         self.assertEqual(generated.usage["prompt_tokens"], 20)
         self.assertEqual(generated.metadata["temperature"], 0.35)

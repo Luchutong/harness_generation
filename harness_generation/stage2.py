@@ -12,7 +12,7 @@ from .artifacts import ArtifactStore
 from .generation_output import normalize_c_response
 from .llm import LLMClient, LLMGeneration
 from .prompts import stage2_structure_snippet
-from .sfg_adapter import CANONICAL_NULL_NODE, is_null_node
+from .sfg_adapter import is_null_node
 from .stage3 import STAGE2_SNIPPETS_SCHEMA_VERSION, Stage2Snippet
 from .triplet import FunctionTriplet
 
@@ -75,8 +75,11 @@ class Stage2Generator:
                         "ownership_relations": [
                             relation.to_dict()
                             for relation in triplet.ownership_relations
-                            if relation.producer_function == name
-                            or name in relation.consumers
+                            if name in (
+                                relation.producer_function,
+                                relation.cleanup_function,
+                                *relation.consumers,
+                            )
                         ],
                     }
                     for name in unit["functions"]
@@ -225,39 +228,25 @@ def _load_documentation(
 
 
 def _structural_units(triplet: FunctionTriplet) -> tuple[dict[str, Any], ...]:
-    grouped: dict[tuple[str, str], list[str]] = {}
-    for edge in triplet.edges:
-        functions = grouped.setdefault((edge.src, edge.dst), [])
-        if edge.function not in functions:
-            functions.append(edge.function)
-    covered = {function for functions in grouped.values() for function in functions}
-    for function in triplet.functions:
-        if function.function not in covered:
-            grouped.setdefault(
-                (CANONICAL_NULL_NODE, CANONICAL_NULL_NODE), []
-            ).append(function.function)
-
-    ordered = sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1]))
-    ids = {
-        endpoints: f"unit_{index:04d}"
-        for index, (endpoints, _) in enumerate(ordered, start=1)
-    }
+    ordered = [(step.source, step.target, step.functions)
+               for step in triplet.structural_steps()]
+    ids = [f"unit_{index:04d}" for index in range(1, len(ordered) + 1)]
     units = []
-    for (source, target), functions in ordered:
+    for index, (source, target, functions) in enumerate(ordered):
         dependencies = set()
         if not is_null_node(source):
-            for (producer_source, producer_target), _ in ordered:
+            for producer_index, (producer_source, producer_target, _) in enumerate(ordered):
                 if (
                     producer_target == source
                     and (producer_source, producer_target) != (source, target)
                 ):
-                    dependencies.add(ids[(producer_source, producer_target)])
+                    dependencies.add(ids[producer_index])
         if is_null_node(target):
-            for (peer_source, peer_target), _ in ordered:
+            for peer_index, (peer_source, peer_target, _) in enumerate(ordered):
                 if peer_source == source and not is_null_node(peer_target):
-                    dependencies.add(ids[(peer_source, peer_target)])
+                    dependencies.add(ids[peer_index])
         units.append({
-            "id": ids[(source, target)],
+            "id": ids[index],
             "input_structure": source,
             "output_structure": target,
             "functions": tuple(functions),

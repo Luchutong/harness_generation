@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping
 
 from .base import SemanticDecision
+from .candidates import LENGTH_PARAMETER_NAMES, has_byte_buffer_length
 from .models import AccessHint, FunctionInfo, ParameterInfo, StructInfo
 from .prompts import (DIRECTION_PROMPT_VERSION, ROLE_PROMPT_VERSION,
                       STREAM_PROMPT_VERSION, USAGE_REVIEW_PROMPT_VERSION,
@@ -28,9 +30,18 @@ class MockSemanticAnalyzer:
             kind, accepted, reason = "other", False, "diagnostic output name"
         elif parameter.is_struct_like:
             kind, accepted, reason = "struct", False, "resolved struct-like type"
+        elif parameter.base_type == "void":
+            # An untyped pointer is a buffer only when the callee pairs it with
+            # a length.  Without that, `void *` is as likely to be an opaque
+            # cookie threaded through a callback (`void * user_data`), and
+            # accepting those turns allocator plumbing into an ISF.
+            accepted = _length_paired(function, parameter)
+            kind = "binary"
+            reason = ("length-paired void pointer treated as a byte stream"
+                      if accepted else "untyped void pointer with no length argument")
         else:
             kind = "text" if parameter.base_type == "char" else "binary"
-            accepted = any(token in name for token in
+            accepted = any(_matches_token(name, token) for token in
                            ("data", "buffer", "buf", "bytes", "input", "memory",
                             "payload", "stream", "src"))
             if not accepted:
@@ -119,6 +130,27 @@ class MockSemanticAnalyzer:
         )
 
 
+def _matches_token(name: str, token: str) -> bool:
+    """Match a stream noun on identifier boundaries, not as a substring.
+
+    Substring matching reads `user_data` as a `data` stream, which is how an
+    allocator's opaque cookie got classified as a byte stream at confidence
+    0.95.  `_` is a word character, so `\\b` also keeps `input_buf` from
+    matching `buf` -- a name that only *contains* a stream noun is a hint, and
+    `_looks_like_parser_input` still has to agree.
+    """
+    return re.search(rf"\b{re.escape(token)}\b", name) is not None
+
+
+def _length_paired(function: FunctionInfo, parameter: ParameterInfo) -> bool:
+    """Apply the same byte-buffer evidence as static candidate discovery."""
+    parameters = function.parameters
+    for index, item in enumerate(parameters):
+        if item is parameter or item == parameter:
+            return has_byte_buffer_length(function, index)
+    return False
+
+
 def _looks_like_parser_input(function: FunctionInfo, parameter: ParameterInfo) -> bool:
     if parameter.pointer_depth != 1 or parameter.base_type not in {"char", "unsigned char"}:
         return False
@@ -131,9 +163,7 @@ def _looks_like_parser_input(function: FunctionInfo, parameter: ParameterInfo) -
     if any(token in parameter_name for token in ("end", "out", "result", "error")):
         return False
     has_length_parameter = any(
-        not item.is_pointer and item.name and item.name.lower() in {
-            "size", "len", "length", "n", "buffer_length", "input_size",
-        }
+        not item.is_pointer and (item.name or "").lower() in LENGTH_PARAMETER_NAMES
         for item in function.parameters
     )
     return parameter.is_const or has_length_parameter or function.return_is_struct_like

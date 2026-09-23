@@ -193,7 +193,7 @@ class FTSelectionTests(unittest.TestCase):
             min_score=0.2,
         )
         self.assertEqual(manifest["schema_version"], 2)
-        self.assertEqual(manifest["policy_version"], "ft-priority-v3")
+        self.assertEqual(manifest["policy_version"], "ft-priority-v4")
         self.assertEqual(len(manifest["inputs"]["triplets_sha256"]), 64)
         self.assertEqual(manifest["summary"]["selected_count"], 1)
         self.assertFalse(manifest["cost_model"]["includes_retries"])

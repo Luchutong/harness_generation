@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "source_files": ["json.c"],
+  "header_files": ["json.h"],
+  "include_paths": ["."],
+  "compiler": "clang",
+  "archiver": "ar",
+  "compiler_flags": ["-std=c11"],
+  "link_flags": ["-lm"],
+  "archive_name": "libjson_parser_target.a",
+  "provenance": "benchmarks/json_parser/target_build.json"
+}

@@ -16,7 +16,10 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .artifacts import ArtifactStore
 from .records import write_json
-from .runtime_validation import classify_crash
+from .runtime_validation import (ARTIFACT_CRASH_PREFIXES, CRASH_NONE,
+                                 GENERATED_HARNESS_CRASH, GENERATED_HARNESS_LEAK,
+                                 LEAK_ARTIFACT_PREFIX, POTENTIAL_TARGET_CRASH,
+                                 classify_crash)
 from .validation import VALIDATION_SCHEMA_VERSION, ValidationResult
 
 
@@ -38,7 +41,7 @@ _EXECUTION_PULSE = re.compile(
     r"^#(?P<count>\d+)\s+(?:INITED|NEW|REDUCE|pulse|DONE)\b",
     re.MULTILINE,
 )
-_CRASH_PREFIXES = ("crash-", "leak-", "oom-", "timeout-")
+_CRASH_PREFIXES = ARTIFACT_CRASH_PREFIXES
 _DEFAULT_SEEDS = (
     ("empty", b""),
     ("zero", b"\x00"),
@@ -177,8 +180,13 @@ class LibFuzzerSmokeValidator:
             stderr,
             generated_sources=generated_sources,
             target_root=target_root,
+            # A saved `leak-` input is libFuzzer's own verdict. Hold it beside
+            # the sanitizer report so a leak is classified as a leak even when
+            # the crash text is truncated by the wall timeout above.
+            leaked=any(Path(name).name.startswith(LEAK_ARTIFACT_PREFIX)
+                       for name in crash_files),
         ) if return_code not in (None, 0) else {
-            "classification": "none", "top_frame": None,
+            "classification": CRASH_NONE, "top_frame": None,
             "attribution_frame": None, "stack_parser_status": "not_needed",
         }
         initialized = _initialized(combined)
@@ -300,9 +308,16 @@ def _policy(
         return "unavailable", [], [start_error]
     if timed_out:
         return "failed", ["libFuzzer smoke exceeded its explicit wall timeout"], []
-    if classification == "generated_harness_crash":
+    if classification == GENERATED_HARNESS_LEAK:
+        return (
+            "failed",
+            ["libFuzzer smoke leaked a target resource; the generated harness "
+             "did not release what it acquired"],
+            [],
+        )
+    if classification == GENERATED_HARNESS_CRASH:
         return "failed", ["libFuzzer smoke crashed in generated harness code"], []
-    if classification == "potential_target_crash":
+    if classification == POTENTIAL_TARGET_CRASH:
         if not initialized:
             return "failed", ["libFuzzer initialization was not observed before target crash"], []
         if statistics.get("execs_done", 0) <= 0:
@@ -361,8 +376,10 @@ def _failure_type(status: str, classification: str, timed_out: bool) -> str | No
         return None
     if timed_out:
         return "fuzz_smoke_timeout"
-    if classification == "generated_harness_crash":
-        return "generated_harness_crash"
+    if classification == GENERATED_HARNESS_LEAK:
+        return GENERATED_HARNESS_LEAK
+    if classification == GENERATED_HARNESS_CRASH:
+        return GENERATED_HARNESS_CRASH
     return "fuzz_smoke_failure"
 
 

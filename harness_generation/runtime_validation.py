@@ -35,6 +35,44 @@ _STACK_FRAME = re.compile(
     re.MULTILINE,
 )
 
+# The single authority for fault attribution.  These strings travel through
+# saved metadata into evaluators, feedback loops and promotion gates, so a
+# consumer that hardcodes its own copy silently stops covering new values.
+CRASH_NONE = "none"
+CRASH_TIMEOUT = "timeout"
+#: Smoke could not be attributed because it never produced a stack at all.
+CLASSIFICATION_UNAVAILABLE = "unavailable"
+GENERATED_HARNESS_CRASH = "generated_harness_crash"
+GENERATED_HARNESS_LEAK = "generated_harness_leak"
+POTENTIAL_TARGET_CRASH = "potential_target_crash"
+UNCLASSIFIED_CRASH = "unclassified_crash"
+
+#: Faults the harness itself is answerable for, whatever the target did.
+HARNESS_CRASH_CLASSIFICATIONS = frozenset({
+    GENERATED_HARNESS_CRASH,
+    GENERATED_HARNESS_LEAK,
+})
+
+#: Faults that stop the harness from being published.
+BLOCKING_CRASH_CLASSIFICATIONS = HARNESS_CRASH_CLASSIFICATIONS | {UNCLASSIFIED_CRASH}
+
+#: Every value `_classify_frames` can return, for consumers that must cover all
+#: of them rather than the ones that existed when they were written.
+CRASH_CLASSIFICATIONS = (
+    HARNESS_CRASH_CLASSIFICATIONS
+    | {POTENTIAL_TARGET_CRASH, UNCLASSIFIED_CRASH}
+)
+
+_LEAK_MARKER = re.compile(
+    r"LeakSanitizer:\s*detected\s+memory\s+leaks|Sanitizer:\s*\d+\s+byte\(s\)\s+leaked",
+    re.IGNORECASE,
+)
+
+#: libFuzzer names saved artifacts by fault kind; a `leak-` input is a leak
+#: even when the process exit path never printed a sanitizer report.
+ARTIFACT_CRASH_PREFIXES = ("crash-", "leak-", "oom-", "timeout-")
+LEAK_ARTIFACT_PREFIX = "leak-"
+
 
 @dataclass(frozen=True)
 class RuntimeValidationResult:
@@ -550,16 +588,16 @@ def _case_record(
     frame = frames[0] if frames else None
     if timed_out:
         status = "timed_out"
-        classification = "timeout"
+        classification = CRASH_TIMEOUT
     elif return_code == 0:
         status = "passed"
-        classification = "none"
+        classification = CRASH_NONE
     elif return_code is None:
         status = "unavailable"
-        classification = "unavailable"
+        classification = CLASSIFICATION_UNAVAILABLE
     else:
         attribution_frame, classification = _classify_frames(
-            frames, generated_sources, target_root
+            frames, generated_sources, target_root, _leak_reported(stderr)
         )
         status = "crashed"
     if return_code in (None, 0) or timed_out:
@@ -631,14 +669,20 @@ def classify_crash(
     *,
     generated_sources: Sequence[str | Path],
     target_root: str | Path,
+    leaked: bool | None = None,
 ) -> dict[str, Any]:
-    """Attribute sanitizer/libFuzzer frames without interpreting a target bug."""
+    """Attribute sanitizer/libFuzzer frames without interpreting a target bug.
+
+    `leaked` distinguishes a leak from a hard fault.  Left as None it is read
+    from the sanitizer's own report in `stderr`.
+    """
 
     frames = _source_frames(stderr)
     frame, classification = _classify_frames(
         frames,
         tuple(Path(path).resolve() for path in generated_sources),
         Path(target_root).resolve(),
+        _leak_reported(stderr) if leaked is None else leaked,
     )
     return {
         "classification": classification,
@@ -648,60 +692,114 @@ def classify_crash(
     }
 
 
+def _leak_reported(stderr: str) -> bool:
+    """Report LeakSanitizer's own verdict, not a guess from a return code."""
+    return _LEAK_MARKER.search(stderr) is not None
+
+
 def _classify_frames(
     frames: Sequence[Mapping[str, Any]],
     generated_sources: Sequence[Path],
     target_root: Path,
+    leaked: bool = False,
 ) -> tuple[Mapping[str, Any] | None, str]:
+    """Use the first attributed fault frame; treat mixed leak stacks as unknown.
+
+    A normal fault stack contains the harness entry below the target frame.
+    That caller frame cannot override the actual fault location. A leak stack
+    describes where memory was allocated, not who omitted the release, so a
+    target allocation reached through generated code is insufficient to blame
+    either side. The ambiguous leak is blocked without being called a target bug.
+    """
+    generated = set(generated_sources)
+    attributed = []
     for frame in frames:
         source = Path(str(frame["source"])).resolve()
-        if source in generated_sources:
-            return frame, "generated_harness_crash"
-        try:
-            source.relative_to(target_root)
-        except ValueError:
-            continue
-        return frame, "potential_target_crash"
-    return None, "unclassified_crash"
+        if source in generated:
+            attributed.append((frame, "harness"))
+        elif _under(source, target_root):
+            attributed.append((frame, "target"))
+    if not attributed:
+        return None, UNCLASSIFIED_CRASH
+    first_frame, first_kind = attributed[0]
+    if leaked:
+        kinds = {kind for _, kind in attributed}
+        if kinds == {"harness"}:
+            return first_frame, GENERATED_HARNESS_LEAK
+        # A target allocator in the LSan allocation stack does not identify
+        # the missing cleanup site, even when no harness frame was symbolized.
+        return first_frame, UNCLASSIFIED_CRASH
+    if first_kind == "harness":
+        return first_frame, GENERATED_HARNESS_CRASH
+    if first_kind == "target":
+        return first_frame, POTENTIAL_TARGET_CRASH
+    return None, UNCLASSIFIED_CRASH
+
+
+def _under(source: Path, root: Path) -> bool:
+    try:
+        source.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def _smoke_policy(
     cases: Sequence[Mapping[str, Any]],
 ) -> tuple[str, list[str], list[str], str]:
     classifications = [case["crash_classification"] for case in cases]
-    if "timeout" in classifications:
-        return "failed", ["runtime smoke exceeded its timeout"], [], "timeout"
-    if "generated_harness_crash" in classifications:
+    if CRASH_TIMEOUT in classifications:
+        return (
+            "failed",
+            ["runtime smoke exceeded its timeout"],
+            [],
+            CRASH_TIMEOUT,
+        )
+    if GENERATED_HARNESS_LEAK in classifications:
+        return (
+            "failed",
+            ["runtime smoke leaked a target resource; the generated harness did "
+             "not release what it acquired"],
+            [],
+            GENERATED_HARNESS_LEAK,
+        )
+    if GENERATED_HARNESS_CRASH in classifications:
         return (
             "failed",
             ["runtime smoke crashed in generated harness code"],
             [],
-            "generated_harness_crash",
+            GENERATED_HARNESS_CRASH,
         )
-    if "unclassified_crash" in classifications:
+    if UNCLASSIFIED_CRASH in classifications:
         return (
             "failed",
             ["runtime smoke crashed; stack source attribution is unavailable"],
             [],
-            "unclassified_crash",
+            UNCLASSIFIED_CRASH,
         )
-    if "unavailable" in classifications:
-        return "skipped", [], ["runtime smoke executable could not be started"], "unavailable"
-    if "potential_target_crash" in classifications:
+    if CLASSIFICATION_UNAVAILABLE in classifications:
+        return (
+            "skipped",
+            [],
+            ["runtime smoke executable could not be started"],
+            CLASSIFICATION_UNAVAILABLE,
+        )
+    if POTENTIAL_TARGET_CRASH in classifications:
         return (
             "passed_with_limitations",
             [],
             ["runtime smoke found a potential target crash; preserved for triage"],
-            "potential_target_crash",
+            POTENTIAL_TARGET_CRASH,
         )
-    return "passed", [], [], "none"
+    return "passed", [], [], CRASH_NONE
 
 
 def _runtime_failure_type(classification: str) -> str | None:
     return {
-        "timeout": "runtime_timeout",
-        "generated_harness_crash": "generated_harness_crash",
-        "unclassified_crash": "unclassified_runtime_crash",
+        CRASH_TIMEOUT: "runtime_timeout",
+        GENERATED_HARNESS_CRASH: GENERATED_HARNESS_CRASH,
+        GENERATED_HARNESS_LEAK: GENERATED_HARNESS_LEAK,
+        UNCLASSIFIED_CRASH: "unclassified_runtime_crash",
     }.get(classification)
 
 

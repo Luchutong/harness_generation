@@ -5,6 +5,11 @@ import unittest
 
 from harness_generation.sfg_adapter import load_sfg_artifacts
 from harness_generation.policy import FORBIDDEN_LOGGING_FUNCTIONS
+from harness_generation.triplet import (
+    FunctionTriplet,
+    TripletEdge,
+    TripletFunction,
+)
 from harness_generation.triplet_extractor import extract_function_triplets
 from harness_generation.validation import (
     IntermediateValidator,
@@ -137,6 +142,25 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         )
         self.assertEqual(result.metadata["indirect_function_calls"], ["call_parse", "data"])
 
+    def test_cpp_casts_are_not_counted_as_api_calls(self):
+        source = """#include <stddef.h>
+#include <stdint.h>
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    parse_input(reinterpret_cast<const char *>(data),
+                static_cast<unsigned>(size));
+    return 0;
+}
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            result = validate_intermediate(
+                source,
+                expected_functions=("parse_input",),
+                target_functions=("parse_input",),
+                validation_path=Path(temporary) / "validation.json",
+            )
+        self.assertTrue(result.success, result.errors)
+        self.assertEqual(result.metadata["observed_function_calls"], ["parse_input"])
+
     def test_cpp_syntax_errors_are_reported_with_cpp_parser(self):
         source = """#include <vector>
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
@@ -230,6 +254,75 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             result.metadata["expected_functions"],
             ["node_process", "parser_free", "parser_from_memory", "parser_next"],
         )
+
+    def test_validate_triplet_accepts_one_implementation_per_structural_step(self):
+        def declared(name, roles, line):
+            return TripletFunction(
+                f"src/parser.c:{line}:{name}", name, roles, "src/parser.c", line
+            )
+
+        isf = declared("parse", ("ISF", "PRF"), 3)
+        alternate = declared("parse_alt", ("PRF",), 13)
+        hpf = declared("destroy", ("HPF",), 25)
+        edges = tuple(
+            TripletEdge(
+                function.function_id, function.function, "(null)", "Context",
+                function.roles, function.file, function.line,
+            )
+            for function in (isf, alternate)
+        ) + (TripletEdge(
+            hpf.function_id, hpf.function, "Context", "(null)",
+            hpf.roles, hpf.file, hpf.line,
+        ),)
+        triplet = FunctionTriplet(
+            isf, (alternate,), (hpf,), (isf, alternate, hpf), ("Context",), edges,
+            {"structural_alternatives": [{
+                "functions": ["parse", "parse_alt"],
+                "evidence": "parse delegates to parse_alt",
+            }]},
+        )
+
+        def validate(source, root):
+            functions_json = root / "functions.json"
+            functions_json.write_text(json.dumps({
+                "schema_version": 1,
+                "functions": [{"name": "parse"}, {"name": "parse_alt"},
+                              {"name": "destroy"}],
+            }), encoding="utf-8")
+            return IntermediateValidator().validate_triplet(
+                source,
+                triplet,
+                functions_json=functions_json,
+                artifacts=root / "artifacts",
+                stage="stage3",
+            )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            accepted = validate("""void generated(void) {
+    Context *context = parse_alt(0, 0);
+    destroy(context);
+}""", Path(temporary))
+        with tempfile.TemporaryDirectory() as temporary:
+            rejected = validate("""void generated(void) {
+    Context *context = parse_alt(0, 0);
+}""", Path(temporary))
+        with tempfile.TemporaryDirectory() as temporary:
+            empty = validate("void generated(void) {}", Path(temporary))
+
+        self.assertTrue(accepted.success)
+        self.assertEqual(accepted.metadata["missing_expected_functions"], [])
+        self.assertEqual(
+            accepted.metadata["expected_function_alternatives"],
+            [["parse", "parse_alt"], ["destroy"]],
+        )
+        self.assertFalse(rejected.success)
+        self.assertEqual(rejected.metadata["missing_expected_functions"], ["destroy"])
+        self.assertEqual(
+            empty.metadata["missing_expected_functions"],
+            ["destroy", "parse or parse_alt"],
+        )
+        self.assertTrue(any("missing expected functions: destroy, parse or parse_alt"
+                            in error for error in empty.errors))
 
     def test_function_pointer_call_is_a_warning_not_an_unknown_api(self):
         source = """void generated(void (*callback)(void)) {

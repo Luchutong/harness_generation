@@ -116,7 +116,7 @@ class Stage1Generator:
             prompt = stage1_function_doc(
                 function_signature=function["signature"],
                 function_source=source,
-                usage_context=_usage_context(triplet, reference, function),
+                usage_context=_usage_context(triplet, reference, function, document),
             )
             stem = Path(raw_names[reference.function_id]).stem
             layout.write_json_copies(
@@ -303,7 +303,21 @@ def _read_function_source(
 
 def _usage_context(triplet: FunctionTriplet,
                    function: TripletFunction,
-                   metadata: Mapping[str, Any]) -> dict[str, Any]:
+                   metadata: Mapping[str, Any],
+                   functions_document: Mapping[str, Any]) -> dict[str, Any]:
+    referenced_types = {
+        item.get("base_type") for item in metadata.get("parameters", [])
+        if isinstance(item, Mapping) and item.get("is_struct_like") is True
+    }
+    if metadata.get("return_is_struct_like") is True:
+        referenced_types.add(metadata.get("return_base_type"))
+    struct_definitions = [
+        {"name": item.get("name"), "declaration": item.get("declaration")}
+        for item in functions_document.get("structs", [])
+        if isinstance(item, Mapping)
+        and item.get("name") in referenced_types
+        and isinstance(item.get("declaration"), str)
+    ]
     return {
         "triplet_id": triplet.id,
         "target_function": function.function,
@@ -317,6 +331,7 @@ def _usage_context(triplet: FunctionTriplet,
         "parameters": metadata.get("parameters", []),
         "access_hints": metadata.get("access_hints", []),
         "structures": list(triplet.structures),
+        "referenced_struct_definitions": struct_definitions,
         "related_functions": [
             {"function": item.function, "roles": list(item.roles)}
             for item in triplet.functions

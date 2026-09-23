@@ -81,10 +81,14 @@ class PromptTemplate:
 
 STAGE1_FUNCTION_DOC = PromptTemplate(
     name="stage1_function_doc",
-    version="stage1-function-doc-v1",
+    version="stage1-function-doc-v2",
     template="""You are documenting a C function for a later harness-generation pass.
 Use only the supplied source and context. Do not redefine the function or invent
 functions, types, APIs, or semantics that cannot be supported by the source.
+Inspect referenced struct definitions. If a parameter struct contains callback
+fields, explain which callbacks the API requires and initialize them in the
+example with concrete safe functions. A comment saying callbacks should be set
+is not a runnable example. Keep documented optional callbacks null when useful.
 
 Function signature:
 {function_signature}
@@ -106,12 +110,15 @@ Use null or an empty list for facts that cannot be reliably inferred.""",
 
 STAGE2_STRUCTURE_SNIPPET = PromptTemplate(
     name="stage2_structure_snippet",
-    version="stage2-structure-snippet-v2",
+    version="stage2-structure-snippet-v3",
     template="""Produce a focused C snippet for one structural-flow step.
-Explicitly call every supplied function, preserve dependencies, and use only the
-provided functions. Do not reimplement target functions, invent APIs, or add a
-final LLVMFuzzerTestOneInput wrapper. Output C only, never C++.
-Dependency identifiers describe ordering only; never call them as functions.
+Call the supplied function that carries out this step. When several functions are
+supplied they are alternative implementations of the same step, so call exactly
+one of them; do not call the others, and release each acquired resource exactly
+once. Preserve dependencies and use only the provided functions. Do not
+reimplement target functions, invent APIs, or add a final LLVMFuzzerTestOneInput
+wrapper. Output C only, never C++. Dependency identifiers describe ordering only;
+never call them as functions.
 
 Input structure:
 {input_structure}
@@ -166,7 +173,7 @@ Previous validation feedback (empty on the first attempt):
 
 STAGE4_HARNESS_TRANSFORM = PromptTemplate(
     name="stage4_harness_transform",
-    version="stage4-harness-transform-v7",
+    version="stage4-harness-transform-v9",
     template="""Implement the supplied HarnessPlan as a C++ libFuzzer harness.
 The final harness is a C++ translation unit, but it fuzzes the C target through
 C-compatible declarations. It must include <stddef.h> and <stdint.h> explicitly
@@ -186,6 +193,21 @@ the target project is C, include project headers inside an extern "C" block when
 the header declares target functions. Do not redeclare project functions or
 project types. Preserve typedef aliases exactly; never replace an anonymous
 typedef T with a nonexistent struct T tag.
+If project_context lists cplusplus_unsafe_headers, those headers are evidence
+only and must not be included by the final C++ harness. Use the supplied
+portable_abi_declarations for FT functions whose public project headers are
+missing or unsafe in C++. When a portable ABI declaration maps a callback typedef
+to void*, pass nullptr unless the target contract explicitly requires callback
+behavior. When enum constants are available only from unsafe headers, use their
+documented integer value instead of including the unsafe header.
+When the ISF takes a callback table, read project_context.callback_tables and
+assign every field marked "required" a static function whose parameters and
+return type match that field's declaration exactly. A zero-initialized table left
+that way is a null dereference inside the target, not a safe default. Fields not
+marked "required" may stay null. When the ISF takes a parameter listed in
+project_context.callback_typedefs or in a declarations callback_parameters, pass
+either nullptr or a function matching that typedef exactly; a helper of a
+different arity is undefined behavior when the target calls through the typedef.
 
 Use only the supplied project functions plus necessary standard C/C++ library
 utilities. Emit only C++ source without Markdown fences. Do not use using
@@ -253,7 +275,7 @@ Previous validation feedback (empty on the first attempt):
 
 STAGE4_HARNESS_PLAN = PromptTemplate(
     name="stage4_harness_plan",
-    version="stage4-harness-plan-v5",
+    version="stage4-harness-plan-v9",
     template="""Create a structured HarnessPlan before any final C harness is
 written. Use the rough program, Function Triplet, and exact project declarations
 to decide state objects, fuzzer-input decoding, call order, data/size binding,
@@ -284,10 +306,12 @@ those names.{{"schema_version":1,"triplet_id":"{triplet_id}","entrypoint":"LLVMF
 "cleanup_sequence":[{{"function":"...","purpose":"...",
 "arguments":["..."],"relation_id":"...","producer_function":"...",
 "resource_type":"...","producer_binding":{{"kind":"return_value",
-"identifier":"..."}},"after":["..."]}}],
+"identifier":"..."}},"after":["..."],"conditions":["..."]}}],
 "constraints":["..."],"notes":["..."]}}
 
-Every FT function must appear in call_sequence or cleanup_sequence. When an
+Every listed structural step must be realized. A step with multiple functions
+contains proven alternatives, so call one of them. Separate steps are separate
+obligations even when they have the same source and target. When an
 ownership relation supplies observed_sequence, preserve its order and repeat a
 function exactly as many times as that sequence records; otherwise use it once.
 The unique ISF must appear in call_sequence and must use both fuzzer data and
@@ -298,9 +322,11 @@ processing. Ownership cleanup is a scoped exception: use it only when the
 supplied FunctionTriplet ownership_relations contains the exact relation, keep
 it in cleanup_sequence, bind it using the relation's producer_binding and
 producer_argument_index, and include every declared consumer in after. A
-conditional, error-path, or nullable cleanup requires an explicit
-null-safe condition. Never infer cleanup permission from prose, a null structural
-endpoint, or a global API allowlist.
+cleanup whose relation records "nullable":true, or whose path_kind is
+"conditional" or "error", must additionally carry a non-empty conditions list
+naming the explicit null-safe guard. A relation whose producer the plan never
+calls is not owed a cleanup. Never infer cleanup permission from prose, a null
+structural endpoint, or a global API allowlist.
 If a protocol contract is supplied, the plan must explicitly preserve its input
 model. For framed command protocols, use a bounded multi-frame command loop,
 set input_strategy.bounded_steps to a positive cap, keep state_objects alive
@@ -315,6 +341,15 @@ When no protocol or known grammar contract is supplied, the plan must use raw
 byte/text passthrough:
 do not invent a length prefix, magic, checksum, padding, or multi-frame framing.
 For explicit-length APIs, bind the fuzzer-controlled buffer and size directly.
+Read project_context.callback_tables. Every field marked "required" is called by
+the target through that table and must be given a concrete function of the
+declared signature, which must be listed as a constraint or a call argument.
+Fields not marked "required" may stay null. The table itself must never be
+passed zero-initialized and untouched.
+Read project_context.callback_typedefs and the callback_parameters of the
+portable ABI declarations. A parameter typed by one of those typedefs is either
+null or a function whose parameters and return type match the typedef exactly;
+never supply a helper of a different arity.
 
 Rough program:
 {rough_code}
@@ -334,6 +369,9 @@ byte-stream/length binding, constants, return status, and struct access hints):
 
 FT-scoped ownership relations (the only authority for external cleanup calls):
 {ownership_relations}
+
+Evidence-backed structural steps:
+{structural_steps}
 
 Protocol contract, if supplied:
 {protocol_contract}
@@ -466,6 +504,7 @@ def stage3_rough_assembly(*, snippets: Any, structural_dependencies: Any,
 def stage4_harness_plan(*, triplet_id: Any, rough_code: Any, unique_isf: Any,
                         function_metadata: Any, bypass_semantics: Any = (),
                         ownership_relations: Any = (),
+                        structural_steps: Any = (),
                         project_context: Any = (),
                         protocol_contract: Any = None,
                         protocol_contract_bindings: Any = None,
@@ -482,6 +521,7 @@ def stage4_harness_plan(*, triplet_id: Any, rough_code: Any, unique_isf: Any,
         function_metadata=function_metadata,
         bypass_semantics=bypass_semantics,
         ownership_relations=ownership_relations,
+        structural_steps=structural_steps,
         project_context=project_context,
         protocol_contract=protocol_contract or {},
         protocol_contract_bindings=protocol_contract_bindings,

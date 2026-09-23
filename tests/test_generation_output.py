@@ -17,6 +17,22 @@ class GeneratedOutputTests(unittest.TestCase):
         self.assertEqual(normalize_c_response(with_prose), with_prose)
         self.assertEqual(normalize_c_response(nested), nested)
 
+    def test_drops_a_trailing_echoed_transport_delimiter(self):
+        source = "int f(void) { return 0; }"
+        for tag in ("</stdin>", "<stdout>", "</answer>", "</code>"):
+            with self.subTest(tag=tag):
+                self.assertEqual(
+                    normalize_c_response(f"{source}\n{tag}"), source
+                )
+                self.assertEqual(
+                    normalize_c_response(f"```c\n{source}\n```\n{tag}"), source
+                )
+
+    def test_keeps_a_tag_that_is_not_a_trailing_delimiter(self):
+        source = "int f(void) { return 0; }\n</stdin>\nint g(void) { return 1; }"
+        self.assertEqual(normalize_c_response(source), source)
+        self.assertEqual(normalize_c_response("</stdin>"), "</stdin>")
+
 
 if __name__ == "__main__":
     unittest.main()

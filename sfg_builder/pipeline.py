@@ -48,6 +48,7 @@ class SFGPipeline:
         ownership = derive_ownership_relations(
             parsed.functions,
             opaque_resource_types=(handle.name for handle in parsed.opaque_handles),
+            struct_resource_types=(info.name for info in parsed.structs),
         )
         usage = review_usage_semantics(
             mine_usage_patterns(parsed.functions),

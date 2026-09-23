@@ -136,7 +136,8 @@ null 表示由独立 adapter 统一识别，包括 `null`、`NULL`、`(null)`、
 | Stage 4 | rough code、唯一 ISF、函数 metadata、HarnessPlan | 先生成并校验严格 JSON `HarnessPlan`，再按 plan 转换为 C++ `LLVMFuzzerTestOneInput`，检查 data/size 接入、目标 API、cleanup 和禁用 I/O/logging | `stage4_harness_plan.json`、`stage4_harness.c`、`harnesses/<ft_id>.c`、`stage4/attempt_NNN/` |
 
 Stage 4 被刻意拆成 plan 与 code 两次 LLM invocation。第一次只能返回 JSON 计划，
-必须覆盖 FT 全部函数，唯一 ISF 必须绑定 `data` 和 `size`，PRF+HPF 函数按
+必须覆盖 FT 的每个结构步骤。同端点函数只有存在直接委托证据时才会合并为可替代实现；
+plan 与 harness 需覆盖各独立步骤，唯一 ISF 必须绑定 `data` 和 `size`，PRF+HPF 函数按
 processing call 处理，纯 HPF cleanup 放入 cleanup sequence。只有 plan 校验通过后，
 第二次 invocation 才能按该 plan 生成 C harness。这样后续 feedback 可以修改 plan
 层面的输入 grammar、状态模型或 cleanup 策略，而不是直接要求模型重写整段 C。
@@ -194,6 +195,11 @@ link、runtime smoke 和可选 fuzz smoke。Artifact 存在不再等价于验证
 返回的统一 `ValidationResult` 会直接参与 orchestrator 的 accept/rollback 决策。
 失败上下文只保留 bounded error summary、validator、failure type 和 stderr tail，完整
 stdout/stderr 则保存在 artifact 中。
+
+运行时归因按栈中首个属于项目或生成 harness 的故障帧判断普通崩溃。LeakSanitizer
+展示的是分配路径：若同一泄漏栈同时含项目和 harness 帧，仅凭这条栈无法判定谁漏了
+释放，归为 `unclassified_crash` 并阻断发布。只有直接指向生成代码的泄漏栈才归为
+`generated_harness_leak`；泄漏不会仅因目标分配帧而被当作已确认的目标漏洞。
 
 所有 stage 通过统一 orchestrator 的 `input -> run -> validate -> persist ->
 checkpoint` 生命周期执行。状态写入：

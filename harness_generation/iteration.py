@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 from typing import Mapping, Protocol, Sequence
 
+from .runtime_validation import (BLOCKING_CRASH_CLASSIFICATIONS,
+                                 POTENTIAL_TARGET_CRASH)
 from .evaluation import (AggregateResult, EvaluationContext, EvaluationReport,
                          Evidence, MetricId, MetricResult, MetricStatus)
 
@@ -529,7 +531,7 @@ def _is_target_stage_finding(value: object) -> bool:
     classification = value.get("crash_classification")
     return (
         isinstance(classification, Mapping)
-        and classification.get("classification") == "potential_target_crash"
+        and classification.get("classification") == POTENTIAL_TARGET_CRASH
     )
 
 
@@ -580,7 +582,7 @@ def _dynamic_quality_gate_failures(
         )
 
     crash = _crash_classification(report)
-    if crash in {"generated_harness_crash", "unclassified_crash"}:
+    if crash in BLOCKING_CRASH_CLASSIFICATIONS:
         failures.append(f"crash classification is {crash}")
     return tuple(failures)
 
@@ -612,4 +614,4 @@ def _crash_classification(report: EvaluationReport) -> str | None:
 
 
 def _has_target_finding(report: EvaluationReport) -> bool:
-    return _crash_classification(report) == "potential_target_crash"
+    return _crash_classification(report) == POTENTIAL_TARGET_CRASH

@@ -21,7 +21,7 @@ from .stage3 import Stage3Result
 from .stage4 import Stage4Result
 from .stage4_outcome import record_validation_exception, record_validation_result
 from .target_build import TargetBuildConfig
-from .triplet import FunctionTriplet
+from .triplet import FunctionTriplet, missing_structural_steps
 from .validation import (
     DEFAULT_ALLOWED_FUNCTIONS,
     IntermediateValidator,
@@ -198,13 +198,15 @@ class PipelineStageValidator:
                 errors.append(f"Stage 2 snippet is not valid C syntax: {unit_id}")
                 continue
             calls = set(facts.calls)
-            missing = sorted(declared - calls)
+            # A unit is one structural step, so its declared functions are
+            # alternatives for that step: calling any one of them realizes it.
+            missing = missing_structural_steps(declared, (declared,), calls)
             invented = sorted(
                 calls - self.target_functions - DEFAULT_ALLOWED_FUNCTIONS
             )
             if missing:
                 errors.append(
-                    f"Stage 2 snippet omits declared functions in {unit_id}: "
+                    f"Stage 2 snippet calls no declared function in {unit_id}: "
                     + ", ".join(missing)
                 )
             if invented:

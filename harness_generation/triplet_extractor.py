@@ -10,6 +10,7 @@ import re
 from typing import Any, Mapping
 
 from sfg_builder.models import SFGEdge
+from sfg_builder.parser import _make_parser, _text, _walk
 
 from .sfg_adapter import SFGArtifacts, SFGGraphView, is_null_node
 from .triplet import (FunctionTriplet, TripletBypassSemantic, TripletEdge,
@@ -17,7 +18,7 @@ from .triplet import (FunctionTriplet, TripletBypassSemantic, TripletEdge,
                       stable_triplet_id)
 
 
-ALGORITHM_VERSION = "synapseflow-function-triplet-v4"
+ALGORITHM_VERSION = "synapseflow-function-triplet-v5"
 BYPASS_SEMANTICS_VERSION = "function-triplet-bypass-v2"
 _ROLE_ORDER = {"ISF": 0, "PRF": 1, "HPF": 2}
 _BYTE_STREAM_BASE_TYPES = {
@@ -159,6 +160,9 @@ class FunctionTripletExtractor:
             "bypass_semantics_version": BYPASS_SEMANTICS_VERSION,
             "bypass_semantics_count": len(bypass_semantics),
             "lifecycle_closure": list(lifecycle_closure),
+            "structural_alternatives": _delegating_alternatives(
+                artifacts, functions, edges
+            ),
             "usage_pattern": dict(usage_pattern) if usage_pattern is not None else None,
             "authority": authority,
             "anchor_function_id": anchor_id,
@@ -192,6 +196,79 @@ class FunctionTripletExtractor:
             bypass_semantics=bypass_semantics,
             ownership_relations=ownership_relations,
         )
+
+
+def _delegating_alternatives(
+    artifacts: SFGArtifacts,
+    functions: tuple[TripletFunction, ...],
+    edges: tuple[TripletEdge, ...],
+) -> list[dict[str, Any]]:
+    """Prove alternatives when one same-flow API is a thin wrapper of another."""
+    by_name = {function.function: function for function in functions}
+    project_names = {
+        str(record.get("name")) for record in artifacts.functions
+        if isinstance(record.get("name"), str)
+    }
+    endpoints: dict[str, set[tuple[str, str]]] = {}
+    for edge in edges:
+        endpoints.setdefault(edge.function, set()).add((edge.src, edge.dst))
+    groups = []
+    for wrapper in functions:
+        record = artifacts.functions_by_id.get(wrapper.function_id, {})
+        body = record.get("body", "")
+        if not isinstance(body, str) or not body:
+            continue
+        call_sites = _body_call_sites(body)
+        # A wrapper with another call may perform setup, validation or a side
+        # effect that the delegate does not.  Local configuration assignments
+        # before a terminal delegation are still common API wrappers.
+        if len(call_sites) != 1 or not call_sites[0][1]:
+            continue
+        delegate_name = call_sites[0][0]
+        if (delegate_name == wrapper.function or delegate_name not in project_names
+                or delegate_name not in by_name):
+            continue
+        delegate = by_name[delegate_name]
+        if not endpoints.get(wrapper.function) or (
+            endpoints[wrapper.function] != endpoints.get(delegate_name)
+        ):
+            continue
+        if ("HPF" in wrapper.roles) != ("HPF" in delegate.roles):
+            continue
+        groups.append({
+            "functions": sorted((wrapper.function, delegate_name)),
+            "evidence": f"{wrapper.function} body delegates to {delegate_name}",
+        })
+    return sorted(groups, key=lambda item: item["functions"])
+
+
+def _body_call_sites(body: str) -> tuple[tuple[str, bool], ...]:
+    """Return calls and whether each is a direct terminal action."""
+    source = ("void __ft_wrapper(void) " + body).encode("utf-8")
+    root = _make_parser().parse(source).root_node
+    if root.has_error:
+        return ()
+    function = next((node for node in root.named_children
+                     if node.type == "function_definition"), None)
+    block = function.child_by_field_name("body") if function is not None else None
+    if block is None:
+        return ()
+    statements = block.named_children
+    calls = []
+    for node in _walk(block):
+        if node.type != "call_expression":
+            continue
+        target = node.child_by_field_name("function")
+        if target is None or target.type != "identifier":
+            continue
+        parent = node.parent
+        direct_terminal = (
+            bool(statements)
+            and parent == statements[-1]
+            and parent.type in {"return_statement", "expression_statement"}
+        )
+        calls.append((_text(source, target), direct_terminal))
+    return tuple(calls)
 
 
 def _authority_summary(
@@ -369,6 +446,40 @@ def _opaque_resource_nodes(artifacts: SFGArtifacts) -> frozenset[str]:
     return frozenset(resources)
 
 
+def _names_resource_endpoint(
+    artifacts: SFGArtifacts, anchor_id: str, resource_type: Any
+) -> bool:
+    """Return whether the anchor's own signature carries the resource type.
+
+    The evidence is the anchor's declared parameter and return types. A callee
+    that only receives the value through a generic ``void*`` slot holds no typed
+    endpoint for it, so a caller's resource does not become part of that
+    callee's API. A signature naming the type -- ``ParserParse(Parser, ...)``
+    against resource ``Parser`` -- does.
+    """
+    if not isinstance(resource_type, str) or not resource_type:
+        return False
+    record = artifacts.functions_by_id.get(anchor_id)
+    if not isinstance(record, Mapping):
+        return False
+    declared = {_type_name(record.get("return_base_type")),
+                _type_name(record.get("return_type"))}
+    for parameter in record.get("parameters", []):
+        if not isinstance(parameter, Mapping):
+            continue
+        declared.add(_type_name(parameter.get("base_type")))
+        declared.add(_type_name(parameter.get("type")))
+    declared.discard("")
+    return _type_name(resource_type) in declared
+
+
+def _type_name(value: Any) -> str:
+    """Reduce a declared type to its bare name so spellings can be compared."""
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"\s+|\bconst\b|\bvolatile\b|\*", "", value)
+
+
 def _usage_patterns_for_anchor(
     artifacts: SFGArtifacts, anchor_id: str
 ) -> tuple[Mapping[str, Any], ...]:
@@ -378,7 +489,15 @@ def _usage_patterns_for_anchor(
         consumer_ids = pattern.get("consumer_function_ids", [])
         review = pattern.get("semantic_review")
         rejected = isinstance(review, Mapping) and review.get("status") == "rejected"
-        if isinstance(consumer_ids, list) and anchor_id in consumer_ids and not rejected:
+        resource_type = pattern.get("resource_type")
+        # A caller can pass a resource through a generic void* userdata slot.
+        # That does not make the resource lifecycle part of the callee's API:
+        # md_parse accepts arbitrary userdata, even when one caller happens to
+        # pass an FmtHTML containing a WBuf. Require the anchor's own signature
+        # to name the resource type, so that only typed endpoints count.
+        typed_resource = _names_resource_endpoint(artifacts, anchor_id, resource_type)
+        if (isinstance(consumer_ids, list) and anchor_id in consumer_ids
+                and not rejected and typed_resource):
             patterns.append(pattern)
     grouped: dict[str, list[Mapping[str, Any]]] = {}
     for pattern in patterns:
@@ -827,6 +946,14 @@ def _ownership_relations(
     """Keep only validated ownership closures whose producer is in this FT."""
     function_ids = {function.function_id for function in functions}
     function_names = {function.function_id: function.function for function in functions}
+    # A function the semantic analyzer labels HPF releases a resource; it is a
+    # release path, never a downstream consumer of it.  ``json_value_free_ex``
+    # takes a ``json_value`` exactly as ``json_value_free`` does, and counting
+    # it as a consumer of the ``json_parse`` relation demands that one
+    # destructor run after the other.
+    release_ids = {
+        function.function_id for function in functions if "HPF" in function.roles
+    }
     relations = []
     for record in artifacts.ownership:
         if not isinstance(record, Mapping):
@@ -845,13 +972,14 @@ def _ownership_relations(
             raise FunctionTripletExtractionError(
                 f"ownership producer does not match FT: {producer_id}"
             )
+        resource_type = _required_ownership_string(record, "resource_type")
         consumers = tuple(sorted(set(
             _ownership_strings(record, "consumers")
             + _resource_consumers(
                 artifacts,
                 functions,
-                _required_ownership_string(record, "resource_type"),
-                excluded_ids={producer_id, cleanup_id},
+                resource_type,
+                excluded_ids={producer_id, cleanup_id} | release_ids,
             )
         )))
         unknown_consumers = sorted(set(consumers) - set(function_names.values()))
@@ -931,6 +1059,14 @@ def _bypass_semantics(
     """Infer non-structural, non-SFG semantic hints from functions.json only."""
 
     semantics: list[TripletBypassSemantic] = []
+    stream_votes = {
+        annotation.get("function_id"): {
+            item.get("parameter") for item in annotation.get("stream_parameters", [])
+            if isinstance(item, Mapping) and item.get("is_byte_stream") is True
+        }
+        for annotation in artifacts.annotations
+        if isinstance(annotation.get("stream_parameters"), list)
+    }
     for function in functions:
         record = artifacts.functions_by_id.get(function.function_id, {})
         parameters = [
@@ -940,6 +1076,10 @@ def _bypass_semantics(
         stream_parameters = [
             parameter for parameter in parameters
             if _is_byte_stream_parameter(parameter)
+            and (
+                function.function_id not in stream_votes
+                or parameter.get("name") in stream_votes[function.function_id]
+            )
         ]
         length_parameters = [
             parameter for parameter in parameters
@@ -983,7 +1123,7 @@ def _bypass_semantics(
                         "effective_pointer_depth": parameter.get("pointer_depth"),
                     },
                 ))
-            if _is_byte_stream_parameter(parameter):
+            if parameter in stream_parameters:
                 semantics.append(_semantic(
                     function,
                     "byte_stream_parameter",

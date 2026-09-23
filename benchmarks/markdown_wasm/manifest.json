@@ -1,0 +1,75 @@
+{
+  "name": "markdown_wasm",
+  "source_project": "https://github.com/rsms/markdown-wasm",
+  "upstream_commit": "0d99d1151ff4d929a8ac8f3a191bfec54a10a869",
+  "project_directory": "project",
+  "target_functions": [
+    "md_parse",
+    "parseUTF8"
+  ],
+  "reference_harnesses": [
+    "harnesses/md_parse.c",
+    "harnesses/parse_utf8.c"
+  ],
+  "target_build": "target_build.json",
+  "adaptation": "none",
+  "adaptation_note": "C and header files are copied unchanged. Native Clang build defines export as empty, matching the WASM build annotation without editing upstream source.",
+  "upstream_files": [
+    {
+      "path": "project/common.h",
+      "sha256": "70929a21f411a7d85ba0cc4467d018b302cdbd614293d2e7819aeab58d956c7a"
+    },
+    {
+      "path": "project/fmt_html.c",
+      "sha256": "7b264739edcf6a014b853679020f281f994f00cddb3b8d54adc4b9994865b3de"
+    },
+    {
+      "path": "project/fmt_html.h",
+      "sha256": "2be1ddf29ea37bb3c7aee77394836e25e77f4395e0f65514e7073618d6b13205"
+    },
+    {
+      "path": "project/fmt_json.c",
+      "sha256": "ea1aceef4a2f26019f5deb3d9f0741a83c24a60c78b3d2988adf3d008501b504"
+    },
+    {
+      "path": "project/fmt_json.h",
+      "sha256": "3823a51fc7b6b3b1413adf24502e4d433c830d41d575bf47976170b44fe8ac0c"
+    },
+    {
+      "path": "project/md.c",
+      "sha256": "6cbebb32a8deb6e58d988feb397355f5070300b3d8e6fcab955dc0b14cf6f152"
+    },
+    {
+      "path": "project/md.js",
+      "sha256": "22ef2af7f4b8d49cabcf189dfb989eaf1c7ff47ec2dacc2af526795030836480"
+    },
+    {
+      "path": "project/md4c.c",
+      "sha256": "558256e2fa4591c28f7681cb545f383f4bc0c32c8b0832ed08ab447026b59e23"
+    },
+    {
+      "path": "project/md4c.h",
+      "sha256": "02cb16c170ebae3a2299db28369ae982a34b1ae7fac71409636a98c8e4e44626"
+    },
+    {
+      "path": "project/wbuf.c",
+      "sha256": "8b0d5a373dc6d5d5ff9f90ad810092e936b4dc4bb81dffca04482e5466dbb269"
+    },
+    {
+      "path": "project/wbuf.h",
+      "sha256": "2a288c4f8c587bef9eb8dbd951cef1477f444884c029b6242eaa7635a8c93a66"
+    },
+    {
+      "path": "project/wlib.c",
+      "sha256": "f3c725751042a9e2dee30638e53866e98472191423c915839af7e19a5a07667c"
+    },
+    {
+      "path": "project/wlib.h",
+      "sha256": "e611463392bb210f1e77a0b5065fd2bd1c5115c4558bf3c877df4f7869dcd9a2"
+    },
+    {
+      "path": "project/wlib.js",
+      "sha256": "d76379eafc4ff4fa8920feac1468449eafeacb6ce481af5289cefe4081bb1aba"
+    }
+  ]
+}

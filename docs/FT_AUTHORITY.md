@@ -53,6 +53,12 @@ An inferred relation requires all of the following:
 Ambiguous cleanup candidates fail closed. Every accepted relation stores its
 evidence, confidence and source in `ownership.json`.
 
+For complete structs, parse/decode/from functions additionally need an
+allocation origin in their implementation or an explicit ownership contract.
+Matching a `parse` name and a `free` signature alone does not prove that a
+returned pointer is owned. A wrapper may inherit allocation evidence through
+a call to its implementation or through a configured default allocator.
+
 ## FT closure and scope control
 
 Opaque handles are lifecycle boundary nodes. SFG traversal stops at such a node,
@@ -138,9 +144,15 @@ duplicate calls intact. HarnessPlan and final C++ validation require that exact
 project-API subsequence, so incremental parsers that call the target more than
 once are not reduced to a one-call harness.
 
+Structural steps preserve APIs with the same SFG endpoints as separate
+obligations. Two functions form alternatives only when the parsed wrapper body
+directly delegates to the other function and their endpoints and lifecycle
+roles agree. The evidence is stored in FT metadata as
+`structural_alternatives` and shown to Stage 4.
+
 Stage 4 carries these fields into its ownership contract and checks the actual
 producer argument or assignment, cleanup argument position, ordering, and
-required code guard. `triplets rank` policy `ft-priority-v3` adds a usage-support
+required code guard. `triplets rank` policy `ft-priority-v4` adds a usage-support
 metric based on observation frequency, source diversity, and production usage,
 tracks ISF target novelty separately from helper overlap, and excludes an
 existing `LLVMFuzzerTestOneInput` from generation targets.

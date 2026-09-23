@@ -482,7 +482,14 @@ def _load_ft_function_metadata(
             "file": record.get("file"),
             "start_line": record.get("start_line"),
         })
-    return selected, all_names, project_type_context(document)
+    source_files = tuple(
+        record.get("file") for record in selected
+        if isinstance(record.get("file"), str)
+    )
+    return selected, all_names, project_type_context(
+        document, functions_path=path, source_files=source_files,
+        functions=tuple(selected),
+    )
 
 
 @dataclass(frozen=True)

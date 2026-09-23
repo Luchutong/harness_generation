@@ -16,6 +16,11 @@ from harness_generation.prompts import (
 )
 
 
+# Pinned deliberately: a silent prompt edit must show up as a failing test.
+STAGE4_PLAN_VERSION = "stage4-harness-plan-v9"
+STAGE4_TRANSFORM_VERSION = "stage4-harness-transform-v9"
+
+
 class GenerationPromptTests(unittest.TestCase):
     def test_all_required_prompts_are_independent_and_versioned(self):
         prompts = (
@@ -83,12 +88,12 @@ class GenerationPromptTests(unittest.TestCase):
         self.assertEqual(
             [prompt.prompt_version for prompt in prompts],
             [
-                "stage1-function-doc-v1",
-                "stage2-structure-snippet-v2",
+                "stage1-function-doc-v2",
+                "stage2-structure-snippet-v3",
                 "stage3-rough-assembly-v3",
                 "protocol-convention-refinement-v1",
-                "stage4-harness-plan-v5",
-                "stage4-harness-transform-v7",
+                STAGE4_PLAN_VERSION,
+                STAGE4_TRANSFORM_VERSION,
             ],
         )
         self.assertIn("int parse(Parser *p)", str(prompts[0]))
@@ -125,7 +130,7 @@ class GenerationPromptTests(unittest.TestCase):
             document = json.loads(path.read_text(encoding="utf-8"))
 
         self.assertEqual(document["name"], "stage1_function_doc")
-        self.assertEqual(document["prompt_version"], "stage1-function-doc-v1")
+        self.assertEqual(document["prompt_version"], "stage1-function-doc-v2")
         self.assertEqual(document["parameters"]["usage_context"], "test context")
         self.assertEqual(document["content"], prompt.content)
 
@@ -140,10 +145,10 @@ class GenerationPromptTests(unittest.TestCase):
 
     def test_registry_lookup_is_explicit(self):
         template = get_prompt_template("stage4_harness_transform")
-        self.assertEqual(template.version, "stage4-harness-transform-v7")
+        self.assertEqual(template.version, STAGE4_TRANSFORM_VERSION)
         self.assertEqual(
             get_prompt_template("stage4_harness_plan").version,
-            "stage4-harness-plan-v5",
+            STAGE4_PLAN_VERSION,
         )
         self.assertEqual(
             get_prompt_template("protocol_convention_refinement").version,
@@ -151,6 +156,18 @@ class GenerationPromptTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(KeyError, "unknown prompt template"):
             get_prompt_template("missing")
+
+    def test_stage4_prompts_require_callback_tables_to_be_filled(self):
+        # md4c dereferences its rendering callbacks unconditionally, and
+        # fmt_html calls onCodeBlock through its typedef, so both stages must
+        # say so rather than let a zeroed table or a wrong-arity helper through.
+        plan = get_prompt_template("stage4_harness_plan").template
+        transform = get_prompt_template("stage4_harness_transform").template
+        for template in (plan, transform):
+            self.assertIn("callback_tables", template)
+            self.assertIn("required", template)
+            with self.subTest(template=template[:40]):
+                self.assertIn("callback_typedefs", template)
 
 
 if __name__ == "__main__":

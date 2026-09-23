@@ -14,6 +14,8 @@ import math
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from ..runtime_validation import (GENERATED_HARNESS_CRASH, GENERATED_HARNESS_LEAK,
+                                  POTENTIAL_TARGET_CRASH, UNCLASSIFIED_CRASH)
 from .types import (Evidence, EvaluationContext, Measurement, MetricId,
                     MetricResult, MetricStatus)
 from ..source_analysis import (_load_tree_sitter, _make_language,
@@ -838,7 +840,7 @@ def _fuzz_crash_classification(context: EvaluationContext) -> MetricResult | Non
     classification = (
         raw.get("classification")
         if isinstance(raw, Mapping) and isinstance(raw.get("classification"), str)
-        else "unclassified_crash"
+        else UNCLASSIFIED_CRASH
     )
     findings = finding.get("findings")
     artifacts = finding.get("artifacts")
@@ -852,14 +854,21 @@ def _fuzz_crash_classification(context: EvaluationContext) -> MetricResult | Non
         Measurement("crash_artifacts", artifact_count, "artifacts",
                     "sanitizer_diagnostics"),
     )
-    if classification == "potential_target_crash":
+    if classification == POTENTIAL_TARGET_CRASH:
         score = 1.0
         reason = (
             "A sanitizer/libFuzzer finding was attributed to target source. "
             "This rewards preserving the target crash signal; it is not an "
             "exploitability classification."
         )
-    elif classification == "generated_harness_crash":
+    elif classification == GENERATED_HARNESS_LEAK:
+        score = 0.0
+        reason = (
+            "The generated Harness acquired a target resource and never "
+            "released it, so the leak reports on the Harness rather than "
+            "on the target."
+        )
+    elif classification == GENERATED_HARNESS_CRASH:
         score = 0.0
         reason = "A sanitizer/libFuzzer finding was attributed to generated Harness code."
     else:

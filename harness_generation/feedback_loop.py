@@ -25,6 +25,7 @@ from .experiment import run_experiment
 from .feedback import load_revision
 from .iteration import ScoreCandidateSelector, WeightedAggregationPolicy
 from .records import write_json
+from .runtime_validation import POTENTIAL_TARGET_CRASH
 
 
 FEEDBACK_LOOP_SCHEMA_VERSION = 1
@@ -416,7 +417,7 @@ def _accepted_target_finding(result: Mapping[str, Any], stage: str) -> bool:
     classification = value.get("crash_classification")
     return (
         isinstance(classification, Mapping)
-        and classification.get("classification") == "potential_target_crash"
+        and classification.get("classification") == POTENTIAL_TARGET_CRASH
     )
 
 

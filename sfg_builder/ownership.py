@@ -49,12 +49,19 @@ def derive_ownership_relations(
     *,
     linkable_function_ids: Iterable[str] = (),
     opaque_resource_types: Iterable[str] = (),
+    struct_resource_types: Iterable[str] = (),
 ) -> tuple[OwnershipRelation, ...]:
     """Pair explicitly recognized owned returns with compatible cleanup APIs.
 
     A declaration alone is not enough to authorize a cleanup helper.  Callers
     may provide an explicit target-link manifest for declaration-only symbols;
     otherwise a project definition is required.
+
+    ``opaque_resource_types`` and ``struct_resource_types`` both name types whose
+    allocation is only visible through a producer/cleanup signature pair.  They
+    differ in how the extractor learned the type -- an opaque handle typedef
+    versus a struct definition it resolved -- which is recorded as evidence so a
+    reader can tell a declaration-level guess from a parsed structure.
     """
     records = tuple(functions)
     linkable_ids = set(linkable_function_ids)
@@ -100,10 +107,18 @@ def derive_ownership_relations(
             confidence=min(ownership.confidence, 1.0),
             source=ownership.source,
         ))
+    # A type may be reachable both ways; the opaque-handle wording is the more
+    # specific of the two, so it wins when both apply.
+    resource_origins: dict[str, str] = {}
+    for name in struct_resource_types:
+        resource_origins[name] = "complete struct type"
+    for name in opaque_resource_types:
+        resource_origins[name] = "opaque handle typedef"
+
     explicit_producers = {relation.producer_function_id for relation in relations}
-    relations.extend(_infer_opaque_handle_relations(
+    relations.extend(_infer_resource_relations(
         records,
-        frozenset(opaque_resource_types),
+        resource_origins,
         linkable_ids,
         explicit_producers,
     ))
@@ -111,27 +126,40 @@ def derive_ownership_relations(
 
 
 _PRODUCER_WORD = re.compile(
-    r"(?:^|_)(?:create|new|open|alloc|allocate|init|initialize|construct|make)(?:_|$)",
+    r"(?:^|_)(?:create|new|open|alloc|allocate|init|initialize|construct|make"
+    r"|parse|decode|deserialize|from)(?:_|$)",
     re.IGNORECASE,
 )
 _CLEANUP_WORD = re.compile(
     r"(?:^|_)(?:free|destroy|delete|release|close|deinit|deinitialize)(?:_|$)",
     re.IGNORECASE,
 )
+_PARSE_LIKE_WORD = re.compile(
+    r"(?:^|_)(?:parse|decode|deserialize|from)(?:_|$)", re.IGNORECASE
+)
+_BORROWED_RETURN = re.compile(
+    r"\b(?:borrowed|do\s+not\s+free|must\s+not\s+free)\b", re.IGNORECASE
+)
+_DIRECT_ALLOCATION = re.compile(
+    r"\b(?:malloc|calloc|realloc|aligned_alloc)\s*\(", re.IGNORECASE
+)
 
 
-def _infer_opaque_handle_relations(
+def _infer_resource_relations(
     functions: tuple[FunctionInfo, ...],
-    resource_types: frozenset[str],
+    resource_origins: dict[str, str],
     linkable_ids: set[str],
     explicit_producers: set[str],
 ) -> tuple[OwnershipRelation, ...]:
-    """Infer high-confidence create/free pairs for typed opaque handles.
+    """Infer high-confidence producer/release pairs for a resource type.
 
     The type relation is mandatory. Names, prose, and implementation tokens only
     raise confidence after producer/cleanup signatures agree on the same handle.
+    A parse entry point qualifies: `json_parse` returns the same `json_value *`
+    that `json_value_free` releases, and refusing to name that pair does not
+    remove the obligation -- it only moves it where nothing checks it.
     """
-    if not resource_types:
+    if not resource_origins:
         return ()
 
     linkable = tuple(
@@ -139,14 +167,21 @@ def _infer_opaque_handle_relations(
         if "static" not in function.storage
         and (function.defined or function.id in linkable_ids)
     )
+    by_name: dict[str, list[FunctionInfo]] = {}
+    for function in functions:
+        by_name.setdefault(function.name, []).append(function)
     inferred: list[OwnershipRelation] = []
-    for resource_type in sorted(resource_types):
+    for resource_type in sorted(resource_origins):
         producers = [
             function for function in linkable
             if function.id not in explicit_producers
             and function.return_base_type == resource_type
             and function.return_pointer_depth >= 1
             and _producer_evidence(function)
+            and (
+                not _PARSE_LIKE_WORD.search(_split_camel(function.name))
+                or _parse_has_allocation_origin(function, by_name, set())
+            )
         ]
         cleanups = [
             function for function in linkable
@@ -186,7 +221,7 @@ def _infer_opaque_handle_relations(
                 cleanup_argument="return_value",
                 nullable=True,
                 evidence=tuple(sorted({
-                    f"opaque handle typedef: {resource_type}",
+                    f"{resource_origins[resource_type]}: {resource_type}",
                     f"producer returns {resource_type} with effective pointer depth "
                     f"{producer.return_pointer_depth}",
                     f"cleanup accepts exactly one {resource_type} handle",
@@ -214,6 +249,85 @@ def _cleanup_parameter(
     return parameter
 
 
+_CALL_SITE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
+
+
+def _parse_has_allocation_origin(
+    function: FunctionInfo,
+    by_name: dict[str, list[FunctionInfo]],
+    visited: set[str],
+    budget: list[int] | None = None,
+) -> bool:
+    """Require parse-like owned returns to reach a real allocator or contract."""
+    if budget is None:
+        budget = [256]
+    if (budget[0] <= 0 or function.id in visited
+            or len(visited) >= 16
+            or _BORROWED_RETURN.search(function.documentation)):
+        return False
+    budget[0] -= 1
+    visited = visited | {function.id}
+    if function.return_ownership is not None and function.return_ownership.owned:
+        return True
+    # A parser returning one of its inputs is a borrowed view even if it also
+    # allocates temporary scratch objects elsewhere in its body.
+    for parameter in function.parameters:
+        if parameter.name and re.search(
+            r"\breturn\s+" + re.escape(parameter.name) + r"\s*;",
+            function.body,
+        ):
+            return False
+    if _DIRECT_ALLOCATION.search(function.body):
+        return True
+    for callee_name in dict.fromkeys(_CALL_SITE.findall(function.body)):
+        callee = _resolve_local_callee(function, by_name.get(callee_name, ()))
+        if callee is not None and _parse_has_allocation_origin(
+            callee, by_name, visited, budget
+        ):
+            return True
+    # Some libraries allocate through a configurable callback. Follow only a
+    # concrete default allocator installed into an allocation slot; the slot's
+    # name and the callee's body together provide the ownership evidence.
+    for callee_name, candidates in by_name.items():
+        if re.search(
+            r"\b(?:mem_)?alloc\s*=\s*" + re.escape(callee_name) + r"\b",
+            function.body,
+        ):
+            callee = _resolve_local_callee(function, candidates)
+            if callee is not None and _parse_has_allocation_origin(
+                callee, by_name, visited, budget
+            ):
+                return True
+    return False
+
+
+def _resolve_local_callee(
+    caller: FunctionInfo, candidates: Iterable[FunctionInfo]
+) -> FunctionInfo | None:
+    candidates = tuple(candidates)
+    same_file = tuple(item for item in candidates
+                      if item.file == caller.file and item.defined)
+    if len(same_file) == 1:
+        return same_file[0]
+    external = tuple(item for item in candidates
+                     if item.defined and "static" not in item.storage)
+    return external[0] if len(external) == 1 else None
+
+
+def _delegation(function: FunctionInfo, word: re.Pattern[str]) -> str | None:
+    """Name a callee that carries the same role token as `word`.
+
+    A thin wrapper names its role only in what it calls: `json_parse` hands the
+    work to `json_parse_ex`, `json_value_free` to `json_value_free_ex`.  Without
+    this, a delegating wrapper is the weakest possible evidence of its own role,
+    which is backwards -- it is the one function that certainly performs it.
+    """
+    for callee in _CALL_SITE.findall(function.body):
+        if word.search(_split_camel(callee)):
+            return callee
+    return None
+
+
 def _producer_evidence(function: FunctionInfo) -> tuple[str, ...]:
     evidence = []
     if _PRODUCER_WORD.search(_split_camel(function.name)):
@@ -226,6 +340,9 @@ def _producer_evidence(function: FunctionInfo) -> tuple[str, ...]:
         evidence.append("producer documentation denotes construction")
     if re.search(r"\b(?:MALLOC|CALLOC|malloc|calloc)\s*\(", function.body):
         evidence.append("producer body contains allocation")
+    delegated = _delegation(function, _PRODUCER_WORD)
+    if delegated is not None:
+        evidence.append(f"producer body delegates to {delegated}")
     return tuple(evidence)
 
 
@@ -241,6 +358,9 @@ def _cleanup_evidence(function: FunctionInfo) -> tuple[str, ...]:
         evidence.append("cleanup documentation denotes release")
     if re.search(r"\b(?:FREE|free|Delete|Destroy|Release)\s*\(", function.body):
         evidence.append("cleanup body contains release operations")
+    delegated = _delegation(function, _CLEANUP_WORD)
+    if delegated is not None:
+        evidence.append(f"cleanup body delegates to {delegated}")
     return tuple(evidence)
 
 

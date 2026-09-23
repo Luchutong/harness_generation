@@ -5,7 +5,8 @@ import unittest
 
 from harness_generation.triplet import (FunctionTriplet, TripletBypassSemantic,
     TripletEdge, TripletFunction, TripletOwnershipRelation, load_triplets_json,
-    stable_triplet_id, triplets_document, write_triplets_json)
+    missing_structural_steps, stable_triplet_id, triplets_document,
+    write_triplets_json)
 
 
 def function(function_id, name, roles, line):
@@ -190,6 +191,92 @@ class FunctionTripletSerializationTests(unittest.TestCase):
 
         self.assertEqual(loaded[0].bypass_semantics, ())
         self.assertEqual(loaded[0].to_dict()["bypass_semantics"], [])
+
+    def test_structural_steps_group_parallel_implementations(self):
+        alternate = function("src/parser.c:30:parse_alt", "parse_alt", ("PRF",), 30)
+        alternate_edge = TripletEdge(
+            alternate.function_id, alternate.function, "(null)", "Context",
+            alternate.roles, alternate.file, alternate.line,
+        )
+        orphan = function("src/parser.c:40:detach", "detach", ("HPF",), 40)
+        triplet = FunctionTriplet(
+            self.isf, (alternate,), (self.hpf,),
+            (self.isf, alternate, self.hpf, orphan),
+            ("Context",),
+            (self.parse_edge, alternate_edge, self.destroy_edge),
+            {"structural_alternatives": [{
+                "functions": ["parse", "parse_alt"],
+                "evidence": "parse delegates to parse_alt",
+            }]},
+        )
+        self.assertEqual(
+            [step.to_dict() for step in triplet.structural_steps()],
+            [
+                {"source": "(null)", "target": "(null)",
+                 "functions": ["detach"]},
+                {"source": "(null)", "target": "Context",
+                 "functions": ["parse", "parse_alt"]},
+                {"source": "Context", "target": "(null)",
+                 "functions": ["destroy"]},
+            ],
+        )
+
+    def test_missing_structural_steps_accepts_one_implementation_per_step(self):
+        alternate = function("src/parser.c:30:parse_alt", "parse_alt", ("PRF",), 30)
+        alternate_edge = TripletEdge(
+            alternate.function_id, alternate.function, "(null)", "Context",
+            alternate.roles, alternate.file, alternate.line,
+        )
+        triplet = FunctionTriplet(
+            self.isf, (alternate,), (self.hpf,),
+            (self.isf, alternate, self.hpf),
+            ("Context",),
+            (self.parse_edge, alternate_edge, self.destroy_edge),
+            {"structural_alternatives": [{
+                "functions": ["parse", "parse_alt"],
+                "evidence": "parse delegates to parse_alt",
+            }]},
+        )
+        self.assertEqual(
+            triplet.missing_structural_steps(("parse", "destroy")), ()
+        )
+        self.assertEqual(
+            triplet.missing_structural_steps(("parse_alt",)), ("destroy",)
+        )
+        self.assertEqual(
+            triplet.missing_structural_steps(()),
+            ("destroy", "parse or parse_alt"),
+        )
+
+    def test_equal_structural_endpoints_do_not_imply_interchangeable_calls(self):
+        configure = function(
+            "src/parser.c:30:configure", "configure", ("PRF",), 30
+        )
+        edge = TripletEdge(
+            configure.function_id, configure.function, "(null)", "Context",
+            configure.roles, configure.file, configure.line,
+        )
+        triplet = FunctionTriplet(
+            self.isf, (configure,), (self.hpf,),
+            (self.isf, configure, self.hpf), ("Context",),
+            (self.parse_edge, edge, self.destroy_edge), {},
+        )
+        self.assertEqual(
+            triplet.missing_structural_steps(("parse", "destroy")),
+            ("configure",),
+        )
+
+    def test_missing_structural_steps_keeps_the_per_function_rule_without_steps(self):
+        self.assertEqual(
+            missing_structural_steps(("parse", "process", "destroy"), (), ("process",)),
+            ("destroy", "parse"),
+        )
+        self.assertEqual(
+            missing_structural_steps(
+                ("parse", "process", "destroy"), (("parse", "process"),), ("process",)
+            ),
+            ("destroy",),
+        )
 
     def test_role_and_reference_invariants_are_checked(self):
         not_isf = function("src/parser.c:4:not_isf", "not_isf", ("PRF",), 4)

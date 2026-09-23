@@ -8,12 +8,14 @@ from harness_generation.artifacts import ArtifactStore
 from harness_generation.fuzzer_build import FuzzerBuildValidator
 from harness_generation.llm import MockLLM
 from harness_generation.policy import FORBIDDEN_LOGGING_FUNCTIONS
+from harness_generation.prompts import get_prompt_template
 from harness_generation.sfg_adapter import load_sfg_artifacts
 from harness_generation.stage4 import (
     HarnessPlan,
     Stage4Error,
     Stage4Generator,
     _analyze_cpp,
+    _validate_callback_bindings,
     _validate_ownership_calls,
     _validate_parent_plan_revision,
     generate_stage4_harness,
@@ -21,7 +23,12 @@ from harness_generation.stage4 import (
 )
 from harness_generation.target_contract import TargetContract
 from harness_generation.target_build import TargetBuildConfig
-from harness_generation.triplet import TripletOwnershipRelation
+from harness_generation.triplet import (
+    FunctionTriplet,
+    TripletEdge,
+    TripletFunction,
+    TripletOwnershipRelation,
+)
 from harness_generation.triplet_extractor import extract_function_triplets
 from sfg_builder.parser import DEFAULT_IGNORES
 from sfg_builder.pipeline import SFGPipeline
@@ -32,8 +39,103 @@ from tests.toolchain_probe import LIBFUZZER_AVAILABLE, LIBFUZZER_SKIP_REASON
 REPOSITORY = Path(__file__).resolve().parents[1]
 SIMPLE_PROJECT = REPOSITORY / "tests" / "fixtures" / "simple_project"
 
+_MD_PARSER_FIELDS = (
+    ("enter_block", "int", ["MD_BLOCKTYPE", "void*", "void*"]),
+    ("leave_block", "int", ["MD_BLOCKTYPE", "void*", "void*"]),
+    ("enter_span", "int", ["MD_SPANTYPE", "void*", "void*"]),
+    ("leave_span", "int", ["MD_SPANTYPE", "void*", "void*"]),
+    ("text", "int", ["MD_TEXTTYPE", "const MD_CHAR*", "MD_SIZE", "void*"]),
+    ("debug_log", "void", ["const char*", "void*"]),
+    ("syntax", "void", []),
+)
+# ``syntax`` and ``debug_log`` are the two members md4c's header documents as
+# reserved/optional; every other member is dereferenced unconditionally.
+_OPTIONAL_MEMBERS = frozenset({"debug_log", "syntax"})
+_MD_PARSER_REQUIRED = frozenset(
+    name for name, _return, _parameters in _MD_PARSER_FIELDS
+    if name not in _OPTIONAL_MEMBERS
+)
+
+
+def _md_parser_context(required=_MD_PARSER_REQUIRED):
+    return {
+        "callback_tables": [{
+            "type": "MD_PARSER",
+            "file": "md4c.h",
+            "fields": [
+                {
+                    "name": name,
+                    "declarator": f"{return_type} (*{name})(...)",
+                    "return_type": return_type,
+                    "parameter_types": list(parameters),
+                    "required": name in required,
+                }
+                for name, return_type, parameters in _MD_PARSER_FIELDS
+            ],
+        }],
+    }
+
+
+CALLBACK_CONTEXT = {
+    **_md_parser_context(),
+    "callback_typedefs": [{
+        "name": "JSTextFilterFun",
+        "file": "common.h",
+        "declaration": (
+            "typedef int(*JSTextFilterFun)( const char* metaptr, u32 metalen, "
+            "const char* inptr, u32 inlen, const char** outptrp);"
+        ),
+        "return_type": "int",
+        "parameter_types": ["const char*", "u32", "const char*", "u32", "const char**"],
+    }],
+}
+
+MD_PARSE_METADATA = {
+    "name": "md_parse",
+    "parameters": [
+        {"name": "text", "base_type": "char", "type": "const char *",
+         "pointer_depth": 1, "is_pointer": True, "is_struct_like": False},
+        {"name": "size", "base_type": "unsigned", "type": "MD_SIZE",
+         "pointer_depth": 0, "is_pointer": False, "is_struct_like": False},
+        {"name": "parser", "base_type": "MD_PARSER", "type": "const MD_PARSER *",
+         "pointer_depth": 1, "is_pointer": True, "is_struct_like": True},
+        {"name": "userdata", "base_type": "void", "type": "void *",
+         "pointer_depth": 1, "is_pointer": True, "is_struct_like": False},
+    ],
+}
+
+PARSE_UTF8_METADATA = {
+    "name": "parseUTF8",
+    "parameters": [
+        {"name": "inbufptr", "base_type": "char", "type": "const char *",
+         "pointer_depth": 1, "is_pointer": True, "is_struct_like": False},
+        {"name": "inbuflen", "base_type": "uint32_t", "type": "u32",
+         "pointer_depth": 0, "is_pointer": False, "is_struct_like": False},
+        {"name": "parser_flags", "base_type": "uint32_t", "type": "u32",
+         "pointer_depth": 0, "is_pointer": False, "is_struct_like": False},
+        {"name": "outflags", "base_type": "OutputFlags", "type": "OutputFlags",
+         "pointer_depth": 0, "is_pointer": False, "is_struct_like": False},
+        {"name": "outptr", "base_type": "char", "type": "const char **",
+         "pointer_depth": 2, "is_pointer": True, "is_struct_like": False},
+        {"name": "onCodeBlock", "base_type": "JSTextFilterFun",
+         "type": "JSTextFilterFun", "pointer_depth": 0, "is_pointer": False,
+         "is_struct_like": False},
+    ],
+}
+
 
 class Stage4Tests(unittest.TestCase):
+    def test_cpp_casts_are_not_project_calls(self):
+        analysis = _analyze_cpp("""#include <stddef.h>
+#include <stdint.h>
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    parse_input(reinterpret_cast<const char *>(data),
+                static_cast<unsigned>(size));
+    return 0;
+}
+""")
+        self.assertEqual([call.name for call in analysis.calls], ["parse_input"])
+
     @classmethod
     def setUpClass(cls):
         cls.temporary = tempfile.TemporaryDirectory()
@@ -221,7 +323,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         self.assertIsNone(result.stable_path)
         self.assertEqual(
             result.generation_metadata["prompt_version"],
-            "stage4-harness-transform-v7",
+            get_prompt_template("stage4_harness_transform").version,
         )
         self.assertEqual(
             attempt_files,
@@ -237,10 +339,12 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         self.assertEqual(attempt_metadata["provider"], "mock")
         self.assertEqual(attempt_metadata["model"], "mock-model")
         self.assertEqual(
-            attempt_metadata["prompt_version"], "stage4-harness-transform-v7"
+            attempt_metadata["prompt_version"],
+            get_prompt_template("stage4_harness_transform").version,
         )
         self.assertEqual(
-            attempt_metadata["plan_prompt_version"], "stage4-harness-plan-v5"
+            attempt_metadata["plan_prompt_version"],
+            get_prompt_template("stage4_harness_plan").version,
         )
         self.assertIn("timestamp", attempt_metadata)
         self.assertIsNone(attempt_metadata["rollback_source"])
@@ -754,6 +858,131 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             _analyze_cpp(self.harness_code()).calls, triplet, parsed
         )
 
+    def _parallel_producer_triplet_and_plan(self, relation_id, cleanup_item=True,
+                                            producer="parse"):
+        """Build a triplet whose step has two implementations, each with a relation.
+
+        ``parse`` and ``parse_alt`` share the ``(null) -> Context`` structural
+        step, exactly as ``json_parse`` and ``json_parse_ex`` share
+        ``(null) -> json_value``.  Each one produces a value that ``destroy``
+        releases, so both relations describe the same obligation.
+        """
+
+        def declared(name, roles, line):
+            return TripletFunction(
+                f"src/parser.c:{line}:{name}", name, roles, "src/parser.c", line
+            )
+
+        isf = declared("parse", ("ISF", "PRF"), 3)
+        alternate = declared("parse_alt", ("PRF",), 13)
+        hpf = declared("destroy", ("HPF",), 25)
+        edges = tuple(
+            TripletEdge(
+                function.function_id, function.function, "(null)", "Context",
+                function.roles, function.file, function.line,
+            )
+            for function in (isf, alternate)
+        ) + (TripletEdge(
+            hpf.function_id, hpf.function, "Context", "(null)",
+            hpf.roles, hpf.file, hpf.line,
+        ),)
+        relations = {
+            name: TripletOwnershipRelation(
+                id=name,
+                producer_function_id=source.function_id,
+                producer_function=source.function,
+                resource_type="Context",
+                cleanup_function_id=hpf.function_id,
+                cleanup_function=hpf.function,
+                nullable=False,
+                evidence=("tests/parser_test.c:8",),
+                confidence=0.9,
+            )
+            for name, source in (("own_parse", isf), ("own_parse_alt", alternate))
+        }
+        triplet = FunctionTriplet(
+            isf, (isf, alternate), (hpf,), (isf, alternate, hpf),
+            ("Context",), edges,
+            {"structural_alternatives": [{
+                "functions": ["parse", "parse_alt"],
+                "evidence": "parse delegates to parse_alt",
+            }]},
+            ownership_relations=tuple(relations.values()),
+        )
+        plan = {
+            "schema_version": 1,
+            "triplet_id": triplet.id,
+            "entrypoint": "LLVMFuzzerTestOneInput",
+            "input_strategy": {
+                "description": "Pass fuzzer bytes into parse.",
+                "data_identifier": "data",
+                "size_identifier": "size",
+                "bounded_steps": 1,
+                "notes": [],
+            },
+            "state_objects": [],
+            "call_sequence": [{
+                "function": producer,
+                "roles": ["ISF", "PRF"],
+                "purpose": "build a Context from fuzzer input",
+                "arguments": ["data", "size"],
+                "uses_fuzzer_data": True,
+                "uses_fuzzer_size": True,
+                "outputs": ["Context*"],
+                "conditions": [],
+            }],
+            "cleanup_sequence": [{
+                "function": "destroy",
+                "purpose": "release the Context",
+                "arguments": ["context"],
+                "relation_id": relation_id,
+                "producer_function": relations[relation_id].producer_function,
+                "resource_type": "Context",
+                "producer_binding": {"kind": "return_value", "identifier": "context"},
+                "after": [relations[relation_id].producer_function],
+                "conditions": [],
+            }] if cleanup_item else [],
+            "constraints": [],
+            "notes": [],
+        }
+        return triplet, json.dumps(plan)
+
+    def test_stage4_plan_owes_one_cleanup_per_called_producer(self):
+        triplet, plan = self._parallel_producer_triplet_and_plan("own_parse")
+        parsed = parse_harness_plan(
+            plan, triplet=triplet, isf_metadata={"name": "parse"}
+        )
+        self.assertEqual(
+            [item["relation_id"] for item in parsed.cleanup_sequence], ["own_parse"]
+        )
+        _validate_ownership_calls(
+            _analyze_cpp("""#include <stddef.h>
+#include <stdint.h>
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+{
+    Context *context = parse(data, size);
+    if (context != NULL) { destroy(context); }
+    return 0;
+}""").calls,
+            triplet,
+            parsed,
+        )
+
+    def test_stage4_plan_owes_a_cleanup_for_the_producer_it_calls(self):
+        triplet, plan = self._parallel_producer_triplet_and_plan(
+            "own_parse", cleanup_item=False
+        )
+        with self.assertRaisesRegex(
+            Stage4Error,
+            "must include exactly one cleanup for ownership relations: own_parse",
+        ):
+            parse_harness_plan(plan, triplet=triplet, isf_metadata={"name": "parse"})
+
+    def test_stage4_plan_rejects_a_cleanup_bound_to_an_uncalled_alternative(self):
+        triplet, plan = self._parallel_producer_triplet_and_plan("own_parse_alt")
+        with self.assertRaisesRegex(Stage4Error, "must include exactly one cleanup"):
+            parse_harness_plan(plan, triplet=triplet, isf_metadata={"name": "parse"})
+
     def test_error_path_cleanup_requires_a_real_code_guard(self):
         relation = TripletOwnershipRelation(
             id="own_error_parser",
@@ -1098,6 +1327,174 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 }"""
         with self.assertRaisesRegex(Stage4Error, "unreachable on a non-null return path"):
             _validate_ownership_calls(_analyze_cpp(code).calls, triplet, plan)
+
+    def test_unnamed_pointer_parameters_keep_their_pointer_depth(self):
+        # A callback implemented with commented-out parameter names still has to
+        # match the declared signature; ``void*`` parses as an abstract
+        # declarator, which the depth counter has to recognize.
+        analysis = _analyze_cpp("""#include <stddef.h>
+#include <stdint.h>
+int render(MD_BLOCKTYPE /*type*/, void* /*detail*/, const MD_CHAR* /*text*/)
+{
+    return 0;
+}
+""")
+        render = next(
+            function for function in analysis.functions if function.name == "render"
+        )
+        self.assertEqual(
+            [
+                (parameter.base_type, parameter.pointer_depth)
+                for parameter in render.parameters
+            ],
+            [("MD_BLOCKTYPE", 0), ("void", 1), ("MD_CHAR", 1)],
+        )
+
+    def test_callback_bindings_reject_a_zeroed_required_callback_table(self):
+        # md4c dereferences every rendering callback unconditionally, so a table
+        # that is only zero-initialized crashes the moment it renders the doc.
+        code = """#include <stddef.h>
+#include <stdint.h>
+extern "C" int md_parse(const char *text, int size, const MD_PARSER *parser,
+                        void *userdata);
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    MD_PARSER parser = {0};
+    parser.flags = 1;
+    (void)md_parse((const char *)data, (int)size, &parser, NULL);
+    return 0;
+}"""
+        with self.assertRaisesRegex(Stage4Error, r"MD_PARSER\.enter_block"):
+            self._validate_callback_bindings(code, MD_PARSE_METADATA)
+
+    def test_callback_bindings_accept_the_reference_md_parse_shape(self):
+        code = """#include <stddef.h>
+#include <stdint.h>
+extern "C" int md_parse(const char *text, int size, const MD_PARSER *parser,
+                        void *userdata);
+static int enter_block(MD_BLOCKTYPE type, void *detail, void *userdata) {
+    (void)type; (void)detail; (void)userdata; return 0;
+}
+static int leave_block(MD_BLOCKTYPE type, void *detail, void *userdata) {
+    (void)type; (void)detail; (void)userdata; return 0;
+}
+static int enter_span(MD_SPANTYPE type, void *detail, void *userdata) {
+    (void)type; (void)detail; (void)userdata; return 0;
+}
+static int leave_span(MD_SPANTYPE type, void *detail, void *userdata) {
+    (void)type; (void)detail; (void)userdata; return 0;
+}
+static int text(MD_TEXTTYPE type, const MD_CHAR *value, MD_SIZE size,
+                void *userdata) {
+    (void)type; (void)value; (void)size; (void)userdata; return 0;
+}
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    MD_PARSER parser = {0};
+    parser.flags = 1;
+    parser.enter_block = enter_block;
+    parser.leave_block = leave_block;
+    parser.enter_span = enter_span;
+    parser.leave_span = leave_span;
+    parser.text = text;
+    (void)md_parse((const char *)data, (int)size, &parser, NULL);
+    return 0;
+}"""
+        self._validate_callback_bindings(code, MD_PARSE_METADATA)
+
+    def test_callback_bindings_allow_a_null_optional_member(self):
+        code = """#include <stddef.h>
+#include <stdint.h>
+extern "C" int md_parse(const char *text, int size, const MD_PARSER *parser,
+                        void *userdata);
+static int enter_block(MD_BLOCKTYPE type, void *detail, void *userdata) {
+    (void)type; (void)detail; (void)userdata; return 0;
+}
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    MD_PARSER parser = {0};
+    parser.enter_block = enter_block;
+    (void)md_parse((const char *)data, (int)size, &parser, NULL);
+    return 0;
+}"""
+        # debug_log and syntax are documented optional/reserved; the rest are
+        # required, so only the assigned member may carry a null.
+        self._validate_callback_bindings(
+            code, MD_PARSE_METADATA,
+            project_context=_md_parser_context(required={"enter_block"}),
+        )
+
+    def test_callback_bindings_reject_a_mismatched_table_member(self):
+        code = """#include <stddef.h>
+#include <stdint.h>
+extern "C" int md_parse(const char *text, int size, const MD_PARSER *parser,
+                        void *userdata);
+static int enter_block(void *userdata) { (void)userdata; return 0; }
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    MD_PARSER parser = {0};
+    parser.enter_block = enter_block;
+    (void)md_parse((const char *)data, (int)size, &parser, NULL);
+    return 0;
+}"""
+        with self.assertRaisesRegex(Stage4Error, "must have signature|takes 1 parameter"):
+            self._validate_callback_bindings(code, MD_PARSE_METADATA)
+
+    def test_callback_bindings_reject_an_invented_callback_signature(self):
+        # fmt_html calls onCodeBlock through JSTextFilterFun; a 3-argument
+        # helper handed to that slot is undefined behaviour at call time.
+        code = """#include <stddef.h>
+#include <stdint.h>
+extern "C" unsigned long parseUTF8(const char *inbufptr, unsigned inbuflen,
+                                   unsigned parser_flags, int outflags,
+                                   const char **outptr,
+                                   JSTextFilterFun onCodeBlock);
+static int code_block_filter(void *userdata, const char *text, size_t len) {
+    (void)userdata; (void)text; (void)len; return 0;
+}
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    const char *output = nullptr;
+    (void)parseUTF8((const char *)data, (unsigned)size, 0, 1, &output,
+                    code_block_filter);
+    return 0;
+}"""
+        with self.assertRaisesRegex(Stage4Error, "takes 3 parameter"):
+            self._validate_callback_bindings(code, PARSE_UTF8_METADATA)
+
+    def test_callback_bindings_accept_a_null_or_matching_typedef_argument(self):
+        template = """#include <stddef.h>
+#include <stdint.h>
+extern "C" unsigned long parseUTF8(const char *inbufptr, unsigned inbuflen,
+                                   unsigned parser_flags, int outflags,
+                                   const char **outptr,
+                                   JSTextFilterFun onCodeBlock);
+static int filter(const char *metaptr, uint32_t metalen, const char *inptr,
+                  uint32_t inlen, const char **outptrp) {
+    (void)metaptr; (void)metalen; (void)inptr; (void)inlen; (void)outptrp;
+    return 0;
+}
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    const char *output = nullptr;
+    (void)parseUTF8((const char *)data, (unsigned)size, 0, 1, &output, %s);
+    return 0;
+}"""
+        self._validate_callback_bindings(template % "nullptr", PARSE_UTF8_METADATA)
+        self._validate_callback_bindings(template % "filter", PARSE_UTF8_METADATA)
+
+    def _validate_callback_bindings(
+        self, code, isf_metadata, project_context=None
+    ):
+        analysis = _analyze_cpp(code)
+        entry = next(
+            function for function in analysis.functions
+            if function.name == "LLVMFuzzerTestOneInput"
+        )
+        isf_name = isf_metadata["name"]
+        isf_calls = [call for call in entry.calls if call.name == isf_name]
+        self.assertTrue(isf_calls)
+        _validate_callback_bindings(
+            analysis,
+            entry,
+            isf_calls,
+            isf_metadata,
+            project_context if project_context is not None else CALLBACK_CONTEXT,
+        )
 
     def test_parse_harness_plan_rejects_embedded_final_c(self):
         invalid = json.loads(self.harness_plan())

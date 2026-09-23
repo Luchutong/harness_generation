@@ -10,7 +10,12 @@ from harness_generation.stage1 import Stage1Result
 from harness_generation.stage2 import Stage2Result, required_processing_units
 from harness_generation.stage3 import Stage3Metadata, Stage3Result
 from harness_generation.stage4 import Stage4Result
-from harness_generation.triplet import load_triplets_json
+from harness_generation.triplet import (
+    FunctionTriplet,
+    TripletEdge,
+    TripletFunction,
+    load_triplets_json,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -114,10 +119,95 @@ class PipelineStageValidatorTests(unittest.TestCase):
 
         self.assertEqual(result.status, "failed")
         diagnostics = "\n".join(result.errors)
-        self.assertIn("omits declared functions", diagnostics)
+        self.assertIn("calls no declared function", diagnostics)
         self.assertIn("unknown APIs", diagnostics)
         self.assertIn("not valid C syntax", diagnostics)
         self.assertIn("omits required processing units", diagnostics)
+
+    def test_stage2_accepts_one_implementation_per_parallel_step(self):
+        def declared(name, roles, line):
+            return TripletFunction(
+                f"src/parser.c:{line}:{name}", name, roles, "src/parser.c", line
+            )
+
+        isf = declared("parse", ("ISF", "PRF"), 3)
+        alternate = declared("parse_alt", ("PRF",), 13)
+        edges = tuple(
+            TripletEdge(
+                function.function_id, function.function, "(null)", "Context",
+                function.roles, function.file, function.line,
+            )
+            for function in (isf, alternate)
+        )
+        triplet = FunctionTriplet(
+            isf, (alternate,), (), (isf, alternate), ("Context",), edges,
+            {"structural_alternatives": [{
+                "functions": ["parse", "parse_alt"],
+                "evidence": "parse delegates to parse_alt",
+            }]},
+        )
+        units = [dict(unit) for unit in required_processing_units(triplet)]
+        self.assertEqual(len(units), 1)
+        self.assertEqual(set(units[0]["functions"]), {"parse", "parse_alt"})
+
+        def run(code, root):
+            units[0]["generated_code"] = code
+            output = root / "generation" / triplet.id / "stage2_snippets.json"
+            output.parent.mkdir(parents=True)
+            output.write_text(json.dumps({
+                "schema_version": 1,
+                "triplet_id": triplet.id,
+                "units": units,
+            }), encoding="utf-8")
+            functions_json = root / "functions.json"
+            functions_json.write_text(json.dumps({
+                "schema_version": 1,
+                "functions": [{"name": "parse"}, {"name": "parse_alt"}],
+            }), encoding="utf-8")
+            return PipelineStageValidator(
+                triplet,
+                artifacts=root,
+                functions_json=functions_json,
+                project_root=SIMPLE_PROJECT,
+            ).validate_stage2(Stage2Result(
+                triplet_id=triplet.id,
+                snippets=(),
+                output_path=output,
+                snippets_directory=output.parent / "snippets",
+                raw_directory=output.parent / "raw",
+                prompts_directory=output.parent / "prompts",
+            ))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            one = run("Context *context = parse_alt(data, 1);", Path(temporary))
+        with tempfile.TemporaryDirectory() as temporary:
+            none = run("(void)0;", Path(temporary))
+
+        self.assertEqual(one.status, "passed", one.errors)
+        self.assertFalse(none.success)
+        self.assertTrue(any("calls no declared function in unit_0001: parse or parse_alt"
+                            in error for error in none.errors), none.errors)
+
+    def test_same_endpoints_without_delegation_receive_separate_units(self):
+        isf = TripletFunction(
+            "src/api.c:1:parse", "parse", ("ISF",), "src/api.c", 1
+        )
+        configure = TripletFunction(
+            "src/api.c:2:configure", "configure", ("PRF",), "src/api.c", 2
+        )
+        edges = tuple(TripletEdge(
+            function.function_id, function.function, "(null)", "Context",
+            function.roles, function.file, function.line,
+        ) for function in (isf, configure))
+        triplet = FunctionTriplet(
+            isf, (configure,), (), (isf, configure), ("Context",), edges, {}
+        )
+        units = required_processing_units(triplet)
+        self.assertEqual([unit["id"] for unit in units], ["unit_0001", "unit_0002"])
+        self.assertEqual(
+            {unit["functions"] for unit in units},
+            {("parse",), ("configure",)},
+        )
 
     def test_stage3_reports_missing_unexpected_and_target_redefinition(self):
         with tempfile.TemporaryDirectory() as temporary:

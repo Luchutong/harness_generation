@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from .models import (AccessHint, FunctionInfo, OpaqueHandleInfo, ParameterInfo,
                      ReturnValueOwnership, StructInfo)
@@ -20,6 +20,18 @@ DEFAULT_IGNORES = (".git", "build", "out", "cmake-build*", "third_party",
                    "vendor", "external")
 SOURCE_SUFFIXES = {".c", ".h"}
 FUNCTIONS_SCHEMA_VERSION = 3
+
+_CONDITIONAL_OPEN = re.compile(r"^\s*#\s*(ifdef|ifndef|if)\b(?P<condition>.*)$")
+_CONDITIONAL_ELIF = re.compile(r"^\s*#\s*elif\b(?P<condition>.*)$")
+_CONDITIONAL_ELSE = re.compile(r"^\s*#\s*else\b")
+_CONDITIONAL_END = re.compile(r"^\s*#\s*endif\b")
+_CPLUSPLUS = re.compile(r"\b__cplusplus\b")
+_CPLUSPLUS_NEGATED = re.compile(
+    r"!\s*(?:defined\s*\(\s*__cplusplus\s*\)|defined\s+__cplusplus|__cplusplus)"
+)
+_CPLUSPLUS_POSITIVE = re.compile(
+    r"(?:defined\s*\(\s*__cplusplus\s*\)|defined\s+__cplusplus|__cplusplus)"
+)
 
 
 class ProjectParseError(Exception):
@@ -53,12 +65,13 @@ class CProjectParser:
         paths = tuple(self._source_files(project))
         structs: list[StructInfo] = []
         opaque_handles: list[OpaqueHandleInfo] = []
+        type_aliases: dict[str, tuple[str, int, bool]] = {}
         raw_functions: list[_ParsedFunction] = []
         warnings = []
         for path in paths:
             relative = path.relative_to(project).as_posix()
             try:
-                source = path.read_bytes()
+                source = _c_view(path.read_bytes())
                 tree = parser.parse(source)
                 errors = [node for node in _walk(tree.root_node)
                           if node.type == "ERROR" or getattr(node, "is_error", False)]
@@ -68,11 +81,15 @@ class CProjectParser:
                 opaque_handles.extend(
                     _extract_opaque_handles(tree.root_node, source, relative)
                 )
+                for alias, target in _extract_type_aliases(
+                    tree.root_node, source
+                ).items():
+                    type_aliases.setdefault(alias, target)
                 raw_functions.extend(_extract_functions(tree.root_node, source, relative))
             except OSError as exc:
                 warnings.append(f"{relative}: could not read source ({type(exc).__name__})")
         handles = _deduplicate_opaque_handles(opaque_handles)
-        resolver = TypeResolver(structs, handles)
+        resolver = TypeResolver(structs, handles, type_aliases=type_aliases)
         functions = tuple(_resolve_function(item.function, resolver) for item in raw_functions)
         functions = _apply_documented_family_ownership(
             _deduplicate_functions(functions)
@@ -97,7 +114,8 @@ class CProjectParser:
 
 class TypeResolver:
     def __init__(self, structs: Iterable[StructInfo],
-                 opaque_handles: Iterable[OpaqueHandleInfo] = ()):
+                 opaque_handles: Iterable[OpaqueHandleInfo] = (),
+                 type_aliases: Mapping[str, tuple[str, int, bool]] | None = None):
         groups: list[list[StructInfo]] = []
         group_aliases: list[set[str]] = []
         for info in structs:
@@ -136,18 +154,50 @@ class TypeResolver:
             _normalize_base(handle.name): handle
             for handle in opaque_handles
         }
+        self._type_aliases = {
+            _normalize_base(alias): (_normalize_base(target), depth, is_const)
+            for alias, (target, depth, is_const) in (type_aliases or {}).items()
+            if _normalize_base(alias) not in aliases
+            and _normalize_base(alias) not in self._opaque_handles
+        }
 
     def resolve(self, base_type: str) -> str | None:
         return self._aliases.get(_normalize_base(base_type))
 
-    def resolve_details(self, base_type: str) -> tuple[str | None, int, bool]:
+    def resolve_scalar(self, base_type: str) -> str | None:
+        """Return the scalar base behind an alias without changing its kind."""
+        base, depth, opaque, struct_like, _is_const = self.resolve_details(base_type)
+        return base if depth == 0 and not opaque and not struct_like else None
+
+    def resolve_details(self, base_type: str) -> tuple[str | None, int, bool, bool, bool]:
         normalized = _normalize_base(base_type)
-        handle = self._opaque_handles.get(normalized)
-        return (
-            self._aliases.get(normalized),
-            handle.pointer_depth if handle is not None else 0,
-            handle is not None,
-        )
+        current = normalized
+        depth = 0
+        is_const = False
+        seen: set[str] = set()
+        while current in self._type_aliases:
+            if current in seen:
+                return None, 0, False, False, False
+            seen.add(current)
+            target, hidden_depth, hidden_const = self._type_aliases[current]
+            depth += hidden_depth
+            is_const = is_const or hidden_const
+            current = target
+        handle = self._opaque_handles.get(current)
+        if handle is not None:
+            return (
+                self._aliases.get(current, handle.name),
+                depth + handle.pointer_depth,
+                True,
+                True,
+                is_const,
+            )
+        struct_name = self._aliases.get(current)
+        if struct_name is not None:
+            return struct_name, depth, False, True, is_const
+        if current != normalized or depth:
+            return current, depth, False, False, is_const
+        return None, 0, False, False, False
 
 
 def _make_parser():
@@ -191,6 +241,99 @@ def _normalize_base(value: str) -> str:
     return _clean(value.replace("*", " "))
 
 
+def _c_view(source: bytes) -> bytes:
+    """Blank the ``__cplusplus``-only regions of a target source.
+
+    A C header may carry C++ members behind ``#ifdef __cplusplus`` (inline
+    methods, ``operator`` overloads, ``public:``) that the C grammar cannot
+    parse.  Those error nodes desynchronise struct extraction: a header whose
+    ``} json_value;`` closes inside an error node loses the typedef alias, and
+    every function returning ``json_value *`` then resolves to no struct
+    endpoint at all.
+
+    Only the *content* of a C++-only branch is replaced, with spaces; newlines
+    are preserved so byte offsets and line numbers still address the original
+    text.  A ``#ifndef __cplusplus`` block keeps its (C) branch and discards the
+    ``#else`` one.  Nested conditionals inherit their parent's decision.
+    """
+
+    def blank(line: bytes) -> bytes:
+        return bytes(10 if byte == 10 else 32 for byte in line)
+
+    frames: list[dict[str, bool]] = []
+    lines = source.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        head = line.decode("utf-8", errors="replace")
+        opening = _CONDITIONAL_OPEN.match(head)
+        elif_ = _CONDITIONAL_ELIF.match(head)
+        if opening is not None:
+            keyword = opening.group(1)
+            branch_is_cpp = _cplusplus_branch(keyword, opening.group("condition"))
+            frames.append({
+                "blanked": any(frame["blanked"] for frame in frames) or (
+                    branch_is_cpp is True
+                ),
+                "cplusplus": branch_is_cpp is not None,
+                "if_branch_is_cpp": branch_is_cpp is True,
+            })
+        elif elif_ is not None:
+            if not frames:
+                continue
+            frame = frames[-1]
+            parent_blanked = any(item["blanked"] for item in frames[:-1])
+            branch_is_cpp = _cplusplus_branch("if", elif_.group("condition"))
+            frame["blanked"] = parent_blanked or (
+                branch_is_cpp is True
+            )
+        elif _CONDITIONAL_ELSE.match(head):
+            if not frames:
+                continue
+            frame = frames[-1]
+            parent_blanked = any(item["blanked"] for item in frames[:-1])
+            frame["blanked"] = parent_blanked or (
+                frame["cplusplus"] and not frame["if_branch_is_cpp"]
+            )
+        elif _CONDITIONAL_END.match(head):
+            if not frames:
+                continue
+            closed = frames.pop()
+            # The directive line itself is C++-only when its block was.
+            if closed["blanked"] or any(frame["blanked"] for frame in frames):
+                lines[index] = blank(line)
+            continue
+        if any(frame["blanked"] for frame in frames):
+            lines[index] = blank(line)
+    return b"".join(lines)
+
+
+def _cplusplus_branch(keyword: str, condition: str) -> bool | None:
+    """Identify branches that are certainly C++ only or certainly C only.
+
+    Unknown mixed expressions are retained. In particular, the mere mention
+    of ``__cplusplus`` does not make ``!defined(__cplusplus)`` a C++ branch.
+    """
+    expression = condition.split("//", 1)[0].strip()
+    if keyword in {"ifdef", "ifndef"}:
+        if expression != "__cplusplus":
+            return None
+        return keyword == "ifdef"
+    if not _CPLUSPLUS.search(expression):
+        return None
+    stripped = expression
+    while stripped.startswith("(") and stripped.endswith(")"):
+        stripped = stripped[1:-1].strip()
+    if _CPLUSPLUS_NEGATED.fullmatch(stripped):
+        return False
+    if "||" not in stripped:
+        clauses = [part.strip(" ()\t") for part in stripped.split("&&")]
+        if any(_CPLUSPLUS_POSITIVE.fullmatch(part) for part in clauses):
+            # A conjunction containing a positive __cplusplus predicate is
+            # false in C. Comparisons such as `defined(__cplusplus) == 0`
+            # are deliberately left undecided.
+            return True
+    return None
+
+
 def _extract_structs(root, source: bytes, relative: str) -> list[StructInfo]:
     result = []
     consumed = set()
@@ -227,6 +370,70 @@ def _extract_structs(root, source: bytes, relative: str) -> list[StructInfo]:
         result.append(StructInfo(tag, (tag, f"struct {tag}"), _clean(_text(source, node)),
                                  relative, node.start_point[0] + 1, node.end_point[0] + 1))
     return result
+
+
+_TYPE_TOKEN = re.compile(r"[A-Za-z_]\w*")
+
+
+def _scalar_type_name(value: str) -> str | None:
+    """Return a scalar type spelling, or None when the text is not one.
+
+    Only identifier-and-keyword spellings count.  Expressions, literals, and
+    pointer types are rejected: rewriting a base type through them would be a
+    guess, and a pointer spelling here would hide a pointer depth.
+    """
+    cleaned = _clean(value)
+    if not cleaned or "*" in cleaned:
+        return None
+    if not all(_TYPE_TOKEN.fullmatch(token) for token in cleaned.split(" ")):
+        return None
+    return cleaned
+
+
+def _extract_type_aliases(root, source: bytes) -> dict[str, tuple[str, int, bool]]:
+    """Collect simple typedefs and object-like macros that rename a type.
+
+    A byte stream spelled through such a name (``#define json_char char``,
+    ``typedef char json_char;``) is invisible to a whitelist keyed on the
+    written base type, and a `void *` opaque cookie is only distinguishable
+    from a real buffer once the written name is resolved.
+    """
+    aliases: dict[str, tuple[str, int, bool]] = {}
+    for node in _walk(root):
+        if node.type == "type_definition" and _is_external_declaration(node):
+            # A struct/union/enum alias is a structure group, not a scalar
+            # rename; only keyword and identifier spellings land here.
+            spelled = node.child_by_field_name("type")
+            if spelled is None or spelled.type not in (
+                "primitive_type", "type_identifier", "sized_type_specifier"
+            ):
+                continue
+            target = _scalar_type_name(_text(source, spelled))
+            declarator = node.child_by_field_name("declarator")
+            if declarator is None or any(
+                item.type in {"function_declarator", "array_declarator"}
+                for item in _walk(declarator)
+            ):
+                continue
+            alias_node = _declarator_leaf_identifier(declarator)
+            if target is None or alias_node is None:
+                continue
+            aliases[_text(source, alias_node)] = (
+                target, _declarator_pointer_depth(declarator),
+                any(item.type == "type_qualifier" and _text(source, item) == "const"
+                    for item in node.named_children),
+            )
+            continue
+        if node.type == "preproc_def":
+            name_node = node.child_by_field_name("name")
+            value_node = node.child_by_field_name("value")
+            if name_node is None or value_node is None:
+                continue
+            target = _scalar_type_name(_text(source, value_node))
+            if target is None:
+                continue
+            aliases.setdefault(_text(source, name_node), (target, 0, False))
+    return aliases
 
 
 def _extract_opaque_handles(
@@ -525,17 +732,24 @@ def _declarator_leaf_identifier(node):
 def _resolve_function(function: FunctionInfo, resolver: TypeResolver) -> FunctionInfo:
     parameters = []
     for parameter in function.parameters:
-        resolved, hidden_depth, opaque = resolver.resolve_details(parameter.base_type)
+        resolved, hidden_depth, opaque, struct_like, hidden_const = resolver.resolve_details(
+            parameter.base_type
+        )
         pointer_depth = parameter.pointer_depth + hidden_depth
         parameters.append(replace(
             parameter,
+            # A scalar alias rewrites only the spelling.  It must not set
+            # `is_struct_like`: `void * user_data` and `json_char * json` are
+            # not structure endpoints, and marking them so rejects the streams
+            # downstream byte-type matching is meant to accept.
             base_type=resolved or parameter.base_type,
             is_pointer=pointer_depth > 0,
             pointer_depth=pointer_depth,
-            is_struct_like=resolved is not None,
+            is_struct_like=struct_like,
             is_opaque_handle=opaque,
+            is_const=parameter.is_const or hidden_const,
         ))
-    return_struct, hidden_depth, opaque = resolver.resolve_details(
+    return_struct, hidden_depth, opaque, struct_like, _hidden_const = resolver.resolve_details(
         function.return_base_type
     )
     function = replace(
@@ -543,7 +757,7 @@ def _resolve_function(function: FunctionInfo, resolver: TypeResolver) -> Functio
         parameters=tuple(parameters),
         return_base_type=return_struct or function.return_base_type,
         return_pointer_depth=function.return_pointer_depth + hidden_depth,
-        return_is_struct_like=return_struct is not None,
+        return_is_struct_like=struct_like,
         return_is_opaque_handle=opaque,
     )
     return replace(function, access_hints=_access_hints(function))

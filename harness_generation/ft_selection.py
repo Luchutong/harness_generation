@@ -12,7 +12,7 @@ from .triplet import FunctionTriplet, triplets_document
 
 
 FT_SELECTION_SCHEMA_VERSION = 2
-FT_SELECTION_POLICY_VERSION = "ft-priority-v3"
+FT_SELECTION_POLICY_VERSION = "ft-priority-v4"
 
 
 @dataclass(frozen=True)
@@ -357,11 +357,7 @@ def _usage_support_metric(triplet: FunctionTriplet) -> ScoreMetric:
 
 def estimate_structural_units(triplet: FunctionTriplet) -> int:
     """Mirror Stage 2 grouping without importing its private implementation."""
-    units = {(edge.src, edge.dst) for edge in triplet.edges}
-    covered = {edge.function_id for edge in triplet.edges}
-    if any(function.function_id not in covered for function in triplet.functions):
-        units.add((None, None))
-    return len(units)
+    return len(triplet.structural_steps())
 
 
 def triplet_catalog_sha256(triplets: Iterable[FunctionTriplet]) -> str:

@@ -66,6 +66,10 @@ tree-sitter 决定函数边界、参数、指针深度、const、typedef/struct 
 
 `SemanticAnalyzer` 是协议接口。`MockSemanticAnalyzer` 用于无网络测试和可复现实验；`LLMSemanticAnalyzer` 接收可注入 transport，并严格校验 JSON schema。
 
+类型解析还恢复标量及简单指针 typedef 链的底层类型、隐藏指针深度和 `const`。
+`void *` 只有与长度参数形成可信配对时才进入字节流候选；名字表明是
+`user_data`、`cookie` 或 `context` 的参数会被排除。
+
 ## 图构建的保守工程选择
 
 以下细节是第一版工程选择，不是 SynapseFlow 论文规定的唯一算法：

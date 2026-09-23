@@ -1,0 +1,28 @@
+{
+  "name": "json_parser",
+  "source_project": "https://github.com/json-parser/json-parser",
+  "upstream_commit": "9d50ae5ea2cdeef3b75146c621ec7b26e2e3642f",
+  "target_function": "json_parse",
+  "target_file": "target.c",
+  "reference_harness": "harnesses/reference.c",
+  "project_directory": "project",
+  "adaptation": "none",
+  "adaptation_note": "project/ holds the upstream files byte-for-byte. Earlier runs of this benchmark used a copy with the json_char alias removed; the analyzer now resolves scalar typedefs and object-like macros and tolerates __cplusplus-only regions, so the alias is deliberately left in place. target.c is derived, not edited: it is json.h with its trailing newlines collapsed to one, followed by json.c with its license block and its #include \"json.h\" line removed.",
+  "upstream_files": [
+    {
+      "path": "project/json.h",
+      "sha256": "d1cb89f43c4913fb5332272c4ea3307608399c054693d44c09e2b23c0ceee681"
+    },
+    {
+      "path": "project/json.c",
+      "sha256": "cdfa1316dd55a8696f414352529ef065c15bdf3a6ca93981eddfeff4a579c7a6"
+    }
+  ],
+  "derived_files": [
+    {
+      "path": "target.c",
+      "rule": "json.h.rstrip('\\n') + '\\n' + json.c after its first '*/' with the #include \"json.h\" line removed",
+      "sha256": "013123f39097418ecf62f32037fd0bc6a5b8844faeae7b406c0fee1d56ea0b65"
+    }
+  ]
+}

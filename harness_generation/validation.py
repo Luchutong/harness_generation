@@ -17,7 +17,11 @@ from .policy import (
 )
 from .records import write_json
 from .source_paths import SUPPORTED_FUNCTIONS_SCHEMA_VERSIONS
-from .triplet import FunctionTriplet, TripletOwnershipRelation
+from .triplet import (
+    FunctionTriplet,
+    TripletOwnershipRelation,
+    missing_structural_steps,
+)
 
 
 VALIDATION_SCHEMA_VERSION = 1
@@ -146,10 +150,15 @@ class IntermediateValidator:
         allowed_functions: Iterable[str] = (),
         ownership_cleanup: Iterable[str] = (),
         ownership_relations: Iterable[TripletOwnershipRelation] = (),
+        alternative_functions: Iterable[Iterable[str]] = (),
     ) -> ValidationResult:
         expected = _names(expected_functions, "expected_functions")
         targets = _names(target_functions, "target_functions")
         extra_allowed = _names(allowed_functions, "allowed_functions")
+        alternatives = tuple(
+            tuple(sorted(_names(group, "alternative_functions")))
+            for group in alternative_functions
+        )
         scoped_cleanup = _names(ownership_cleanup, "ownership_cleanup")
         relations = tuple(ownership_relations)
         relation_cleanup = {relation.cleanup_function for relation in relations}
@@ -200,7 +209,7 @@ class IntermediateValidator:
         definitions = Counter(facts.definitions)
         local_functions = set(definitions)
         allowed = self.allowed_functions | _STD_FUNCTION_ALLOWLIST | extra_allowed
-        missing = sorted(expected - calls)
+        missing = list(missing_structural_steps(expected, alternatives, calls))
         forbidden_logging = sorted(calls & self.forbidden_logging_functions)
         forbidden_io = sorted(calls & self.forbidden_io_functions)
         forbidden = set(forbidden_logging) | set(forbidden_io)
@@ -263,6 +272,7 @@ class IntermediateValidator:
             "function_definitions": list(facts.definitions),
             "duplicate_function_definitions": duplicates,
             "missing_expected_functions": missing,
+            "expected_function_alternatives": [list(group) for group in alternatives],
             "unexpected_function_calls": sorted(
                 set(unexpected_target) | set(unknown) | forbidden
             ),
@@ -303,6 +313,9 @@ class IntermediateValidator:
             allowed_functions=allowed,
             ownership_cleanup=ownership_cleanup,
             ownership_relations=triplet.ownership_relations,
+            alternative_functions=[
+                step.functions for step in triplet.structural_steps()
+            ],
         )
         layout.write_validation("intermediate", result.to_dict())
         return result
@@ -386,6 +399,12 @@ def _syntax_facts(source: str) -> _SyntaxFacts:
                 continue
             if callee.type == "identifier":
                 name = _text(encoded, callee)
+                if parser_name == "tree-sitter-cpp" and name in {
+                    "reinterpret_cast", "static_cast", "const_cast", "dynamic_cast"
+                }:
+                    # tree-sitter-cpp represents C++ cast syntax as a call
+                    # expression. A cast is not a project API invocation.
+                    continue
                 if name in function_pointers or name in local_callables:
                     indirect.append(name)
                 else:
@@ -398,6 +417,10 @@ def _syntax_facts(source: str) -> _SyntaxFacts:
                     indirect.append(_bounded(_text(encoded, callee)))
             elif callee.type == "template_function":
                 name = _template_function_name(callee, encoded)
+                if parser_name == "tree-sitter-cpp" and name in {
+                    "reinterpret_cast", "static_cast", "const_cast", "dynamic_cast"
+                }:
+                    continue
                 if name:
                     calls.append(name)
                 else:

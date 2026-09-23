@@ -12,6 +12,7 @@ from typing import Any, Iterable, Mapping
 from sfg_builder.models import Serializable
 
 from .records import write_json
+from .sfg_adapter import CANONICAL_NULL_NODE
 
 
 TRIPLET_SCHEMA_VERSION = 5
@@ -218,6 +219,22 @@ class TripletOwnershipRelation(Serializable):
 
 
 @dataclass(frozen=True)
+class StructuralStep(Serializable):
+    """One transformation, with alternatives backed by explicit evidence."""
+
+    source: str
+    target: str
+    functions: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "target": self.target,
+            "functions": list(self.functions),
+        }
+
+
+@dataclass(frozen=True)
 class FunctionTriplet(Serializable):
     """FT = (I, P, H), anchored by exactly one ISF."""
 
@@ -316,6 +333,76 @@ class FunctionTriplet(Serializable):
             ],
             "metadata": dict(self.metadata),
         }
+
+    def structural_steps(self) -> tuple[StructuralStep, ...]:
+        """Group proven alternatives; equal endpoints alone imply no equivalence."""
+        grouped: dict[tuple[str, str], list[str]] = {}
+        for edge in self.edges:
+            functions = grouped.setdefault((edge.src, edge.dst), [])
+            if edge.function not in functions:
+                functions.append(edge.function)
+        covered = {name for names in grouped.values() for name in names}
+        for function in self.functions:
+            if function.function not in covered:
+                grouped.setdefault(
+                    (CANONICAL_NULL_NODE, CANONICAL_NULL_NODE), []
+                ).append(function.function)
+        evidence = self.metadata.get("structural_alternatives", ())
+        explicit = []
+        if isinstance(evidence, (list, tuple)):
+            for item in evidence:
+                if isinstance(item, Mapping) and isinstance(item.get("functions"), list):
+                    names = item["functions"]
+                    if len(names) > 1 and all(isinstance(name, str) for name in names):
+                        explicit.append(frozenset(names))
+        steps = []
+        for (source, target), functions in sorted(grouped.items()):
+            remaining = set(functions)
+            for alternatives in explicit:
+                if alternatives <= remaining:
+                    steps.append(StructuralStep(source, target, tuple(sorted(alternatives))))
+                    remaining.difference_update(alternatives)
+            steps.extend(StructuralStep(source, target, (name,))
+                         for name in sorted(remaining))
+        return tuple(sorted(steps, key=lambda step: (
+            step.source, step.target, step.functions
+        )))
+
+    def missing_structural_steps(
+        self, called: Iterable[str]
+    ) -> tuple[str, ...]:
+        """Return the structural steps ``called`` leaves unimplemented."""
+
+        return missing_structural_steps(
+            (function.function for function in self.functions),
+            (step.functions for step in self.structural_steps()),
+            called,
+        )
+
+
+def missing_structural_steps(
+    expected: Iterable[str],
+    steps: Iterable[Iterable[str]],
+    called: Iterable[str],
+) -> tuple[str, ...]:
+    """Report the structural steps that a set of calls leaves unimplemented.
+
+    ``steps`` groups the functions that carry out one structural step, so any
+    single member satisfies it: ``json_parse`` and ``json_parse_ex`` perform the
+    same transformation, and a snippet holding one ``json_value`` cannot legally
+    release it twice.  A step with no call at all is reported as the alternatives
+    it is, so the diagnostic names what is actually missing.  An ``expected``
+    function outside every step keeps the per-function rule.
+    """
+
+    invoked = set(called)
+    groups = tuple(tuple(sorted(step)) for step in steps)
+    covered = {name for group in groups for name in group}
+    missing = [
+        " or ".join(group) for group in groups if not invoked.intersection(group)
+    ]
+    missing.extend(sorted(set(expected) - covered - invoked))
+    return tuple(sorted(missing))
 
 
 def stable_triplet_id(

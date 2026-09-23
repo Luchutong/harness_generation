@@ -36,7 +36,7 @@ class CandidateDiscoveryTests(unittest.TestCase):
         candidate = candidates[0]
         self.assertEqual(
             {parameter.name for parameter in candidate.candidate_parameters},
-            {"filename", "path", "error_message", "memory", "text", "raw", "bytes",
+            {"filename", "path", "error_message", "text", "raw", "bytes",
              "constant_bytes", "signed_bytes"},
         )
         self.assertNotIn("ctx", {parameter.name for parameter in candidate.stream_parameters})
@@ -44,6 +44,37 @@ class CandidateDiscoveryTests(unittest.TestCase):
         self.assertTrue(candidate.isf_candidate)
         self.assertFalse(candidate.struct_related_candidate)
         self.assertTrue(all(function.labels == () for function in self.functions))
+
+    def test_void_pointer_needs_a_length_before_it_is_a_stream(self):
+        """An untyped pointer is a buffer only when the callee pairs it with a length.
+
+        `void *` names no element type, so without the length there is nothing
+        to separate a byte stream from the opaque cookie an allocator threads
+        through its callbacks.
+        """
+        cases = {
+            "read": "int read(void *buf, size_t n);",
+            "read_bounded": "int read_bounded(void *buf, unsigned int length);",
+            "alloc": "void *alloc(size_t size, int zero, void *user_data);",
+            "free": "void free_cb(void *ptr, void *user_data);",
+            "sink": "int sink(void *cookie);",
+            "prefix_length": "int prefix_length(size_t len, void *input_buf);",
+            "separated_length": "int separated_length(void *data, int flags, size_t data_size);",
+            "opaque_with_length": "int opaque_with_length(void *user_data, size_t len);",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            (project / "api.h").write_text("\n".join(cases.values()))
+            parsed = CProjectParser().parse(project)
+        streams = {
+            candidate.function: {item.name for item in candidate.stream_parameters}
+            for candidate in ISFCandidateDetector().detect(parsed.functions)
+        }
+        self.assertEqual(streams, {
+            "read": {"buf"}, "read_bounded": {"buf"},
+            "prefix_length": {"input_buf"},
+            "separated_length": {"data"},
+        })
 
     def test_struct_detector_covers_parameters_and_return_values(self):
         candidates = {candidate.function: candidate for candidate in

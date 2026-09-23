@@ -105,7 +105,7 @@ class TripletCLITests(unittest.TestCase):
             (self.artifacts / "ft_selection.json").read_text(encoding="utf-8")
         )
         self.assertEqual(document["schema_version"], 2)
-        self.assertEqual(document["policy_version"], "ft-priority-v3")
+        self.assertEqual(document["policy_version"], "ft-priority-v4")
         self.assertEqual(document["summary"]["selected_count"], 1)
         self.assertEqual(
             document["selection"][0]["triplet_id"], self._triplet_id()

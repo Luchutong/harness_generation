@@ -115,6 +115,21 @@ CJSON_PUBLIC(void) cJSON_Delete(cJSON *item) { (void)item; }
     assert derive_ownership_relations(parsed.functions) == ()
 
 
+def test_parse_name_and_matching_cleanup_do_not_prove_owned_return():
+    parsed = parse_source('''
+    typedef struct Value { int field; } Value;
+    Value *value_parse(Value *existing, const char *text) {
+        (void)text;
+        return existing;
+    }
+    void value_free(Value *value) { (void)value; }
+    ''')
+    relations = derive_ownership_relations(
+        parsed.functions, struct_resource_types=("Value",)
+    )
+    assert relations == ()
+
+
 def test_static_cleanup_definition_does_not_authorize_external_harness_call():
     parsed = parse_source('''
     typedef struct cJSON cJSON;

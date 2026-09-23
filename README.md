@@ -8,6 +8,37 @@ Protocol-aware Stage 1–4 的 HarnessPlan 优化入口、构建配方、正式�
 
 “持续生成更高质量”指在固定预算内，通过多轮候选评估与选择，提高保留下来的 Harness 的有效性和测试能力；不假设每次生成都会变好，也不意味着模型本身通过实验更新了权重。上述研究问题仍待对照实验验证，现有示例不能构成有效性结论。
 
+## 真实 API 最小 Demo
+
+本仓库结项时保留了一个可以直接运行的真实 LLM demo，用 `benchmarks/json_parser`
+作为小型 C 项目，完整执行：
+
+```text
+SFG 构建 → Function Triplet 抽取 → FT ranking → Stage 1–4 LLM 生成
+       → intermediate validation → compiler/linker/runtime → fuzz smoke
+```
+
+在仓库根目录运行：
+
+```bash
+cd /home/luchitong/work/harness_generation
+./scripts/run_minimal_demo.sh
+```
+
+脚本默认读取 `.env` 中的 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL` 和可选
+`LLM_THINKING`，不会把 key 写入 artifact。输出目录默认是
+`artifacts/demo_real_json_<timestamp>/`，该目录被 `.gitignore` 忽略。
+
+也可以显式指定输出目录：
+
+```bash
+./scripts/run_minimal_demo.sh /tmp/harness_generation_demo
+```
+
+当前机器上已经用真实 API 验证过这条路径：`json_parser/json_parse` 的 FT 被选中，
+Stage 1、Stage 2、Stage 3、Stage 4、Intermediate、Compiler、Linker、Runtime 和
+Fuzz smoke 均为 `passed`。
+
 ## 研究目标与假设
 
 计划检验三个相互关联的问题：
@@ -211,7 +242,8 @@ harness_generation/
 
 - Python 3.10+；依赖 `tree-sitter` 和 `tree-sitter-c`。
 - Clang 及 libFuzzer、AddressSanitizer、UndefinedBehaviorSanitizer 运行库。
-- DeepSeek API 密钥及可用余额。
+- OpenAI-compatible LLM API 配置及可用余额。当前 `.env.example` 使用 DeepSeek
+  endpoint 作为示例。
 
 建议使用虚拟环境安装项目依赖：
 
@@ -222,16 +254,23 @@ python3 -m venv .venv
 python3 -m pip install -e .
 ```
 
-在同一个终端配置密钥：
+真实 API demo 使用 staged FT pipeline，读取以下环境变量：
 
 ```bash
-read -rsp "请输入 DeepSeek API Key: " DEEPSEEK_API_KEY
-echo
-export DEEPSEEK_API_KEY
-python3 -c 'import os; print("已配置" if os.getenv("DEEPSEEK_API_KEY") else "未配置")'
+cp .env.example .env
+# 编辑 .env，填入真实 LLM_API_KEY。
+set -a
+. ./.env
+set +a
+python3 - <<'PY'
+import os
+required = ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")
+print("已配置" if all(os.getenv(name) for name in required) else "未配置")
+PY
 ```
 
-密钥只对当前终端和其子进程生效。程序仅从环境变量读取，不自动加载 `.env`；`.env.example` 仅用于说明变量名。不要将密钥写入源码或提交到版本库。
+`scripts/run_minimal_demo.sh` 会自动 source `.env`。其他 CLI 命令默认只读取当前
+shell 环境，不自动加载 `.env`。不要将真实密钥写入源码或提交到版本库。
 
 安装后也可使用 `harness-generation` 入口。没有安装 tree-sitter 依赖时，API 生成会在发请求前失败并保存诊断；离线 `--harness` 复查仍只依赖 Clang。
 

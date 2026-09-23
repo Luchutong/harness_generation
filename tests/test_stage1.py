@@ -7,6 +7,7 @@ from harness_generation.llm import MockLLM
 from harness_generation.stage1 import (
     Stage1Error,
     Stage1Generator,
+    _usage_context,
     generate_stage1_documentation,
 )
 from harness_generation.sfg_adapter import load_sfg_artifacts
@@ -122,21 +123,21 @@ class Stage1Tests(unittest.TestCase):
             self.assertIn("resource_lifecycle_notes", document)
             self.assertEqual(
                 document["generation_metadata"]["prompt_version"],
-                "stage1-function-doc-v1",
+                "stage1-function-doc-v2",
             )
         for function, response in zip(self.triplet.functions, responses):
             self.assertEqual(raw[f"stage1_{function.function}.txt"], response)
             audit = audits[function.function]
             metadata = audit["metadata"]
             self.assertEqual(
-                audit["prompt"]["prompt_version"], "stage1-function-doc-v1"
+                audit["prompt"]["prompt_version"], "stage1-function-doc-v2"
             )
             self.assertEqual(audit["scoped_prompt"], audit["prompt"])
             self.assertEqual(audit["scoped_raw"], response)
             self.assertEqual(audit["parsed"]["function"], function.function)
             self.assertEqual(metadata["provider"], "mock")
             self.assertEqual(metadata["model"], "mock-model")
-            self.assertEqual(metadata["prompt_version"], "stage1-function-doc-v1")
+            self.assertEqual(metadata["prompt_version"], "stage1-function-doc-v2")
             self.assertEqual(metadata["attempt"], 1)
             self.assertIn("timestamp", metadata)
             self.assertIsNone(metadata["rollback_source"])
@@ -172,6 +173,24 @@ class Stage1Tests(unittest.TestCase):
         for reference, prompt in zip(self.triplet.functions, prompts):
             source = self.functions_by_id[reference.function_id]["body"]
             self.assertIn(source, prompt)
+
+    def test_usage_context_includes_referenced_callback_struct(self):
+        reference = self.triplet.functions[0]
+        metadata = {
+            "file": "api.c", "parameters": [{
+                "name": "parser", "base_type": "Parser", "is_struct_like": True,
+            }],
+        }
+        document = {"structs": [
+            {"name": "Parser", "declaration":
+             "typedef struct Parser { int (*on_text)(const char *); } Parser;"},
+            {"name": "Unrelated", "declaration":
+             "typedef struct Unrelated { int secret; } Unrelated;"},
+        ]}
+        context = _usage_context(self.triplet, reference, metadata, document)
+        self.assertEqual(context["referenced_struct_definitions"], [
+            document["structs"][0]
+        ])
 
     def test_invalid_json_is_rejected_after_raw_response_is_saved(self):
         llm = MockLLM(["```json\n{}\n```"])

@@ -1,13 +1,34 @@
+from dataclasses import replace
 from pathlib import Path
 import unittest
 
 from harness_generation.sfg_adapter import (SFGArtifacts, adapt_sfg_document,
                                              load_sfg_artifacts)
-from harness_generation.triplet import triplets_document
-from harness_generation.triplet_extractor import FunctionTripletExtractor
+from harness_generation.triplet import TripletFunction, triplets_document
+from harness_generation.triplet_extractor import (
+    FunctionTripletExtractor,
+    _bypass_semantics,
+    _ownership_relations,
+)
 
 
 REAL_ARTIFACTS = Path(__file__).resolve().parents[1] / "artifacts" / "simple"
+
+# A consumer only owns a resource its own signature can name. These fixtures
+# mirror the shape of a real one: the parser arrives as a typed parameter.
+PARSER_CONSUMER_METADATA = {
+    "return_type": "int",
+    "return_base_type": "int",
+    "return_pointer_depth": 0,
+    "parameters": [
+        {"name": "parser", "type": "Parser *", "base_type": "Parser",
+         "pointer_depth": 1, "is_pointer": True, "is_struct_like": True},
+        {"name": "data", "type": "const char *", "base_type": "char",
+         "pointer_depth": 1, "is_pointer": True, "is_struct_like": False},
+        {"name": "size", "type": "unsigned", "base_type": "unsigned",
+         "pointer_depth": 0, "is_pointer": False, "is_struct_like": False},
+    ],
+}
 
 
 def make_artifacts(specs, *, ownership=(), usage_patterns=()):
@@ -107,6 +128,60 @@ class FunctionTripletExtractorTests(unittest.TestCase):
         self.assertEqual(names(triplets[0].prfs), ["process", "consume"])
         self.assertEqual(names(triplets[0].hpfs), ["destroy"])
 
+    def test_same_graph_endpoints_need_delegation_to_be_alternatives(self):
+        artifacts = make_artifacts([
+            ("parse", ("ISF",), "(null)", "Context", "src/api.c",
+             "Context *parse(const char *data)",
+             {"body": "{ return parse_ex(data, 0); }"}),
+            ("parse_ex", ("PRF",), "(null)", "Context", "src/api.c",
+             "Context *parse_ex(const char *data, int mode)",
+             {"body": "{ return 0; }"}),
+            ("configure", ("PRF",), "(null)", "Context", "src/api.c",
+             "void configure(Context *ctx)",
+             {"body": "{ ctx->state = 1; }"}),
+        ])
+        triplet = self.extractor.extract(artifacts)[0]
+        steps = [step.functions for step in triplet.structural_steps()]
+        self.assertIn(("parse", "parse_ex"), steps)
+        self.assertIn(("configure",), steps)
+        self.assertEqual(triplet.missing_structural_steps(("parse",)), ("configure",))
+
+    def test_function_name_in_comment_does_not_create_alternative_step(self):
+        artifacts = make_artifacts([
+            ("parse", ("ISF",), "(null)", "Context", "src/api.c",
+             "Context *parse(const char *data)",
+             {"body": "{ /* parse_ex(data) */ return 0; }"}),
+            ("parse_ex", ("PRF",), "(null)", "Context", "src/api.c",
+             "Context *parse_ex(const char *data)",
+             {"body": "{ return 0; }"}),
+        ])
+        triplet = self.extractor.extract(artifacts)[0]
+        self.assertEqual(triplet.metadata["structural_alternatives"], [])
+
+    def test_setup_call_before_delegation_is_not_an_alternative_step(self):
+        artifacts = make_artifacts([
+            ("parse", ("ISF",), "(null)", "Context", "src/api.c",
+             "Context *parse(const char *data)",
+             {"body": "{ record_parse(); return parse_ex(data); }"}),
+            ("parse_ex", ("PRF",), "(null)", "Context", "src/api.c",
+             "Context *parse_ex(const char *data)",
+             {"body": "{ return 0; }"}),
+        ])
+        triplet = self.extractor.extract(artifacts)[0]
+        self.assertEqual(triplet.metadata["structural_alternatives"], [])
+
+    def test_conditional_delegation_is_not_an_alternative_step(self):
+        artifacts = make_artifacts([
+            ("parse", ("ISF",), "(null)", "Context", "src/api.c",
+             "Context *parse(const char *data)",
+             {"body": "{ if (data) return parse_ex(data); return 0; }"}),
+            ("parse_ex", ("PRF",), "(null)", "Context", "src/api.c",
+             "Context *parse_ex(const char *data)",
+             {"body": "{ return 0; }"}),
+        ])
+        triplet = self.extractor.extract(artifacts)[0]
+        self.assertEqual(triplet.metadata["structural_alternatives"], [])
+
     def test_opaque_handle_consumer_closes_over_create_and_free(self):
         artifacts = make_artifacts([
             (
@@ -184,11 +259,71 @@ class FunctionTripletExtractorTests(unittest.TestCase):
             triplet.metadata["lifecycle_closure"][0]["resource_type"], "Parser"
         )
 
+    def test_a_release_function_is_not_a_consumer_of_the_resource(self):
+        """`ParserFreeEx` releases the handle; it never consumes it.
+
+        Counting it as a consumer orders one destructor after the other, so a
+        plan that realizes the release step with `ParserFree` could never
+        satisfy the ordering it would be handed.
+        """
+        handle_parameter = {
+            "name": "parser", "type": "Parser", "declaration": "Parser parser",
+            "base_type": "Parser", "is_pointer": True, "pointer_depth": 1,
+            "is_const": False, "is_struct_like": True, "is_opaque_handle": False,
+        }
+        void_handle = {
+            "return_type": "void", "return_base_type": "void",
+            "return_pointer_depth": 0, "return_is_struct_like": False,
+            "parameters": [dict(handle_parameter)],
+        }
+        artifacts = make_artifacts([
+            ("ParserCreate", (), "(null)", "Parser", "src/fixture.c",
+             "Parser ParserCreate(void)",
+             {"return_type": "Parser", "return_base_type": "Parser",
+              "return_pointer_depth": 1, "return_is_struct_like": True,
+              "parameters": []}),
+            ("ParserParse", ("ISF",), "Parser", "(null)", "src/fixture.c",
+             "void ParserParse(Parser parser)", void_handle),
+            ("ParserFree", ("HPF",), "Parser", "(null)", "src/fixture.c",
+             "void ParserFree(Parser parser)", void_handle),
+            ("ParserFreeEx", ("HPF",), "Parser", "(null)", "src/fixture.c",
+             "void ParserFreeEx(int mode, Parser parser)", void_handle),
+        ], ownership=({
+            "id": "own_parser",
+            "producer_function_id": "src/fixture.c:1:ParserCreate",
+            "producer_function": "ParserCreate",
+            "resource_type": "Parser",
+            "cleanup_function_id": "src/fixture.c:3:ParserFree",
+            "cleanup_function": "ParserFree",
+            "cleanup_argument": "return_value",
+            "consumers": [],
+            "nullable": True,
+            "evidence": ["complete struct type: Parser"],
+            "confidence": 0.95,
+            "source": "opaque_handle_static_inference",
+        },))
+        functions = tuple(
+            TripletFunction(f"src/fixture.c:{line}:{name}", name, roles,
+                            "src/fixture.c", line)
+            for line, (name, roles) in enumerate((
+                ("ParserCreate", ("PRF",)),
+                ("ParserParse", ("ISF", "PRF")),
+                ("ParserFree", ("HPF",)),
+                ("ParserFreeEx", ("HPF",)),
+            ), 1)
+        )
+
+        relations = _ownership_relations(artifacts, functions)
+
+        self.assertEqual(relations[0].consumers, ("ParserParse",))
+
     def test_usage_patterns_create_separate_ft_variants_with_support(self):
         specs = [
             ("ParserCreate", (), "(null)", "Parser"),
             ("ParserCreateNS", (), "(null)", "Parser"),
-            ("ParserParse", ("ISF",), "Parser", "(null)"),
+            ("ParserParse", ("ISF",), "Parser", "(null)", "src/fixture.c",
+             "int ParserParse(Parser *parser, const char *data, unsigned size)",
+             PARSER_CONSUMER_METADATA),
             ("ParserFree", (), "Parser", "(null)"),
         ]
         ids = {name: f"src/fixture.c:{line}:{name}"
@@ -241,10 +376,72 @@ class FunctionTripletExtractorTests(unittest.TestCase):
                 sum("ISF" in item.roles for item in triplet.functions), 1
             )
 
+    def test_void_userdata_does_not_import_callers_resource_lifecycle(self):
+        # The real md_parse shape: a caller may thread its own WBuf through the
+        # void* userdata slot, but md_parse's own signature cannot name a WBuf,
+        # so the resource lifecycle is not part of md_parse's API.
+        specs = [
+            ("WBufInit", (), "(null)", "WBuf"),
+            ("md_parse", ("ISF",), "MD_PARSER", "(null)", "src/fixture.c",
+             "int md_parse(const char *text, unsigned size, void *userdata)",
+             {"return_type": "int", "return_base_type": "int",
+              "return_pointer_depth": 0, "parameters": [
+                  {"name": "text", "type": "const char *", "base_type": "char",
+                   "pointer_depth": 1, "is_pointer": True, "is_struct_like": False},
+                  {"name": "size", "type": "unsigned", "base_type": "unsigned",
+                   "pointer_depth": 0, "is_pointer": False, "is_struct_like": False},
+                  {"name": "userdata", "type": "void *", "base_type": "void",
+                   "pointer_depth": 1, "is_pointer": True, "is_struct_like": False},
+              ]}),
+            ("WBufFree", (), "WBuf", "(null)"),
+        ]
+        pattern = {
+            "id": "up_userdata", "resource_type": "WBuf",
+            "producer_function_id": "src/fixture.c:1:WBufInit",
+            "producer_function": "WBufInit",
+            "consumer_function_ids": ["src/fixture.c:2:md_parse"],
+            "consumers": ["md_parse"], "consumer_argument_indices": [3],
+            "cleanup_function_id": "src/fixture.c:3:WBufFree",
+            "cleanup_function": "WBufFree",
+        }
+        triplet = self.extractor.extract(
+            make_artifacts(specs, usage_patterns=(pattern,))
+        )[0]
+        self.assertEqual([item.function for item in triplet.functions], ["md_parse"])
+        self.assertEqual(triplet.metadata["lifecycle_closure"], [])
+
+    def test_negative_stream_vote_is_not_reintroduced_as_bypass_evidence(self):
+        artifacts = make_artifacts([
+            ("md_parse", ("ISF",), "MD_PARSER", "(null)", "src/fixture.c",
+             "int md_parse(const char *text, unsigned size, void *userdata)",
+             {"parameters": [
+                 {"name": "text", "type": "const char *", "base_type": "char",
+                  "is_pointer": True, "is_struct_like": False},
+                 {"name": "size", "type": "unsigned", "base_type": "unsigned",
+                  "is_pointer": False, "is_struct_like": False},
+                 {"name": "userdata", "type": "void *", "base_type": "void",
+                  "is_pointer": True, "is_struct_like": False},
+             ]}),
+        ])
+        annotation = {**artifacts.annotations[0], "stream_parameters": [
+            {"parameter": "text", "is_byte_stream": True},
+            {"parameter": "userdata", "is_byte_stream": False},
+        ]}
+        artifacts = replace(artifacts, annotations=(annotation,))
+        function = TripletFunction(
+            "src/fixture.c:1:md_parse", "md_parse", ("ISF",), "src/fixture.c", 1
+        )
+        semantics = _bypass_semantics(artifacts, (function,))
+        streams = [item.metadata["parameter"] for item in semantics
+                   if item.kind == "byte_stream_parameter"]
+        self.assertEqual(streams, ["text"])
+
     def test_usage_out_parameter_and_refcount_fields_reach_ft_contract(self):
         specs = [
             ("ParserOpen", (), "(null)", "Parser"),
-            ("ParserParse", ("ISF",), "Parser", "(null)"),
+            ("ParserParse", ("ISF",), "Parser", "(null)", "src/fixture.c",
+             "int ParserParse(Parser *parser, const char *data, unsigned size)",
+             PARSER_CONSUMER_METADATA),
             ("ParserClose", (), "Parser", "(null)"),
         ]
         pattern = {
@@ -272,7 +469,9 @@ class FunctionTripletExtractorTests(unittest.TestCase):
 
         ref_specs = [
             ("ParserRef", (), "Parser", "Parser"),
-            ("ParserParse", ("ISF",), "Parser", "(null)"),
+            ("ParserParse", ("ISF",), "Parser", "(null)", "src/fixture.c",
+             "int ParserParse(Parser *parser, const char *data, unsigned size)",
+             PARSER_CONSUMER_METADATA),
             ("ParserUnref", (), "Parser", "(null)"),
         ]
         ref_pattern = {

@@ -78,8 +78,10 @@ const foo_t *forms(struct Thing *a, Thing **b, const foo_t *item,
         self.assertTrue(parameters["constant_bytes"].is_const)
         self.assertEqual(parameters["octets"].base_type, "unsigned char")
         candidates = CandidateDetector().detect(parsed.functions)
+        # `memory` is a bare `void *` with no following length, so it is not a
+        # stream candidate; the typed byte pointers still are.
         self.assertEqual({item.name for item in candidates[0].stream_parameters},
-                         {"memory", "text", "constant_text", "bytes",
+                         {"text", "constant_text", "bytes",
                           "constant_bytes", "octets"})
         thing = next(info for info in parsed.structs if info.name == "Thing")
         self.assertIn("{ int value; }", thing.declaration)
@@ -99,6 +101,54 @@ void use(public_type *public_value, struct internal_type *tag_value);
         parameters = parsed.functions[0].parameters
         self.assertTrue(all(parameter.is_struct_like for parameter in parameters))
         self.assertEqual({parameter.base_type for parameter in parameters}, {"public_type"})
+
+    def test_typedef_chain_preserves_hidden_pointer_depth_and_struct_kind(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            (project / "types.h").write_text('''
+typedef char *Bytes;
+typedef Bytes InputBytes;
+typedef unsigned char Octet;
+typedef const Octet *ConstOctets;
+typedef struct Value { int field; } Value;
+typedef Value *ValuePtr;
+int parse(InputBytes input, size_t size, ValuePtr output, ConstOctets bytes);
+''')
+            parsed = CProjectParser().parse(project)
+        parameters = parsed.functions[0].parameters
+        self.assertEqual(parameters[0].base_type, "char")
+        self.assertEqual(parameters[0].pointer_depth, 1)
+        self.assertFalse(parameters[0].is_struct_like)
+        self.assertEqual(parameters[2].base_type, "Value")
+        self.assertEqual(parameters[2].pointer_depth, 1)
+        self.assertTrue(parameters[2].is_struct_like)
+        self.assertEqual(parameters[3].base_type, "unsigned char")
+        self.assertEqual(parameters[3].pointer_depth, 1)
+        self.assertTrue(parameters[3].is_const)
+        self.assertEqual(
+            [item.name for item in CandidateDetector().detect(parsed.functions)[0].stream_parameters],
+            ["input", "bytes"],
+        )
+
+    def test_c_view_keeps_negated_cplusplus_branch_and_blanks_cpp_branch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            (project / "types.h").write_text('''
+#if !defined(__cplusplus)
+typedef struct Value { int field; } Value;
+#else
+class Value { public: int field; };
+#endif
+#if defined(__cplusplus) == 0
+typedef struct Extra { int field; } Extra;
+#endif
+Value *parse(const char *data, size_t size);
+''')
+            parsed = CProjectParser().parse(project)
+        self.assertIn("Value", {item.name for item in parsed.structs})
+        self.assertIn("Extra", {item.name for item in parsed.structs})
+        self.assertTrue(parsed.functions[0].return_is_struct_like)
+        self.assertEqual(parsed.functions[0].name, "parse")
 
     def test_custom_ignore_pattern(self):
         result = CProjectParser(DEFAULT_IGNORES + ("src",)).parse(PROJECT)
