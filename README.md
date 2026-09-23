@@ -1,24 +1,48 @@
-# 通用 LLM 的反馈驱动 Fuzz Harness 生成研究
+# Harness Generation
 
-> 在不进行专用模型微调的情况下，能否通过结构化执行反馈、Harness 评分与分支搜索，使通用 LLM 持续生成更高质量的 fuzz harness？
+一个面向 C 项目的 LLM-assisted libFuzzer harness generation / optimization
+研究原型。项目关注的问题是：在不微调专用模型的前提下，能否用静态结构抽取、
+Function Triplet、HarnessPlan、编译运行反馈和评分机制，让通用 LLM 更稳定地生成
+可编译、可运行、语义上更接近真实 API 用法的 fuzz harness。
 
-本项目围绕这一问题构建实验平台：保持模型权重不变，通过编译与运行证据指导候选 Harness 的生成、评估和迭代。当前使用 DeepSeek API，以独立 C 函数和 libFuzzer 为起点。
+这个仓库不是一个成熟的漏洞挖掘产品。它的定位是科研型复现与扩展：已经完成端到端
+流水线验证，并在真实项目 `markdown-wasm` 上发现了一个 memory-safety / semantic
+case study；同时也明确暴露出跨项目泛化仍然是主要瓶颈。
 
-Protocol-aware Stage 1–4 的 HarnessPlan 优化入口、构建配方、正式发布门槛和非帧输入契约见 [HarnessPlan 优化闭环](docs/PLAN_OPTIMIZATION.md)。
+## 项目状态
 
-“持续生成更高质量”指在固定预算内，通过多轮候选评估与选择，提高保留下来的 Harness 的有效性和测试能力；不假设每次生成都会变好，也不意味着模型本身通过实验更新了权重。上述研究问题仍待对照实验验证，现有示例不能构成有效性结论。
+| 能力 | 状态 |
+| --- | --- |
+| 项目级静态分析与 SFG 构建 | 已实现 |
+| Function Triplet 抽取与评分选择 | 已实现 |
+| Stage 1-4 LLM harness 生成流水线 | 已实现 |
+| Mock LLM 端到端回归 | 已验证 |
+| 真实 LLM API 端到端 demo | 已验证 |
+| Clang / Sanitizer / libFuzzer 集成 | 已实现，仍属实验性质 |
+| 真实项目 bug case study | 1 个，见 `markdown-wasm` |
+| 跨项目自动泛化 | 有限，仍是主要研究问题 |
 
-## 真实 API 最小 Demo
+## 核心流水线
 
-本仓库结项时保留了一个可以直接运行的真实 LLM demo，用 `benchmarks/json_parser`
-作为小型 C 项目，完整执行：
-
-```text
-SFG 构建 → Function Triplet 抽取 → FT ranking → Stage 1–4 LLM 生成
-       → intermediate validation → compiler/linker/runtime → fuzz smoke
+```mermaid
+flowchart LR
+    A[源码项目] --> B[静态分析]
+    B --> C[SFG]
+    C --> D[Function Triplets]
+    D --> E[FT 评分与选择]
+    E --> F[HarnessPlan]
+    F --> G[LLM Harness 生成]
+    G --> H[编译 / 链接 / 运行]
+    H --> I[Smoke Fuzz / 质量信号]
+    I --> J[反馈与重试]
+    J --> F
 ```
 
-在仓库根目录运行：
+## 真实 API 快速开始
+
+仓库保留了一条黄金路径 demo：用 `benchmarks/json_parser` 作为小型 C 项目，完整执行
+SFG 构建、FT 抽取、FT ranking、Stage 1-4 真实 LLM 生成、编译、链接、runtime 和
+fuzz smoke。
 
 ```bash
 cd /home/luchitong/work/harness_generation
@@ -38,6 +62,32 @@ cd /home/luchitong/work/harness_generation
 当前机器上已经用真实 API 验证过这条路径：`json_parser/json_parse` 的 FT 被选中，
 Stage 1、Stage 2、Stage 3、Stage 4、Intermediate、Compiler、Linker、Runtime 和
 Fuzz smoke 均为 `passed`。
+
+## 动机与范围
+
+本项目受到已有 LLM-based fuzz driver generation 工作启发，目标不是声称提出一个完全
+成熟的新系统，而是完成一个可审计、可运行、可扩展的研究原型。当前新增探索集中在：
+
+- 用 SFG / Function Triplet 表达 C API 的输入、处理、释放关系。
+- 用 HarnessPlan 把“应该调用哪些 API、如何绑定 fuzz 输入、如何释放资源”从最终代码中抽离出来。
+- 用编译、链接、runtime、smoke fuzz 和静态 validator 约束 LLM 输出。
+- 用评分和反馈机制推动重试，而不是只看一次生成是否成功。
+- 记录真实项目上的失败模式，用于分析跨项目泛化瓶颈。
+
+## 结果与局限
+
+结项时的核心判断是：工程流水线已经能跑通，并且能在真实项目上发现有价值的问题；
+但对稍复杂 C 项目，自动抽取 FT 和生成高质量 harness 仍然不稳定。详细记录见：
+
+- [实验记录](docs/EXPERIMENTS.md)
+- [当前局限](docs/LIMITATIONS.md)
+- [markdown-wasm case study](docs/CASE_STUDY_MARKDOWN_WASM.md)
+- [FT 权威边界](docs/FT_AUTHORITY.md)
+- [Harness pipeline](docs/HARNESS_PIPELINE.md)
+
+“持续生成更高质量”指在固定预算内，通过多轮候选评估与选择，提高保留下来的 Harness
+的有效性和测试能力；不假设每次生成都会变好，也不意味着模型本身通过实验更新了权重。
+上述研究问题仍待更大规模对照实验验证，现有示例不能构成普适有效性结论。
 
 ## 研究目标与假设
 
