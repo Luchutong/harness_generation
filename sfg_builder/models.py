@@ -21,6 +21,25 @@ class ParameterInfo(Serializable):
     base_type: str
     pointer_depth: int
     is_struct_like: bool = False
+    is_opaque_handle: bool = False
+
+
+@dataclass(frozen=True)
+class OpaqueHandleInfo(Serializable):
+    """A typedef that hides one or more pointer levels to a struct/union."""
+
+    name: str
+    target_type: str
+    pointer_depth: int
+    declaration: str
+    file: str
+    line: int
+
+    def __post_init__(self) -> None:
+        if not self.name or not self.target_type or not self.declaration or not self.file:
+            raise ValueError("opaque handle identity and declaration are required")
+        if self.pointer_depth < 1 or self.line < 1:
+            raise ValueError("opaque handle pointer depth and line must be positive")
 
 
 @dataclass(frozen=True)
@@ -111,6 +130,7 @@ class FunctionInfo(Serializable):
     return_ownership: ReturnValueOwnership | None = None
     return_type_annotations: tuple[str, ...] = ()
     documentation: str = ""
+    return_is_opaque_handle: bool = False
 
 
 @dataclass(frozen=True)

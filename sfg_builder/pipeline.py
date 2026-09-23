@@ -15,6 +15,8 @@ from .parser import CProjectParser, ParseResult, write_functions_json
 from .ownership import derive_ownership_relations, write_ownership_json
 from .roles import write_annotations_json
 from .semantic import SemanticAnalyzer
+from .usage import UsageMiningResult, mine_usage_patterns, write_usage_json
+from .usage_semantics import review_usage_semantics
 
 
 @dataclass(frozen=True)
@@ -25,10 +27,12 @@ class SFGRunResult:
     flows: tuple[FunctionFlow, ...]
     graph: StructuralFlowGraph
     ownership: tuple = ()
+    usage: UsageMiningResult | None = None
 
 
 class SFGPipeline:
     def __init__(self, analyzer: SemanticAnalyzer, *, ignored_directories: tuple[str, ...]):
+        self.analyzer = analyzer
         self.parser = CProjectParser(ignored_directories)
         self.detector = CandidateDetector()
         self.annotator = FunctionAnnotator(analyzer)
@@ -41,13 +45,23 @@ class SFGPipeline:
         annotations = self.annotator.annotate(parsed.functions, candidates, parsed.structs)
         flows = self.flow_builder.build(parsed.functions, annotations)
         graph = self.graph_builder.build(parsed.structs, flows)
-        ownership = derive_ownership_relations(parsed.functions)
+        ownership = derive_ownership_relations(
+            parsed.functions,
+            opaque_resource_types=(handle.name for handle in parsed.opaque_handles),
+        )
+        usage = review_usage_semantics(
+            mine_usage_patterns(parsed.functions),
+            parsed.functions,
+            annotations,
+            self.analyzer,
+        )
         output.mkdir(parents=True, exist_ok=True)
         write_functions_json(parsed, output / "functions.json", project=project)
         write_ownership_json(ownership, output / "ownership.json")
+        write_usage_json(usage, output / "usage_patterns.json")
         write_candidates_json(candidates, output / "candidates.json")
         write_annotations_json(annotations, output / "annotations.json")
         write_flows_json(flows, output / "flows.json")
         write_sfg_json(graph, output / "sfg.json")
         write_sfg_dot(graph, output / "sfg.dot")
-        return SFGRunResult(parsed, candidates, annotations, flows, graph, ownership)
+        return SFGRunResult(parsed, candidates, annotations, flows, graph, ownership, usage)

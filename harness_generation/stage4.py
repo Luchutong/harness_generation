@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -751,6 +752,9 @@ def parse_harness_plan(
             )
         relation_items[relation_id] = item
         _validate_ownership_plan_item(item, matching)
+        _validate_observed_plan_sequence(
+            planned_calls, planned_cleanup, matching
+        )
 
     missing_relations = sorted(set(ownership_by_id) - set(relation_items))
     if missing_relations:
@@ -858,27 +862,32 @@ def _validate_ownership_plan_item(
             f"ownership cleanup {relation.cleanup_function} must occur after producer and consumers"
         )
     arguments = item.get("arguments", [])
-    if not isinstance(arguments, list) or len(arguments) != 1:
+    if (not isinstance(arguments, list)
+            or relation.cleanup_argument_index >= len(arguments)):
         raise Stage4Error(
-            f"ownership cleanup {relation.cleanup_function} requires one bound argument"
+            f"ownership cleanup {relation.cleanup_function} lacks its bound argument"
         )
-    binding = item.get("producer_return_binding")
+    binding = item.get("producer_binding", item.get("producer_return_binding"))
     if not isinstance(binding, Mapping):
         raise Stage4Error(
-            f"ownership cleanup {relation.cleanup_function} requires producer_return_binding"
+            f"ownership cleanup {relation.cleanup_function} requires producer_binding"
         )
     identifier = binding.get("identifier")
     kind = binding.get("kind")
-    if not isinstance(identifier, str) or not identifier or kind != relation.cleanup_argument:
+    accepted_kinds = {relation.producer_binding}
+    if relation.producer_binding == "return_value":
+        accepted_kinds.add(relation.cleanup_argument)  # schema-v4 plan compatibility
+    if not isinstance(identifier, str) or not identifier or kind not in accepted_kinds:
         raise Stage4Error(
             f"ownership cleanup {relation.cleanup_function} has invalid producer binding"
         )
-    expected_argument = identifier if kind == "return_value" else "&" + identifier
-    if arguments[0].strip() != expected_argument:
+    expected_argument = (identifier if relation.cleanup_argument == "return_value"
+                         else "&" + identifier)
+    if arguments[relation.cleanup_argument_index].strip() != expected_argument:
         raise Stage4Error(
             f"ownership cleanup {relation.cleanup_function} argument must bind {expected_argument}"
         )
-    if relation.nullable:
+    if relation.nullable or relation.path_kind in {"conditional", "error"}:
         conditions = item.get("conditions")
         if not isinstance(conditions, list) or not conditions or any(
             not isinstance(value, str) or not value.strip() for value in conditions
@@ -886,6 +895,30 @@ def _validate_ownership_plan_item(
             raise Stage4Error(
                 f"nullable ownership cleanup {relation.cleanup_function} requires explicit conditions"
             )
+
+
+def _validate_observed_plan_sequence(
+    planned_calls: list[str],
+    planned_cleanup: list[str],
+    relation: TripletOwnershipRelation,
+) -> None:
+    if not relation.observed_sequence:
+        return
+    expected_calls = tuple(
+        name for name in relation.observed_sequence
+        if name != relation.cleanup_function
+    )
+    relevant = set(expected_calls)
+    actual_calls = tuple(name for name in planned_calls if name in relevant)
+    if actual_calls != expected_calls:
+        raise Stage4Error(
+            f"HarnessPlan must preserve observed usage sequence for {relation.id}: "
+            + " -> ".join(relation.observed_sequence)
+        )
+    if planned_cleanup.count(relation.cleanup_function) < 1:
+        raise Stage4Error(
+            f"HarnessPlan must preserve observed cleanup for {relation.id}"
+        )
 
 
 def _is_disallowed_duplicate_plan_function(
@@ -897,6 +930,13 @@ def _is_disallowed_duplicate_plan_function(
 ) -> bool:
     occurrences = planned_calls.count(name) + planned_cleanup.count(name)
     if occurrences <= 1:
+        return False
+    observed_allowance = max(
+        (Counter(relation.observed_sequence)[name]
+         for relation in ownership_by_id.values()),
+        default=0,
+    )
+    if observed_allowance and occurrences <= observed_allowance:
         return False
     cleanup_items = [
         item for item, function in zip(cleanup_sequence, planned_cleanup)
@@ -978,7 +1018,7 @@ def _load_function_metadata(
         raise Stage4Error(f"cannot load functions.json: {type(error).__name__}") from error
     if (not isinstance(document, Mapping)
             or document.get("schema_version") not in SUPPORTED_FUNCTIONS_SCHEMA_VERSIONS):
-        raise Stage4Error("functions.json requires schema_version 1 or 2")
+        raise Stage4Error("unsupported functions.json schema_version")
     records = document.get("functions")
     if not isinstance(records, list) or any(not isinstance(item, Mapping)
                                             for item in records):
@@ -1210,7 +1250,17 @@ def _validate_ownership_calls(
             raise Stage4Error(
                 f"ownership relation {relation.id} has no cleanup plan item"
             )
-        binding = item.get("producer_return_binding")
+        if relation.observed_sequence:
+            relevant = set(relation.observed_sequence)
+            actual_sequence = tuple(
+                call.name for call in calls if call.name in relevant
+            )
+            if actual_sequence != relation.observed_sequence:
+                raise Stage4Error(
+                    f"Stage 4 must preserve observed usage sequence for {relation.id}: "
+                    + " -> ".join(relation.observed_sequence)
+                )
+        binding = item.get("producer_binding", item.get("producer_return_binding"))
         identifier = binding.get("identifier") if isinstance(binding, Mapping) else None
         if not isinstance(identifier, str) or not identifier:
             raise Stage4Error(
@@ -1222,16 +1272,34 @@ def _validate_ownership_calls(
                 f"ownership producer {relation.producer_function} must be invoked exactly once"
             )
         producer = producer_calls[0]
-        if producer.assignment_target != identifier:
-            raise Stage4Error(
-                f"ownership producer {relation.producer_function} must save its return value as {identifier}"
-            )
+        if relation.producer_binding == "return_value":
+            if producer.assignment_target != identifier:
+                raise Stage4Error(
+                    f"ownership producer {relation.producer_function} must save its return value as {identifier}"
+                )
+        else:
+            argument_index = relation.producer_argument_index
+            if argument_index is None or argument_index >= len(producer.arguments):
+                raise Stage4Error(
+                    f"ownership producer {relation.producer_function} lacks argument {argument_index}"
+                )
+            producer_argument = producer.arguments[argument_index]
+            if identifier not in producer_argument.identifiers:
+                raise Stage4Error(
+                    f"ownership producer {relation.producer_function} must bind argument {argument_index} to {identifier}"
+                )
+            if (relation.producer_binding == "out_parameter"
+                    and not re.search(r"&\s*" + re.escape(identifier) + r"\b",
+                                      producer_argument.text)):
+                raise Stage4Error(
+                    f"ownership producer {relation.producer_function} must receive &{identifier} at argument {argument_index}"
+                )
         expected_argument = identifier if relation.cleanup_argument == "return_value" else "&" + identifier
         cleanup_calls = [
             call for call in calls
             if call.name == relation.cleanup_function
-            and len(call.arguments) == 1
-            and call.arguments[0].text.strip() == expected_argument
+            and relation.cleanup_argument_index < len(call.arguments)
+            and call.arguments[relation.cleanup_argument_index].text.strip() == expected_argument
         ]
         if len(cleanup_calls) != 1:
             raise Stage4Error(
@@ -1265,6 +1333,11 @@ def _validate_ownership_calls(
         ):
             raise Stage4Error(
                 f"nullable ownership cleanup {relation.cleanup_function} lacks a null guard for {identifier}"
+            )
+        if (relation.path_kind in {"conditional", "error"}
+                and not cleanup.guard_texts):
+            raise Stage4Error(
+                f"{relation.path_kind}-path cleanup {relation.cleanup_function} lacks a guard"
             )
 
 

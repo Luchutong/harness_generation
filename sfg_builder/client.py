@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import http.client
 import json
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
 from .base import SemanticDecision, SemanticError
 from .models import AccessHint, FunctionInfo, ParameterInfo, StructInfo
 from .prompts import (DIRECTION_PROMPT_VERSION, ROLE_PROMPT_VERSION,
-                      STREAM_PROMPT_VERSION, direction_prompt, role_prompt,
-                      stream_prompt)
+                      STREAM_PROMPT_VERSION, USAGE_REVIEW_PROMPT_VERSION,
+                      direction_prompt, role_prompt, stream_prompt,
+                      usage_review_prompt)
 
 
 STREAM_KINDS = {"binary", "text", "filename", "pathname", "struct", "other"}
@@ -21,6 +22,8 @@ DIRECTIONS = {"input", "output", "both", "unknown"}
 
 class LLMSemanticAnalyzer:
     """Semantic provider whose transport is injected and whose schemas are validated."""
+
+    semantic_backend = "llm"
 
     def __init__(self, transport: Callable[[dict[str, Any]], dict[str, Any]], model: str):
         self.transport = transport
@@ -65,7 +68,46 @@ class LLMSemanticAnalyzer:
         confidence = _confidence(data["confidence"])
         return SemanticDecision(data, prompt, DIRECTION_PROMPT_VERSION, data, confidence)
 
-    def _request(self, prompt: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    def review_usage_patterns(
+        self,
+        patterns: tuple[Mapping[str, Any], ...],
+        functions: tuple[FunctionInfo, ...],
+    ) -> SemanticDecision:
+        prompt = usage_review_prompt(patterns, functions)
+        data, _response = self._request(prompt, max_tokens=4096)
+        decisions = data.get("decisions")
+        if not isinstance(decisions, list) or len(decisions) != len(patterns):
+            raise SemanticError("usage review must return one decision per pattern")
+        expected_ids = {pattern.get("id") for pattern in patterns}
+        returned_ids = set()
+        confidences = []
+        for item in decisions:
+            if not isinstance(item, dict):
+                raise SemanticError("usage review decisions must be objects")
+            pattern_id = item.get("pattern_id")
+            returned_ids.add(pattern_id)
+            if (pattern_id not in expected_ids
+                    or type(item.get("is_valid_lifecycle")) is not bool
+                    or item.get("lifecycle_kind") not in {
+                        "owned_resource", "reference_count", "not_lifecycle"
+                    }
+                    or not _string_list(item.get("required_sequence"))
+                    or not _string_list(item.get("optional_calls"), allow_empty=True)
+                    or not isinstance(item.get("merge_group"), str)
+                    or not item.get("merge_group")
+                    or not isinstance(item.get("reason"), str)):
+                raise SemanticError("usage review response does not match the required schema")
+            confidences.append(_confidence(item.get("confidence")))
+        if returned_ids != expected_ids:
+            raise SemanticError("usage review pattern IDs do not match the request")
+        confidence = min(confidences) if confidences else 0.0
+        return SemanticDecision(
+            data, prompt, USAGE_REVIEW_PROMPT_VERSION, data, confidence
+        )
+
+    def _request(
+        self, prompt: str, *, max_tokens: int = 1024
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         payload = {
             "model": self.model,
             "messages": [
@@ -74,7 +116,7 @@ class LLMSemanticAnalyzer:
             ],
             "stream": False,
             "temperature": 0,
-            "max_tokens": 1024,
+            "max_tokens": max_tokens,
         }
         try:
             response = self.transport(payload)
@@ -135,3 +177,9 @@ def _confidence(value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
         raise SemanticError("confidence must be a number in [0, 1]")
     return float(value)
+
+
+def _string_list(value: Any, *, allow_empty: bool = False) -> bool:
+    return (isinstance(value, list)
+            and (allow_empty or bool(value))
+            and all(isinstance(item, str) and item for item in value))

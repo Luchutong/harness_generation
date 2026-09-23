@@ -48,6 +48,7 @@ def derive_ownership_relations(
     functions: Iterable[FunctionInfo],
     *,
     linkable_function_ids: Iterable[str] = (),
+    opaque_resource_types: Iterable[str] = (),
 ) -> tuple[OwnershipRelation, ...]:
     """Pair explicitly recognized owned returns with compatible cleanup APIs.
 
@@ -99,7 +100,162 @@ def derive_ownership_relations(
             confidence=min(ownership.confidence, 1.0),
             source=ownership.source,
         ))
+    explicit_producers = {relation.producer_function_id for relation in relations}
+    relations.extend(_infer_opaque_handle_relations(
+        records,
+        frozenset(opaque_resource_types),
+        linkable_ids,
+        explicit_producers,
+    ))
     return tuple(sorted(relations, key=lambda relation: relation.id))
+
+
+_PRODUCER_WORD = re.compile(
+    r"(?:^|_)(?:create|new|open|alloc|allocate|init|initialize|construct|make)(?:_|$)",
+    re.IGNORECASE,
+)
+_CLEANUP_WORD = re.compile(
+    r"(?:^|_)(?:free|destroy|delete|release|close|deinit|deinitialize)(?:_|$)",
+    re.IGNORECASE,
+)
+
+
+def _infer_opaque_handle_relations(
+    functions: tuple[FunctionInfo, ...],
+    resource_types: frozenset[str],
+    linkable_ids: set[str],
+    explicit_producers: set[str],
+) -> tuple[OwnershipRelation, ...]:
+    """Infer high-confidence create/free pairs for typed opaque handles.
+
+    The type relation is mandatory. Names, prose, and implementation tokens only
+    raise confidence after producer/cleanup signatures agree on the same handle.
+    """
+    if not resource_types:
+        return ()
+
+    linkable = tuple(
+        function for function in functions
+        if "static" not in function.storage
+        and (function.defined or function.id in linkable_ids)
+    )
+    inferred: list[OwnershipRelation] = []
+    for resource_type in sorted(resource_types):
+        producers = [
+            function for function in linkable
+            if function.id not in explicit_producers
+            and function.return_base_type == resource_type
+            and function.return_pointer_depth >= 1
+            and _producer_evidence(function)
+        ]
+        cleanups = [
+            function for function in linkable
+            if _cleanup_parameter(function, resource_type) is not None
+            and _cleanup_evidence(function)
+        ]
+        if not producers or not cleanups:
+            continue
+        scored_cleanups = sorted(
+            ((_cleanup_score(function), function) for function in cleanups),
+            key=lambda item: (-item[0], item[1].name, item[1].id),
+        )
+        if len(scored_cleanups) > 1 and scored_cleanups[0][0] == scored_cleanups[1][0]:
+            # Ambiguous release APIs can encode different modes. Fail closed.
+            continue
+        cleanup_score, cleanup = scored_cleanups[0]
+        for producer in sorted(producers, key=lambda item: (item.name, item.id)):
+            producer_evidence = _producer_evidence(producer)
+            cleanup_evidence = _cleanup_evidence(cleanup)
+            confidence = min(
+                0.99,
+                0.55 + _producer_score(producer) + cleanup_score,
+            )
+            if confidence < 0.80:
+                continue
+            identity = "\0".join((producer.id, cleanup.id, resource_type))
+            digest = hashlib.sha256(
+                ("opaque-ownership-v1\0" + identity).encode("utf-8")
+            ).hexdigest()[:12]
+            inferred.append(OwnershipRelation(
+                id=f"own_{producer.name}_{digest}",
+                producer_function_id=producer.id,
+                producer_function=producer.name,
+                resource_type=resource_type,
+                cleanup_function_id=cleanup.id,
+                cleanup_function=cleanup.name,
+                cleanup_argument="return_value",
+                nullable=True,
+                evidence=tuple(sorted({
+                    f"opaque handle typedef: {resource_type}",
+                    f"producer returns {resource_type} with effective pointer depth "
+                    f"{producer.return_pointer_depth}",
+                    f"cleanup accepts exactly one {resource_type} handle",
+                    *producer_evidence,
+                    *cleanup_evidence,
+                })),
+                confidence=confidence,
+                source="opaque_handle_static_inference",
+            ))
+    return tuple(inferred)
+
+
+def _cleanup_parameter(
+    function: FunctionInfo, resource_type: str
+):
+    if function.return_base_type != "void" or len(function.parameters) != 1:
+        return None
+    parameter = function.parameters[0]
+    if (
+        parameter.base_type != resource_type
+        or parameter.pointer_depth < 1
+        or parameter.is_const
+    ):
+        return None
+    return parameter
+
+
+def _producer_evidence(function: FunctionInfo) -> tuple[str, ...]:
+    evidence = []
+    if _PRODUCER_WORD.search(_split_camel(function.name)):
+        evidence.append(f"producer name denotes construction: {function.name}")
+    if re.search(
+        r"\b(?:constructs?|creates?|allocates?|opens?|initializes?)\b",
+        function.documentation,
+        re.IGNORECASE,
+    ):
+        evidence.append("producer documentation denotes construction")
+    if re.search(r"\b(?:MALLOC|CALLOC|malloc|calloc)\s*\(", function.body):
+        evidence.append("producer body contains allocation")
+    return tuple(evidence)
+
+
+def _cleanup_evidence(function: FunctionInfo) -> tuple[str, ...]:
+    evidence = []
+    if _CLEANUP_WORD.search(_split_camel(function.name)):
+        evidence.append(f"cleanup name denotes release: {function.name}")
+    if re.search(
+        r"\b(?:frees?|releases?|destroys?|deletes?|closes?|deallocates?)\b",
+        function.documentation,
+        re.IGNORECASE,
+    ):
+        evidence.append("cleanup documentation denotes release")
+    if re.search(r"\b(?:FREE|free|Delete|Destroy|Release)\s*\(", function.body):
+        evidence.append("cleanup body contains release operations")
+    return tuple(evidence)
+
+
+def _producer_score(function: FunctionInfo) -> float:
+    evidence = _producer_evidence(function)
+    return min(0.25, 0.10 * len(evidence))
+
+
+def _cleanup_score(function: FunctionInfo) -> float:
+    evidence = _cleanup_evidence(function)
+    return min(0.20, 0.10 * len(evidence))
+
+
+def _split_camel(value: str) -> str:
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", value)
 
 
 def ownership_document(relations: Iterable[OwnershipRelation]) -> dict:

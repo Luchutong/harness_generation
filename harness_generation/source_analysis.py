@@ -86,7 +86,9 @@ def c_declarations_equivalent(left: str, right: str) -> bool:
     """
     left_tokens = _declaration_tokens(left)
     right_tokens = _declaration_tokens(right)
-    return left_tokens is not None and left_tokens == right_tokens
+    if left_tokens is not None or right_tokens is not None:
+        return left_tokens is not None and left_tokens == right_tokens
+    return _fallback_declaration_tokens(left) == _fallback_declaration_tokens(right)
 
 
 def _declaration_tokens(value: str) -> tuple[str, ...] | None:
@@ -113,6 +115,21 @@ def _declaration_tokens(value: str) -> tuple[str, ...] | None:
         if node.child_count == 0 and node.type != "comment":
             tokens.append(_text(encoded, node))
     return tuple(tokens)
+
+
+_DECLARATION_TOKEN = re.compile(
+    r"[A-Za-z_]\w*|==|!=|<=|>=|->|\+\+|--|&&|\|\||[{}()\[\],;*:&=<>]"
+)
+
+
+def _fallback_declaration_tokens(value: str) -> tuple[str, ...] | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    declaration = _strip_comments(value).strip()
+    if not declaration.endswith(";"):
+        declaration += ";"
+    tokens = tuple(_DECLARATION_TOKEN.findall(declaration))
+    return tokens or None
 
 
 def _load_tree_sitter():

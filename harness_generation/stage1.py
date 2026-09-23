@@ -234,7 +234,7 @@ def _load_functions_document(path: Path) -> Mapping[str, Any]:
         ) from error
     if (not isinstance(document, dict)
             or document.get("schema_version") not in SUPPORTED_FUNCTIONS_SCHEMA_VERSIONS):
-        raise Stage1Error("functions.json requires schema_version 1 or 2")
+        raise Stage1Error("unsupported functions.json schema_version")
     functions = document.get("functions")
     if not isinstance(functions, list) or any(not isinstance(item, dict) for item in functions):
         raise Stage1Error("functions.json functions must be an array of objects")

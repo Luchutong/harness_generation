@@ -149,7 +149,7 @@ python3 -m venv .venv
 python -m pip install -e .
 ```
 
-核心依赖只有 `tree-sitter` 和 `tree-sitter-c`。Graphviz 不是硬依赖；只有传入 `--render` 时才尝试调用系统的 `dot` 命令生成 `sfg.svg`。
+核心解析依赖是 `tree-sitter`、`tree-sitter-c` 和 `tree-sitter-cpp`。Graphviz 不是硬依赖；只有传入 `--render` 时才尝试调用系统的 `dot` 命令生成 `sfg.svg`。
 
 默认使用确定性的 `MockSemanticAnalyzer`，不需要 API key：
 
@@ -168,7 +168,9 @@ artifacts/simple/
 ├── annotations.json
 ├── flows.json
 ├── sfg.json
-└── sfg.dot
+├── sfg.dot
+├── ownership.json
+└── usage_patterns.json
 ```
 
 测试依赖不属于运行时依赖，可单独安装并运行：

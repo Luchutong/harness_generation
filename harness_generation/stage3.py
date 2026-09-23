@@ -200,6 +200,10 @@ class Stage3Assembler:
                 raise Stage3Error(
                     "Stage 3 output must not contain the final fuzzer entry point"
                 )
+            if "main" in analysis.definitions:
+                raise Stage3Error(
+                    "Stage 3 output must not define main or demo driver entry points"
+                )
             redefined = sorted(set(analysis.definitions) & all_project_functions)
             if redefined:
                 raise Stage3Error(
@@ -447,7 +451,7 @@ def _load_ft_function_metadata(
         raise Stage3Error(f"cannot load functions.json: {type(error).__name__}") from error
     if (not isinstance(document, Mapping)
             or document.get("schema_version") not in SUPPORTED_FUNCTIONS_SCHEMA_VERSIONS):
-        raise Stage3Error("functions.json requires schema_version 1 or 2")
+        raise Stage3Error("unsupported functions.json schema_version")
     records = document.get("functions")
     if not isinstance(records, list) or any(not isinstance(item, Mapping)
                                             for item in records):

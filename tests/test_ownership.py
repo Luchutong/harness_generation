@@ -154,3 +154,35 @@ def test_cjson_print_returns_require_cjson_free_contract():
         assert loaded[0]["cleanup_function"] == "cJSON_Delete"
         assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 1
         assert load_ownership_json(Path(directory) / "missing.json") == ()
+
+
+def test_opaque_handle_typedef_recovers_create_use_free_lifecycle():
+    parsed = parse_source('''
+    typedef struct ParserImpl *Parser;
+    #define PARSER_API(type) type
+    /* Constructs a new parser. */
+    PARSER_API(Parser) ParserCreate(void);
+    int ParserParse(Parser parser, const char *data, int size);
+    void ParserFree(Parser parser) { free(parser); }
+    ''')
+    functions = {function.name: function for function in parsed.functions}
+    assert [(item.name, item.target_type, item.pointer_depth)
+            for item in parsed.opaque_handles] == [("Parser", "ParserImpl", 1)]
+    assert functions["ParserCreate"].return_base_type == "Parser"
+    assert functions["ParserCreate"].return_pointer_depth == 1
+    assert functions["ParserCreate"].return_is_opaque_handle
+    handle = functions["ParserParse"].parameters[0]
+    assert handle.is_pointer and handle.pointer_depth == 1
+    assert handle.is_struct_like and handle.is_opaque_handle
+
+    relations = derive_ownership_relations(
+        parsed.functions,
+        opaque_resource_types=(item.name for item in parsed.opaque_handles),
+        linkable_function_ids=(functions["ParserCreate"].id,),
+    )
+    relation = next(item for item in relations
+                    if item.producer_function == "ParserCreate")
+    assert relation.cleanup_function == "ParserFree"
+    assert relation.resource_type == "Parser"
+    assert relation.confidence >= 0.8
+    assert relation.source == "opaque_handle_static_inference"

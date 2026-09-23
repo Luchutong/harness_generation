@@ -85,7 +85,7 @@ class GenerationPromptTests(unittest.TestCase):
             [
                 "stage1-function-doc-v1",
                 "stage2-structure-snippet-v2",
-                "stage3-rough-assembly-v2",
+                "stage3-rough-assembly-v3",
                 "protocol-convention-refinement-v1",
                 "stage4-harness-plan-v5",
                 "stage4-harness-transform-v7",

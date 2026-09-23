@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 from .models import AccessHint, FunctionInfo, ParameterInfo, StructInfo
 
@@ -35,4 +35,11 @@ class SemanticAnalyzer(Protocol):
     def infer_struct_direction(self, function: FunctionInfo, parameter: ParameterInfo,
                                hint: AccessHint | None,
                                structs: tuple[StructInfo, ...]) -> SemanticDecision:
+        ...
+
+    def review_usage_patterns(
+        self,
+        patterns: tuple[Mapping[str, Any], ...],
+        functions: tuple[FunctionInfo, ...],
+    ) -> SemanticDecision:
         ...

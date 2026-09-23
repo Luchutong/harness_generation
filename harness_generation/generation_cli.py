@@ -9,12 +9,13 @@ import json
 import os
 from pathlib import Path
 import sys
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from .artifacts import ArtifactStore
 from .llm import (LLMClient, LLMConfig, LLMError, MockLLM,
                   OpenAICompatibleLLM, RecordedResponseLLM)
 from .fuzz_smoke import LibFuzzerSmokeConfig
+from .ft_selection import FT_SELECTION_SCHEMA_VERSION, triplet_catalog_sha256
 from .orchestrator import (
     PIPELINE_STAGES,
     STAGE_1_DOCS,
@@ -64,6 +65,12 @@ def main(
     )
     if not all_triplets:
         parser.add_argument("--ft", required=True, dest="triplet_id")
+    else:
+        parser.add_argument(
+            "--selection",
+            type=Path,
+            help="Use triplet IDs and order from an ft_selection.json manifest",
+        )
     parser.add_argument(
         "--until-stage", type=int, choices=range(1, 5), default=4
     )
@@ -164,11 +171,13 @@ def main(
         store = ArtifactStore(args.artifacts)
         store.ensure_catalogs()
         triplets = load_triplets_json(store.triplets)
-        selected = (
-            triplets
-            if all_triplets
-            else (_select_triplet(triplets, args.triplet_id),)
-        )
+        if all_triplets:
+            selected = (
+                _select_from_manifest(triplets, args.selection)
+                if args.selection is not None else triplets
+            )
+        else:
+            selected = (_select_triplet(triplets, args.triplet_id),)
         if args.target_contract is not None:
             contract = TargetContract.from_dict(json.loads(
                 args.target_contract.read_text(encoding="utf-8")
@@ -659,3 +668,39 @@ def _select_triplet(
     if selected is None:
         raise ValueError(f"unknown FunctionTriplet: {triplet_id}")
     return selected
+
+
+def _select_from_manifest(
+    triplets: Sequence[FunctionTriplet], manifest_path: Path
+) -> tuple[FunctionTriplet, ...]:
+    try:
+        document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"cannot load FT selection manifest: {type(error).__name__}"
+        ) from error
+    if (
+        not isinstance(document, dict)
+        or document.get("schema_version") != FT_SELECTION_SCHEMA_VERSION
+    ):
+        raise ValueError("unsupported or missing FT selection schema_version")
+    inputs = document.get("inputs")
+    if not isinstance(inputs, dict) or not isinstance(
+        inputs.get("triplets_sha256"), str
+    ):
+        raise ValueError("FT selection is missing the triplets catalog fingerprint")
+    if inputs["triplets_sha256"] != triplet_catalog_sha256(triplets):
+        raise ValueError("FT selection does not match the current triplets catalog")
+    records = document.get("selection")
+    if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
+        raise ValueError("FT selection must be an array of objects")
+    ids = [item.get("triplet_id") for item in records]
+    if any(not isinstance(ft_id, str) or not ft_id for ft_id in ids):
+        raise ValueError("every FT selection entry requires triplet_id")
+    if len(ids) != len(set(ids)):
+        raise ValueError("FT selection contains duplicate triplet_id values")
+    by_id = {str(item.id): item for item in triplets}
+    unknown = [ft_id for ft_id in ids if ft_id not in by_id]
+    if unknown:
+        raise ValueError("FT selection references unknown triplet: " + ", ".join(unknown))
+    return tuple(by_id[ft_id] for ft_id in ids)

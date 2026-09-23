@@ -327,7 +327,24 @@ class ResourceContract:
         if not hasattr(relation, "to_dict"):
             raise TargetContractError("ownership relation must be serializable")
         document = relation.to_dict()
-        return cls.from_dict({**document, "status": "known"})
+        lifecycle_fields = {
+            field: document[field]
+            for field in (
+                "producer_binding", "producer_argument_index",
+                "cleanup_argument_index", "lifecycle_kind", "conditions",
+                "path_kind", "support_total", "support_by_source",
+                "usage_pattern_id", "observed_sequence",
+            )
+            if field in document
+        }
+        return cls.from_dict({
+            **document,
+            "status": "known",
+            "metadata": {
+                **dict(document.get("metadata", {})),
+                **lifecycle_fields,
+            },
+        })
 
 
 @dataclass(frozen=True)

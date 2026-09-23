@@ -127,8 +127,8 @@ Dependencies:
 
 Ownership relations relevant to these functions are descriptive lifecycle
 constraints only; they do not authorize unrelated APIs. A cleanup relation must
-remain bound to its producer return value and execute after every declared
-consumer.
+remain bound to the declared producer return, out parameter, or existing
+reference argument and execute after every declared consumer.
 
 Function documentation:
 {documentation}""",
@@ -136,13 +136,14 @@ Function documentation:
 
 STAGE3_ROUGH_ASSEMBLY = PromptTemplate(
     name="stage3_rough_assembly",
-    version="stage3-rough-assembly-v2",
+    version="stage3-rough-assembly-v3",
     template="""Assemble the supplied C snippets into one coherent rough C program.
 Order operations by structural dependencies, reconcile shared variables and
 cleanup, pass output structures into their downstream inputs, and preserve all
 necessary function calls. Do not merely concatenate, redefine project APIs, or
 invent APIs. Return only C source without Markdown fences. This is a rough code
-sequence, not the final harness: do not emit LLVMFuzzerTestOneInput.
+sequence, not a standalone demo program: do not emit main,
+LLVMFuzzerTestOneInput, or any other driver entry point.
 Use the listed project header instead of redeclaring project functions or types.
 Typedef aliases must retain their exact spelling; never turn an anonymous typedef
 such as T into struct T.
@@ -194,8 +195,8 @@ the input model clearer, but avoid complex classes or unrelated abstractions.
 Pass the external data and size into the unique ISF according to its signature,
 retain downstream FT calls, initialize writable objects before use, and perform
 cleanup after processing. Ownership cleanup is permitted only for an exact
-FT-scoped ownership relation in HarnessPlan.cleanup_sequence, bound to the
-producer return value and placed after every declared consumer. Nullable owned
+FT-scoped ownership relation in HarnessPlan.cleanup_sequence, bound according
+to producer_binding and producer_argument_index, and placed after every declared consumer. Nullable owned
 pointers require an explicit null-safe cleanup condition. Do not treat lifecycle
 prose, null structural endpoints, or a global allowlist as cleanup authority.
 If a protocol contract is supplied, implement its input model directly. For
@@ -282,19 +283,22 @@ those names.{{"schema_version":1,"triplet_id":"{triplet_id}","entrypoint":"LLVMF
 "outputs":["..."],"conditions":["..."]}}],
 "cleanup_sequence":[{{"function":"...","purpose":"...",
 "arguments":["..."],"relation_id":"...","producer_function":"...",
-"resource_type":"...","producer_return_binding":{{"kind":"return_value",
+"resource_type":"...","producer_binding":{{"kind":"return_value",
 "identifier":"..."}},"after":["..."]}}],
 "constraints":["..."],"notes":["..."]}}
 
-Every FT function must appear exactly once in call_sequence or cleanup_sequence.
+Every FT function must appear in call_sequence or cleanup_sequence. When an
+ownership relation supplies observed_sequence, preserve its order and repeat a
+function exactly as many times as that sequence records; otherwise use it once.
 The unique ISF must appear in call_sequence and must use both fuzzer data and
 fuzzer size when the signature has a byte stream and length parameter. If a
 function is both PRF and HPF, keep it in call_sequence and mention cleanup
 responsibility in purpose or notes. Cleanup must happen after downstream
 processing. Ownership cleanup is a scoped exception: use it only when the
 supplied FunctionTriplet ownership_relations contains the exact relation, keep
-it in cleanup_sequence, bind it to the named producer return value, and include
-every declared consumer in after. A nullable resource requires an explicit
+it in cleanup_sequence, bind it using the relation's producer_binding and
+producer_argument_index, and include every declared consumer in after. A
+conditional, error-path, or nullable cleanup requires an explicit
 null-safe condition. Never infer cleanup permission from prose, a null structural
 endpoint, or a global API allowlist.
 If a protocol contract is supplied, the plan must explicitly preserve its input

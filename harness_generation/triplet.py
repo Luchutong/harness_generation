@@ -14,8 +14,8 @@ from sfg_builder.models import Serializable
 from .records import write_json
 
 
-TRIPLET_SCHEMA_VERSION = 4
-SUPPORTED_TRIPLET_SCHEMA_VERSIONS = frozenset({1, 2, 3, TRIPLET_SCHEMA_VERSION})
+TRIPLET_SCHEMA_VERSION = 5
+SUPPORTED_TRIPLET_SCHEMA_VERSIONS = frozenset({1, 2, 3, 4, TRIPLET_SCHEMA_VERSION})
 _ROLE_ORDER = {"ISF": 0, "PRF": 1, "HPF": 2}
 
 
@@ -115,7 +115,7 @@ class TripletBypassSemantic(Serializable):
 
 @dataclass(frozen=True)
 class TripletOwnershipRelation(Serializable):
-    """FT-scoped permission to release one producer return value."""
+    """FT-scoped, evidence-backed resource lifecycle."""
 
     id: str
     producer_function_id: str
@@ -129,6 +129,16 @@ class TripletOwnershipRelation(Serializable):
     evidence: tuple[str, ...] = ()
     confidence: float = 0.0
     source: str = "static"
+    producer_binding: str = "return_value"
+    producer_argument_index: int | None = None
+    cleanup_argument_index: int = 0
+    lifecycle_kind: str = "owned_resource"
+    conditions: tuple[str, ...] = ()
+    path_kind: str = "normal"
+    support_total: int = 0
+    support_by_source: Mapping[str, int] = field(default_factory=dict)
+    usage_pattern_id: str | None = None
+    observed_sequence: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not all((self.id, self.producer_function_id, self.producer_function,
@@ -137,6 +147,26 @@ class TripletOwnershipRelation(Serializable):
             raise ValueError("ownership relation identity is required")
         if self.cleanup_argument not in {"return_value", "address_of_return_value"}:
             raise ValueError("unsupported ownership cleanup argument")
+        if self.producer_binding not in {"return_value", "out_parameter", "existing_argument"}:
+            raise ValueError("unsupported ownership producer binding")
+        if self.producer_binding == "return_value" and self.producer_argument_index is not None:
+            raise ValueError("return producer cannot have a producer argument index")
+        if self.producer_binding != "return_value" and (
+            type(self.producer_argument_index) is not int or self.producer_argument_index < 0
+        ):
+            raise ValueError("argument producer requires a non-negative argument index")
+        if type(self.cleanup_argument_index) is not int or self.cleanup_argument_index < 0:
+            raise ValueError("cleanup argument index must be non-negative")
+        if self.lifecycle_kind not in {"owned_resource", "reference_count"}:
+            raise ValueError("unsupported lifecycle kind")
+        if self.path_kind not in {"normal", "conditional", "error"}:
+            raise ValueError("unsupported lifecycle path kind")
+        if type(self.support_total) is not int or self.support_total < 0:
+            raise ValueError("ownership support_total must be non-negative")
+        if any(type(value) is not int or value < 0 for value in self.support_by_source.values()):
+            raise ValueError("ownership support counts must be non-negative integers")
+        if sum(self.support_by_source.values()) != self.support_total:
+            raise ValueError("ownership support counts must sum to support_total")
         if not 0 <= self.confidence <= 1:
             raise ValueError("ownership relation confidence must be between 0 and 1")
         if not isinstance(self.nullable, bool):
@@ -145,8 +175,19 @@ class TripletOwnershipRelation(Serializable):
             raise ValueError("ownership relation consumers must be non-empty strings")
         if any(not isinstance(value, str) or not value for value in self.evidence):
             raise ValueError("ownership relation evidence must be non-empty strings")
+        if any(not isinstance(value, str) or not value for value in self.conditions):
+            raise ValueError("ownership conditions must be non-empty strings")
+        if any(not isinstance(value, str) or not value for value in self.observed_sequence):
+            raise ValueError("ownership observed sequence must contain non-empty strings")
+        if self.observed_sequence and (
+            self.observed_sequence[0] != self.producer_function
+            or self.observed_sequence[-1] != self.cleanup_function
+        ):
+            raise ValueError("ownership observed sequence must run from producer to cleanup")
         object.__setattr__(self, "consumers", tuple(sorted(set(self.consumers))))
         object.__setattr__(self, "evidence", tuple(sorted(set(self.evidence))))
+        object.__setattr__(self, "conditions", tuple(self.conditions))
+        object.__setattr__(self, "support_by_source", _canonical_json_object(self.support_by_source))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -162,6 +203,16 @@ class TripletOwnershipRelation(Serializable):
             "evidence": list(self.evidence),
             "confidence": self.confidence,
             "source": self.source,
+            "producer_binding": self.producer_binding,
+            "producer_argument_index": self.producer_argument_index,
+            "cleanup_argument_index": self.cleanup_argument_index,
+            "lifecycle_kind": self.lifecycle_kind,
+            "conditions": list(self.conditions),
+            "path_kind": self.path_kind,
+            "support_total": self.support_total,
+            "support_by_source": dict(self.support_by_source),
+            "usage_pattern_id": self.usage_pattern_id,
+            "observed_sequence": list(self.observed_sequence),
         }
 
 
@@ -200,6 +251,11 @@ class FunctionTriplet(Serializable):
         }
         if not required_ids <= function_ids:
             raise ValueError("FunctionTriplet.functions must contain I, P, and H functions")
+        isf_ids = {
+            function.function_id for function in functions if "ISF" in function.roles
+        }
+        if isf_ids != {self.isf.function_id}:
+            raise ValueError("FunctionTriplet.functions must contain exactly one ISF anchor")
         if any(edge.function_id not in function_ids for edge in self.edges):
             raise ValueError("FunctionTriplet edge references a function outside functions")
         if any(semantic.function_id not in function_ids
@@ -268,6 +324,7 @@ def stable_triplet_id(
     function_name: str | None = None,
     relative_path: str | None = None,
     signature: str | None = None,
+    variant_key: str | None = None,
 ) -> str:
     """Derive a portable content identity from one unique ISF anchor.
 
@@ -290,6 +347,10 @@ def stable_triplet_id(
     normalized_path = path.as_posix()
     normalized_signature = " ".join((signature or "").split())
     identity = "\0".join((normalized_path, function_name, normalized_signature))
+    if variant_key is not None:
+        if not variant_key:
+            raise ValueError("FT variant key must be non-empty when supplied")
+        identity += "\0variant\0" + variant_key
     digest = hashlib.sha256(
         ("function-triplet-v2\0" + identity).encode("utf-8")
     ).hexdigest()[:12]
@@ -495,6 +556,16 @@ def _ownership_from_dict(value: Mapping[str, Any]) -> TripletOwnershipRelation:
         _string_array(value, "evidence") if "evidence" in value else (),
         value.get("confidence", 0.0),
         value.get("source", "static"),
+        value.get("producer_binding", "return_value"),
+        value.get("producer_argument_index"),
+        value.get("cleanup_argument_index", 0),
+        value.get("lifecycle_kind", "owned_resource"),
+        _string_array(value, "conditions") if "conditions" in value else (),
+        value.get("path_kind", "normal"),
+        value.get("support_total", 0),
+        _object(value, "support_by_source") if "support_by_source" in value else {},
+        value.get("usage_pattern_id"),
+        _string_array(value, "observed_sequence") if "observed_sequence" in value else (),
     )
 
 

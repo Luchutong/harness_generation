@@ -38,7 +38,7 @@ class PortableSourcePathTests(unittest.TestCase):
             second = self._build(root / "machine-b")
 
         for project, _output, document, resolver, _triplet in (first, second):
-            self.assertEqual(document["schema_version"], 2)
+            self.assertEqual(document["schema_version"], 3)
             self.assertFalse(Path(document["project"]).is_absolute())
             self.assertEqual(resolver.project_root, project.resolve())
             self.assertEqual(

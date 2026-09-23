@@ -10,7 +10,7 @@ from harness_generation.triplet_extractor import FunctionTripletExtractor
 REAL_ARTIFACTS = Path(__file__).resolve().parents[1] / "artifacts" / "simple"
 
 
-def make_artifacts(specs):
+def make_artifacts(specs, *, ownership=(), usage_patterns=()):
     """Build a schema-v1 artifact bundle from (name, roles, src, dst) records."""
     functions = []
     annotations = []
@@ -81,6 +81,8 @@ def make_artifacts(specs):
         flows=tuple(flows),
         embedded_flows=tuple(flows),
         source_schema_versions={"functions": 1, "annotations": 1, "flows": 1, "sfg": 1},
+        ownership=tuple(ownership),
+        usage_patterns=tuple(usage_patterns),
     )
 
 
@@ -104,6 +106,190 @@ class FunctionTripletExtractorTests(unittest.TestCase):
         self.assertEqual(triplets[0].isf.function, "parse")
         self.assertEqual(names(triplets[0].prfs), ["process", "consume"])
         self.assertEqual(names(triplets[0].hpfs), ["destroy"])
+
+    def test_opaque_handle_consumer_closes_over_create_and_free(self):
+        artifacts = make_artifacts([
+            (
+                "ParserCreate", (), "OtherA", "OtherB", "src/fixture.c",
+                "Parser ParserCreate(void)",
+                {
+                    "return_type": "Parser",
+                    "return_base_type": "Parser",
+                    "return_pointer_depth": 1,
+                    "return_is_struct_like": True,
+                    "return_is_opaque_handle": True,
+                    "parameters": [],
+                },
+            ),
+            (
+                "ParserParse", ("ISF",), "(null)", "(null)", "src/fixture.c",
+                "int ParserParse(Parser parser, const char *data, int size)",
+                {
+                    "return_type": "int",
+                    "return_base_type": "int",
+                    "return_pointer_depth": 0,
+                    "return_is_struct_like": False,
+                    "parameters": [{
+                        "name": "parser", "type": "Parser",
+                        "declaration": "Parser parser", "base_type": "Parser",
+                        "is_pointer": True, "pointer_depth": 1,
+                        "is_const": False, "is_struct_like": True,
+                        "is_opaque_handle": True,
+                    }],
+                },
+            ),
+            (
+                "ParserFree", (), "OtherC", "OtherD", "src/fixture.c",
+                "void ParserFree(Parser parser)",
+                {
+                    "return_type": "void",
+                    "return_base_type": "void",
+                    "return_pointer_depth": 0,
+                    "return_is_struct_like": False,
+                    "parameters": [{
+                        "name": "parser", "type": "Parser",
+                        "declaration": "Parser parser", "base_type": "Parser",
+                        "is_pointer": True, "pointer_depth": 1,
+                        "is_const": False, "is_struct_like": True,
+                        "is_opaque_handle": True,
+                    }],
+                },
+            ),
+        ], ownership=({
+            "id": "own_parser",
+            "producer_function_id": "src/fixture.c:1:ParserCreate",
+            "producer_function": "ParserCreate",
+            "resource_type": "Parser",
+            "cleanup_function_id": "src/fixture.c:3:ParserFree",
+            "cleanup_function": "ParserFree",
+            "cleanup_argument": "return_value",
+            "consumers": [],
+            "nullable": True,
+            "evidence": ["opaque handle typedef: Parser"],
+            "confidence": 0.95,
+            "source": "opaque_handle_static_inference",
+        },))
+
+        triplet = self.extractor.extract(artifacts)[0]
+        self.assertEqual(
+            {function.function for function in triplet.functions},
+            {"ParserCreate", "ParserParse", "ParserFree"},
+        )
+        self.assertIn("ParserCreate", names(triplet.prfs))
+        self.assertIn("ParserFree", names(triplet.hpfs))
+        self.assertIn("Parser", triplet.structures)
+        self.assertEqual(len(triplet.ownership_relations), 1)
+        self.assertEqual(triplet.ownership_relations[0].consumers, ("ParserParse",))
+        self.assertEqual(
+            triplet.metadata["lifecycle_closure"][0]["resource_type"], "Parser"
+        )
+
+    def test_usage_patterns_create_separate_ft_variants_with_support(self):
+        specs = [
+            ("ParserCreate", (), "(null)", "Parser"),
+            ("ParserCreateNS", (), "(null)", "Parser"),
+            ("ParserParse", ("ISF",), "Parser", "(null)"),
+            ("ParserFree", (), "Parser", "(null)"),
+        ]
+        ids = {name: f"src/fixture.c:{line}:{name}"
+               for line, (name, *_rest) in enumerate(specs, 1)}
+        def pattern(pattern_id, producer, support):
+            return {
+                "id": pattern_id,
+                "lifecycle_kind": "owned_resource",
+                "resource_type": "Parser",
+                "producer_function_id": ids[producer],
+                "producer_function": producer,
+                "producer_binding": "return_value",
+                "producer_argument_index": None,
+                "consumers": ["ParserParse"],
+                "consumer_function_ids": [ids["ParserParse"]],
+                "consumer_argument_indices": [0],
+                "cleanup_function_id": ids["ParserFree"],
+                "cleanup_function": "ParserFree",
+                "cleanup_argument_index": 0,
+                "cleanup_argument": "resource",
+                "sequence": [producer, "ParserParse", "ParserFree"],
+                "conditions": ["parser != NULL"],
+                "path_kind": "conditional",
+                "support_total": support,
+                "support_by_source": {"test": support},
+                "evidence": [f"tests/{producer}.c:10 (caller)"],
+            }
+        artifacts = make_artifacts(specs, usage_patterns=(
+            pattern("up_create", "ParserCreate", 4),
+            pattern("up_create_ns", "ParserCreateNS", 2),
+        ))
+        triplets = self.extractor.extract(artifacts)
+        self.assertEqual(len(triplets), 2)
+        self.assertEqual(len({item.id for item in triplets}), 2)
+        self.assertEqual(
+            {item.metadata["usage_pattern"]["id"] for item in triplets},
+            {"up_create", "up_create_ns"},
+        )
+        self.assertEqual(
+            {item.ownership_relations[0].support_total for item in triplets},
+            {2, 4},
+        )
+        for triplet in triplets:
+            producer = triplet.metadata["usage_pattern"]["producer_function"]
+            self.assertEqual(
+                {item.function for item in triplet.functions},
+                {producer, "ParserParse", "ParserFree"},
+            )
+            self.assertEqual(
+                sum("ISF" in item.roles for item in triplet.functions), 1
+            )
+
+    def test_usage_out_parameter_and_refcount_fields_reach_ft_contract(self):
+        specs = [
+            ("ParserOpen", (), "(null)", "Parser"),
+            ("ParserParse", ("ISF",), "Parser", "(null)"),
+            ("ParserClose", (), "Parser", "(null)"),
+        ]
+        pattern = {
+            "id": "up_out", "lifecycle_kind": "owned_resource",
+            "resource_type": "Parser",
+            "producer_function_id": "src/fixture.c:1:ParserOpen",
+            "producer_function": "ParserOpen", "producer_binding": "out_parameter",
+            "producer_argument_index": 1, "consumers": ["ParserParse"],
+            "consumer_function_ids": ["src/fixture.c:2:ParserParse"],
+            "consumer_argument_indices": [0],
+            "cleanup_function_id": "src/fixture.c:3:ParserClose",
+            "cleanup_function": "ParserClose", "cleanup_argument_index": 0,
+            "cleanup_argument": "resource", "sequence": ["ParserOpen", "ParserParse", "ParserClose"],
+            "conditions": ["rc != 0"], "path_kind": "error", "support_total": 3,
+            "support_by_source": {"production": 3}, "evidence": ["src/client.c:7 (open)"],
+        }
+        relation = self.extractor.extract(
+            make_artifacts(specs, usage_patterns=(pattern,))
+        )[0].ownership_relations[0]
+        self.assertEqual(relation.producer_binding, "out_parameter")
+        self.assertEqual(relation.producer_argument_index, 1)
+        self.assertEqual(relation.path_kind, "error")
+        self.assertEqual(relation.conditions, ("rc != 0",))
+        self.assertEqual(relation.support_by_source, {"production": 3})
+
+        ref_specs = [
+            ("ParserRef", (), "Parser", "Parser"),
+            ("ParserParse", ("ISF",), "Parser", "(null)"),
+            ("ParserUnref", (), "Parser", "(null)"),
+        ]
+        ref_pattern = {
+            **pattern,
+            "id": "up_ref", "lifecycle_kind": "reference_count",
+            "producer_function_id": "src/fixture.c:1:ParserRef",
+            "producer_function": "ParserRef", "producer_binding": "existing_argument",
+            "producer_argument_index": 0,
+            "cleanup_function_id": "src/fixture.c:3:ParserUnref",
+            "cleanup_function": "ParserUnref", "conditions": [],
+            "path_kind": "normal", "sequence": ["ParserRef", "ParserParse", "ParserUnref"],
+        }
+        ref_relation = self.extractor.extract(
+            make_artifacts(ref_specs, usage_patterns=(ref_pattern,))
+        )[0].ownership_relations[0]
+        self.assertEqual(ref_relation.lifecycle_kind, "reference_count")
+        self.assertEqual(ref_relation.producer_binding, "existing_argument")
 
     def test_bypass_semantics_are_sidecar_and_do_not_rewrite_sfg(self):
         artifacts = make_artifacts([
@@ -166,7 +352,7 @@ class FunctionTripletExtractorTests(unittest.TestCase):
         self.assertIn("constant_reference", kinds)
         self.assertEqual(
             triplet.metadata["bypass_semantics_version"],
-            "function-triplet-bypass-v1",
+            "function-triplet-bypass-v2",
         )
 
     def test_case_b_other_isfs_are_role_aware_and_each_ft_has_one_isf(self):

@@ -49,6 +49,10 @@ class ArtifactStore:
         return self.root / "triplets.json"
 
     @property
+    def ft_selection(self) -> Path:
+        return self.root / "ft_selection.json"
+
+    @property
     def protocol_ir(self) -> Path:
         return self.root / "protocol_ir.json"
 

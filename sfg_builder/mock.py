@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+from typing import Any, Mapping
+
 from .base import SemanticDecision
 from .models import AccessHint, FunctionInfo, ParameterInfo, StructInfo
 from .prompts import (DIRECTION_PROMPT_VERSION, ROLE_PROMPT_VERSION,
-                      STREAM_PROMPT_VERSION, direction_prompt, role_prompt,
-                      stream_prompt)
+                      STREAM_PROMPT_VERSION, USAGE_REVIEW_PROMPT_VERSION,
+                      direction_prompt, role_prompt, stream_prompt,
+                      usage_review_prompt)
 
 
 class MockSemanticAnalyzer:
     """Return reproducible decisions without network or credentials."""
+
+    semantic_backend = "mock"
 
     def classify_stream_parameter(self, function: FunctionInfo, parameter: ParameterInfo,
                                   structs: tuple[StructInfo, ...], variant: str) -> SemanticDecision:
@@ -88,6 +93,30 @@ class MockSemanticAnalyzer:
         data = {"parameter": parameter.name, "struct_type": parameter.base_type,
                 "direction": direction, "reason": reason, "confidence": confidence}
         return SemanticDecision(data, prompt, DIRECTION_PROMPT_VERSION, data, confidence)
+
+    def review_usage_patterns(
+        self,
+        patterns: tuple[Mapping[str, Any], ...],
+        functions: tuple[FunctionInfo, ...],
+    ) -> SemanticDecision:
+        prompt = usage_review_prompt(patterns, functions)
+        decisions = []
+        for pattern in patterns:
+            sequence = list(pattern.get("sequence", []))
+            decisions.append({
+                "pattern_id": pattern.get("id"),
+                "is_valid_lifecycle": True,
+                "lifecycle_kind": pattern.get("lifecycle_kind"),
+                "required_sequence": sequence,
+                "optional_calls": [],
+                "merge_group": str(pattern.get("id")),
+                "confidence": 0.85,
+                "reason": "deterministic mock preserves the statically mined lifecycle",
+            })
+        data = {"decisions": decisions}
+        return SemanticDecision(
+            data, prompt, USAGE_REVIEW_PROMPT_VERSION, data, 0.85
+        )
 
 
 def _looks_like_parser_input(function: FunctionInfo, parameter: ParameterInfo) -> bool:

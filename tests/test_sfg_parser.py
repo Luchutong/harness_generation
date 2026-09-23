@@ -134,7 +134,7 @@ void use(public_type *public_value, struct internal_type *tag_value);
             written = write_functions_json(self.result, path, project=PROJECT)
             payload = json.loads(path.read_text())
         self.assertEqual(written, path)
-        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(payload["schema_version"], 3)
         self.assertFalse(Path(payload["project"]).is_absolute())
         self.assertEqual(
             (path.parent / payload["project"]).resolve(), PROJECT.resolve()

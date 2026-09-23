@@ -13,7 +13,12 @@ from harness_generation.cli import main
 from harness_generation.llm import MockLLM
 from harness_generation.llm import OpenAICompatibleLLM
 from harness_generation.artifacts import ArtifactStore
-from harness_generation.generation_cli import _publish_harness, _resolve_llm
+from harness_generation.generation_cli import (
+    _publish_harness,
+    _resolve_llm,
+    _select_from_manifest,
+)
+from harness_generation.ft_selection import triplet_catalog_sha256
 from harness_generation.pipeline_validation import PipelineValidationConfig
 from harness_generation.stage4 import Stage4Result
 from harness_generation.triplet import load_triplets_json
@@ -155,6 +160,24 @@ class GenerationCLITests(unittest.TestCase):
             responses.append(harness_plan(self.triplet.id))
             responses.append(HARNESS_CODE)
         return responses
+
+    def test_selection_manifest_controls_generate_all_order(self):
+        from dataclasses import replace
+
+        other = replace(self.triplet, id="ft_other")
+        manifest = self.artifacts / "selection.json"
+        manifest.write_text(json.dumps({
+            "schema_version": 2,
+            "inputs": {
+                "triplets_sha256": triplet_catalog_sha256((self.triplet, other)),
+            },
+            "selection": [
+                {"triplet_id": "ft_other"},
+                {"triplet_id": self.triplet.id},
+            ],
+        }), encoding="utf-8")
+        selected = _select_from_manifest((self.triplet, other), manifest)
+        self.assertEqual([item.id for item in selected], ["ft_other", self.triplet.id])
 
     def test_generate_runs_all_stages_with_injected_mock_llm(self):
         llm = MockLLM(self.responses())

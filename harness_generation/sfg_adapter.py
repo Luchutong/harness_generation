@@ -10,6 +10,7 @@ from typing import Any, Callable, Mapping
 
 from sfg_builder.models import SFGEdge, SFGNode
 from sfg_builder.ownership import load_ownership_json
+from sfg_builder.usage import USAGE_SCHEMA_VERSION, load_usage_json
 
 
 SFG_SCHEMA_VERSION = 1
@@ -131,6 +132,7 @@ class SFGArtifacts:
     embedded_flows: tuple[Mapping[str, Any], ...]
     source_schema_versions: Mapping[str, int] = field(default_factory=dict)
     ownership: tuple[Mapping[str, Any], ...] = ()
+    usage_patterns: tuple[Mapping[str, Any], ...] = ()
     functions_by_id: Mapping[str, Mapping[str, Any]] = field(init=False, repr=False)
     annotations_by_id: Mapping[str, Mapping[str, Any]] = field(init=False, repr=False)
     flows_by_id: Mapping[str, Mapping[str, Any]] = field(init=False, repr=False)
@@ -189,6 +191,8 @@ class SFGLoader:
             name: _schema_version(document, f"{name}.json")
             for name, document in documents.items()
         }
+        if (artifacts / "usage_patterns.json").exists():
+            versions["usage_patterns"] = USAGE_SCHEMA_VERSION
         graph = adapt_sfg_document(documents["sfg"])
         project = documents["functions"].get("project")
         if not isinstance(project, str) or not project:
@@ -210,6 +214,7 @@ class SFGLoader:
             flows=tuple(_record_array(documents["flows"], "flows", "flows.json")),
             embedded_flows=tuple(_record_array(documents["sfg"], "functions", "sfg.json")),
             ownership=tuple(load_ownership_json(artifacts / "ownership.json")),
+            usage_patterns=tuple(load_usage_json(artifacts / "usage_patterns.json")),
             source_schema_versions=versions,
         )
 
@@ -312,7 +317,7 @@ def _schema_version(document: Mapping[str, Any], name: str) -> int:
     version = document.get("schema_version")
     if type(version) is not int:
         raise SFGLoadError(f"{name} schema_version must be an integer")
-    supported = {1, 2} if name == "functions.json" else {SFG_SCHEMA_VERSION}
+    supported = {1, 2, 3} if name == "functions.json" else {SFG_SCHEMA_VERSION}
     if version not in supported:
         raise SFGLoadError(f"unsupported {name} schema_version: {version}")
     return version

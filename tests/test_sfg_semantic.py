@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import unittest
 
 from sfg_builder.analysis import FunctionAnnotator
@@ -81,6 +82,41 @@ class SemanticIsolationTests(unittest.TestCase):
                 with self.assertRaises(SemanticError):
                     analyzer.classify_stream_parameter(
                         self.function, self.stream_parameter, (), "direct")
+
+    def test_llm_usage_review_has_a_strict_batched_contract(self):
+        pattern = {
+            "id": "up_one", "lifecycle_kind": "owned_resource",
+            "resource_type": "Parser", "producer_function": "create",
+            "producer_binding": "return_value", "producer_argument_index": None,
+            "consumers": ["parser_from_memory"], "consumer_argument_indices": [0],
+            "cleanup_function": "destroy", "cleanup_argument_index": 0,
+            "sequence": ["create", "parser_from_memory", "destroy"],
+            "conditions": [], "path_kind": "normal", "support_total": 1,
+            "support_by_source": {"test": 1},
+        }
+        content = json.dumps({"decisions": [{
+            "pattern_id": "up_one", "is_valid_lifecycle": True,
+            "lifecycle_kind": "owned_resource",
+            "required_sequence": ["create", "parser_from_memory", "destroy"],
+            "optional_calls": [], "merge_group": "basic", "confidence": 0.9,
+            "reason": "create/use/destroy lifecycle",
+        }]})
+        decision = LLMSemanticAnalyzer(
+            _transport(content), "test"
+        ).review_usage_patterns((pattern,), (self.function,))
+        self.assertEqual(decision.data["decisions"][0]["merge_group"], "basic")
+        self.assertEqual(decision.prompt_version, "sfg-usage-review-v1")
+
+        invalid = json.dumps({"decisions": [{
+            "pattern_id": "up_one", "is_valid_lifecycle": "yes",
+            "lifecycle_kind": "owned_resource", "required_sequence": [],
+            "optional_calls": [], "merge_group": "basic", "confidence": 0.9,
+            "reason": "bad",
+        }]})
+        with self.assertRaises(SemanticError):
+            LLMSemanticAnalyzer(
+                _transport(invalid), "test"
+            ).review_usage_patterns((pattern,), (self.function,))
 
     def test_decision_trace_records_required_audit_fields(self):
         candidates = CandidateDetector().detect(self.parsed.functions)

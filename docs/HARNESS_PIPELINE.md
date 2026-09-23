@@ -37,7 +37,8 @@ Source Code -> Function Extraction -> Annotation -> Structural Flow -> SFG
 ```
 
 上游 `sfg_builder` 生成 `functions.json`、`candidates.json`、
-`annotations.json`、`flows.json`、`sfg.json` 和 `sfg.dot`。下游
+`annotations.json`、`flows.json`、`sfg.json`、`sfg.dot`、`ownership.json`
+和 `usage_patterns.json`。下游
 `harness_generation` 将这些 artifact 适配为稳定的多重有向图，生成
 `triplets.json`，再围绕单个 FT 逐阶段生成代码。
 
@@ -68,18 +69,20 @@ Source Code -> Function Extraction -> Annotation -> Structural Flow -> SFG
   input 解码、FT 调用顺序、data/size 绑定、约束和 cleanup。它不是最终 harness
   源码，也不允许携带 `LLVMFuzzerTestOneInput` 的完整 C 实现。
 
-## 为什么 one ISF -> one FT -> one harness
+## 为什么 one ISF usage variant -> one FT -> one harness
 
 ISF 是外部 fuzz input 进入结构数据流的语义边界。不同 ISF 即使汇入相同结构，
 其参数约束、初始化方法和生命周期也可能完全不同。把多个 ISF 合并进一个 FT 会让
 Stage 4 无法确定唯一 external-input entry，也会让生成结果难以归因和复现。
 
 因此提取器以每个唯一 ISF 为 anchor，屏蔽其他 ISF 对可达性遍历的入口影响，再为
-当前 anchor 收集相关 PRF、HPF 和结构边。每个 FT 最终只生成一个 harness，使关系
+当前 anchor 收集相关 PRF、HPF 和结构边。如果项目内 usage mining 发现多个合法的
+producer/consumer/cleanup 序列，则每个序列生成独立 FT variant。每个 FT 最终只生成
+一个 harness，使关系
 保持为：
 
 ```text
-one ISF anchor -> one isolated FunctionTriplet -> one auditable harness
+one ISF anchor + one usage pattern -> one isolated FunctionTriplet -> one auditable harness
 ```
 
 multi-role 不破坏这一约束：当前 anchor 可以同时是 HPF/PRF；“唯一”只表示 FT 中
@@ -109,6 +112,12 @@ multi-role 不破坏这一约束：当前 anchor 可以同时是 HPF/PRF；“�
    `hash()` 或机器绝对路径；插入其他 ISF 不会改变已有 FT identity。
 6. 在 FT sidecar 上附加 bypass semantics。该步骤只读取 `functions.json` 的函数
    metadata，不修改 `sfg.json`，也不改变 ancestor/descendant traversal 的结果。
+7. 读取 `usage_patterns.json`。同一 ISF 的不同 producer、调用序列、cleanup 条件或
+   生命周期类型分别生成稳定 variant ID；支持度和证据位置写入 FT ownership relation。
+8. LLM semantic analyzer 对静态候选做受约束复核：判断 lifecycle 是否成立、区分
+   required/optional calls，并为等价模式分组。它不能新增 API、修改参数位置或跨变量
+   合并；prompt/response/confidence 全部写入 `usage_patterns.json`。安全等价组汇总
+   support 后生成一个 FT，其他模式仍分别生成。
 
 null 表示由独立 adapter 统一识别，包括 `null`、`NULL`、`(null)`、
 `**NULL**`、`None` 等变体，并规范为当前 canonical `"(null)"`。Traversal 可以
@@ -215,7 +224,10 @@ artifacts/<project>/
 ├── flows.json
 ├── sfg.json
 ├── sfg.dot
+├── ownership.json
+├── usage_patterns.json
 ├── triplets.json
+├── ft_selection.json
 ├── triplets/
 ├── generation/
 │   └── <ft_id>/
@@ -284,8 +296,8 @@ artifacts/<project>/
             └── crashes/
 ```
 
-`triplets.json` 是 canonical FT output；当前 schema v3 在 v2 字段之外新增
-`bypass_semantics`，旧 schema v1/v2 仍可读取并补为空列表。`triplets/<ft_id>.json` 是通过
+`triplets.json` 是 canonical FT output；当前 schema v4 包含 bypass semantics 与
+ownership relations，并继续读取旧 schema。`triplets/<ft_id>.json` 是通过
 `--individual` 请求的可选 inspection artifact。所有新增目录都叠加在 Phase 1
 输出之上，不覆盖 SFG pipeline 的源 artifact。
 
@@ -298,6 +310,24 @@ python -m harness_generation triplets --artifacts artifacts/simple
 python -m harness_generation triplets show \
   --artifacts artifacts/simple --id ft_parser_from_memory_a5265df23ba0
 ```
+
+对较大项目先按证据、结构收益和基线 LLM 成本筛选 FT：
+
+```bash
+python -m harness_generation triplets rank \
+  --artifacts artifacts/project --min-score 0.55 \
+  --max-ft 20 --max-calls 300
+
+python -m harness_generation generate-all \
+  --artifacts artifacts/project \
+  --selection artifacts/project/ft_selection.json \
+  --provider openai-compatible
+```
+
+`ft_selection.json` 保留完整排名、逐项证据、排除原因、预算和最终选择顺序。评分
+定义与大型项目迭代流程见 [FT_SELECTION.md](FT_SELECTION.md)。
+opaque handle 的类型恢复、生命周期闭包及 FT authority 分级见
+[FT_AUTHORITY.md](FT_AUTHORITY.md)。
 
 使用 offline Mock response 文件生成单个 FT：
 

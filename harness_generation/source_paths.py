@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-SUPPORTED_FUNCTIONS_SCHEMA_VERSIONS = frozenset({1, 2})
+SUPPORTED_FUNCTIONS_SCHEMA_VERSIONS = frozenset({1, 2, 3})
 
 
 @dataclass(frozen=True)
@@ -29,7 +29,7 @@ class SourcePathResolver:
     ) -> "SourcePathResolver":
         version = document.get("schema_version")
         if version not in SUPPORTED_FUNCTIONS_SCHEMA_VERSIONS:
-            raise ValueError("functions.json requires schema_version 1 or 2")
+            raise ValueError("unsupported functions.json schema_version")
         if project_root is not None:
             return cls(Path(project_root))
         stored_root = document.get("project")

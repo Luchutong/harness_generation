@@ -7,6 +7,8 @@ from pathlib import Path
 import sys
 
 from .artifacts import ArtifactStore
+from .ft_selection import build_selection_manifest
+from .records import write_json
 from .sfg_adapter import load_sfg_artifacts
 from .triplet import FunctionTriplet, load_triplets_json
 from .triplet_extractor import extract_function_triplets
@@ -16,6 +18,8 @@ def main(argv: list[str] | None = None) -> int:
     arguments = list(argv or [])
     if arguments[:1] == ["show"]:
         return _show_command(arguments[1:])
+    if arguments[:1] == ["rank"]:
+        return _rank_command(arguments[1:])
     return _extract_command(arguments)
 
 
@@ -67,6 +71,90 @@ def _show_command(argv: list[str]) -> int:
         return 1
     _print_triplet(triplet)
     return 0
+
+
+def _rank_command(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="harness-generation triplets rank",
+        description="Rank Function Triplets and select a diverse set under a budget",
+    )
+    parser.add_argument("--artifacts", required=True, type=Path)
+    parser.add_argument(
+        "--max-ft", type=_non_negative_integer,
+        help="Maximum number of FTs to select",
+    )
+    parser.add_argument(
+        "--max-calls", type=_non_negative_integer,
+        help="Maximum estimated baseline LLM calls",
+    )
+    parser.add_argument(
+        "--min-score", type=_score, default=0.0,
+        help="Minimum intrinsic FT score from 0 to 1 (default: 0)",
+    )
+    parser.add_argument(
+        "--output", type=Path,
+        help="Selection manifest path (default: <artifacts>/ft_selection.json)",
+    )
+    args = parser.parse_args(argv)
+    try:
+        store = ArtifactStore(args.artifacts)
+        artifacts = load_sfg_artifacts(args.artifacts)
+        triplets = load_triplets_json(store.triplets)
+        manifest = build_selection_manifest(
+            triplets,
+            artifacts.annotations,
+            max_ft=args.max_ft,
+            max_calls=args.max_calls,
+            min_score=args.min_score,
+        )
+        output = args.output or store.ft_selection
+        write_json(output, manifest, sort_keys=True, allow_nan=False)
+    except (OSError, ValueError) as exc:
+        print(f"FT ranking failed: {exc}", file=sys.stderr)
+        return 1
+
+    selected_ids = {
+        item["triplet_id"] for item in manifest["selection"]
+    }
+    for index, item in enumerate(manifest["ranking"], start=1):
+        marker = " selected" if item["triplet_id"] in selected_ids else ""
+        if item["eligible"]:
+            print(
+                f"[FT-RANK] {index:03d} {item['triplet_id']} "
+                f"score={item['score']:.3f} calls={item['estimated_llm_calls']}"
+                f"{marker}"
+            )
+        else:
+            reasons = ",".join(item["exclusion_reasons"])
+            print(f"[FT-RANK] {index:03d} {item['triplet_id']} excluded={reasons}")
+    summary = manifest["summary"]
+    print(
+        f"[FT-RANK] selected={summary['selected_count']}/"
+        f"{summary['eligible_count']} estimated_calls="
+        f"{summary['estimated_llm_calls']}"
+    )
+    print(f"[FT-RANK] Wrote {output}")
+    return 0
+
+
+def _non_negative_integer(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be non-negative")
+    return parsed
+
+
+def _score(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if not 0.0 <= parsed <= 1.0:
+        raise argparse.ArgumentTypeError("must be between 0 and 1")
+    return parsed
 
 
 def triplet_statistics(annotations, functions,

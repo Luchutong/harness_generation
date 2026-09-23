@@ -111,7 +111,7 @@ class Stage3Tests(unittest.TestCase):
         )
         self.assertEqual(
             persisted_metadata["generation_metadata"]["prompt_version"],
-            "stage3-rough-assembly-v2",
+            "stage3-rough-assembly-v3",
         )
         self.assertEqual(
             attempt_files,
@@ -121,7 +121,7 @@ class Stage3Tests(unittest.TestCase):
         self.assertEqual(attempt_metadata["provider"], "mock")
         self.assertEqual(attempt_metadata["model"], "mock-model")
         self.assertEqual(
-            attempt_metadata["prompt_version"], "stage3-rough-assembly-v2"
+            attempt_metadata["prompt_version"], "stage3-rough-assembly-v3"
         )
         self.assertEqual(attempt_metadata["stage"], "stage3")
         self.assertEqual(attempt_metadata["ft_id"], self.triplet.id)
@@ -213,6 +213,10 @@ class Stage3Tests(unittest.TestCase):
             (
                 "void parser_free(Parser *parser) { (void)parser; }",
                 "redefines project API",
+            ),
+            (
+                "int main(void) { return 0; }",
+                "must not define main",
             ),
             (
                 "int LLVMFuzzerTestOneInput(const unsigned char *data, unsigned long size) "

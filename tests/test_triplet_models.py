@@ -100,7 +100,7 @@ class FunctionTripletSerializationTests(unittest.TestCase):
             self.assertEqual(first_path.read_bytes(), second_path.read_bytes())
             document = json.loads(first_path.read_text(encoding="utf-8"))
         self.assertEqual(document, triplets_document((first,)))
-        self.assertEqual(document["schema_version"], 4)
+        self.assertEqual(document["schema_version"], 5)
 
     def test_zero_prfs_and_hpfs_are_valid(self):
         triplet = FunctionTriplet(
@@ -143,6 +143,30 @@ class FunctionTripletSerializationTests(unittest.TestCase):
             [relation.cleanup_function for relation in triplet.ownership_relations],
             ["destroy", "destroy"],
         )
+
+    def test_usage_lifecycle_fields_and_repeated_sequence_round_trip(self):
+        relation = TripletOwnershipRelation(
+            "own_usage", self.isf.function_id, self.isf.function, "Context",
+            self.hpf.function_id, self.hpf.function,
+            consumers=("process",), evidence=("tests/use.c:9",), confidence=0.91,
+            source="usage_mining+llm", producer_binding="out_parameter",
+            producer_argument_index=0, cleanup_argument_index=0,
+            lifecycle_kind="owned_resource", conditions=("$value != 0",),
+            path_kind="error", support_total=3,
+            support_by_source={"test": 2, "production": 1},
+            usage_pattern_id="usg_123",
+            observed_sequence=("parse", "process", "process", "destroy"),
+        )
+        triplet = FunctionTriplet(
+            self.isf, (self.prf,), (self.hpf,),
+            (self.isf, self.prf, self.hpf), ("Context", "Result"),
+            (self.parse_edge, self.process_edge, self.destroy_edge), {},
+            ownership_relations=(relation,),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = write_triplets_json((triplet,), Path(temporary) / "triplets.json")
+            loaded = load_triplets_json(path)[0].ownership_relations[0]
+        self.assertEqual(loaded, relation)
 
     def test_schema_v1_triplets_remain_loadable(self):
         document = triplets_document((self.make_triplet(),))

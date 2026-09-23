@@ -7,9 +7,11 @@ from harness_generation.artifacts import ArtifactStore
 from harness_generation.protocol_ir import ProtocolIR
 from harness_generation.target_contract import (
     InputContract,
+    ResourceContract,
     TargetContract,
     TargetContractError,
 )
+from harness_generation.triplet import TripletOwnershipRelation
 from harness_generation.stage4 import Stage4Error, parse_harness_plan
 from harness_generation.triplet import load_triplets_json
 from tests.test_generation_cli import harness_plan
@@ -48,6 +50,24 @@ def test_contract_identity_includes_fact_content_not_only_ids():
         ),
     )
     assert original.contract_id != changed.contract_id
+
+
+def test_resource_contract_keeps_usage_lifecycle_constraints():
+    relation = TripletOwnershipRelation(
+        "own_usage", "f_create", "create", "Handle", "f_free", "free",
+        consumers=("parse",), evidence=("tests/a.c:4",), confidence=0.9,
+        source="usage_mining+llm", producer_binding="out_parameter",
+        producer_argument_index=1, lifecycle_kind="owned_resource",
+        conditions=("$value != 0",), path_kind="error", support_total=2,
+        support_by_source={"test": 2}, usage_pattern_id="usg_one",
+        observed_sequence=("create", "parse", "parse", "free"),
+    )
+    resource = ResourceContract.from_ownership(relation)
+    assert resource.metadata["producer_binding"] == "out_parameter"
+    assert resource.metadata["producer_argument_index"] == 1
+    assert resource.metadata["observed_sequence"] == [
+        "create", "parse", "parse", "free",
+    ]
 
 
 def test_legacy_protocol_document_is_adapted_without_inventing_fields():

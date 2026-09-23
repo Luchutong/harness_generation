@@ -11,15 +11,15 @@ import re
 import tempfile
 from typing import Any, Iterable
 
-from .models import (AccessHint, FunctionInfo, ParameterInfo, ReturnValueOwnership,
-                     StructInfo)
+from .models import (AccessHint, FunctionInfo, OpaqueHandleInfo, ParameterInfo,
+                     ReturnValueOwnership, StructInfo)
 from project_catalog import ProjectCatalog
 
 
 DEFAULT_IGNORES = (".git", "build", "out", "cmake-build*", "third_party",
                    "vendor", "external")
 SOURCE_SUFFIXES = {".c", ".h"}
-FUNCTIONS_SCHEMA_VERSION = 2
+FUNCTIONS_SCHEMA_VERSION = 3
 
 
 class ProjectParseError(Exception):
@@ -32,6 +32,7 @@ class ParseResult:
     structs: tuple[StructInfo, ...]
     files: tuple[str, ...]
     warnings: tuple[str, ...]
+    opaque_handles: tuple[OpaqueHandleInfo, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,7 @@ class CProjectParser:
         parser = _make_parser()
         paths = tuple(self._source_files(project))
         structs: list[StructInfo] = []
+        opaque_handles: list[OpaqueHandleInfo] = []
         raw_functions: list[_ParsedFunction] = []
         warnings = []
         for path in paths:
@@ -63,16 +65,25 @@ class CProjectParser:
                 if tree.root_node.has_error or errors:
                     warnings.append(f"{relative}: tree-sitter reported {len(errors) or 1} parse error(s)")
                 structs.extend(_extract_structs(tree.root_node, source, relative))
+                opaque_handles.extend(
+                    _extract_opaque_handles(tree.root_node, source, relative)
+                )
                 raw_functions.extend(_extract_functions(tree.root_node, source, relative))
             except OSError as exc:
                 warnings.append(f"{relative}: could not read source ({type(exc).__name__})")
-        resolver = TypeResolver(structs)
+        handles = _deduplicate_opaque_handles(opaque_handles)
+        resolver = TypeResolver(structs, handles)
         functions = tuple(_resolve_function(item.function, resolver) for item in raw_functions)
         functions = _apply_documented_family_ownership(
             _deduplicate_functions(functions)
         )
-        return ParseResult(functions, resolver.structs, tuple(
-            path.relative_to(project).as_posix() for path in paths), tuple(warnings))
+        return ParseResult(
+            functions,
+            resolver.structs,
+            tuple(path.relative_to(project).as_posix() for path in paths),
+            tuple(warnings),
+            handles,
+        )
 
     def _source_files(self, project: Path) -> Iterable[Path]:
         catalog = ProjectCatalog.discover(
@@ -85,7 +96,8 @@ class CProjectParser:
 
 
 class TypeResolver:
-    def __init__(self, structs: Iterable[StructInfo]):
+    def __init__(self, structs: Iterable[StructInfo],
+                 opaque_handles: Iterable[OpaqueHandleInfo] = ()):
         groups: list[list[StructInfo]] = []
         group_aliases: list[set[str]] = []
         for info in structs:
@@ -120,9 +132,22 @@ class TypeResolver:
             aliases[_normalize_base(canonical_name)] = canonical_name
         self.structs = tuple(sorted(resolved_structs, key=lambda item: item.name))
         self._aliases = aliases
+        self._opaque_handles = {
+            _normalize_base(handle.name): handle
+            for handle in opaque_handles
+        }
 
     def resolve(self, base_type: str) -> str | None:
         return self._aliases.get(_normalize_base(base_type))
+
+    def resolve_details(self, base_type: str) -> tuple[str | None, int, bool]:
+        normalized = _normalize_base(base_type)
+        handle = self._opaque_handles.get(normalized)
+        return (
+            self._aliases.get(normalized),
+            handle.pointer_depth if handle is not None else 0,
+            handle is not None,
+        )
 
 
 def _make_parser():
@@ -176,8 +201,9 @@ def _extract_structs(root, source: bytes, relative: str) -> list[StructInfo]:
                             if child.type == "struct_specifier"), None)
         if struct_node is None:
             continue
-        aliases = [child for child in node.named_children if child.type == "type_identifier"]
-        alias = _text(source, aliases[-1]) if aliases else None
+        declarator = node.child_by_field_name("declarator")
+        alias_node = _declarator_leaf_identifier(declarator)
+        alias = _text(source, alias_node) if alias_node is not None else None
         tag_node = struct_node.child_by_field_name("name")
         tag = _text(source, tag_node) if tag_node else None
         name = alias or tag
@@ -201,6 +227,52 @@ def _extract_structs(root, source: bytes, relative: str) -> list[StructInfo]:
         result.append(StructInfo(tag, (tag, f"struct {tag}"), _clean(_text(source, node)),
                                  relative, node.start_point[0] + 1, node.end_point[0] + 1))
     return result
+
+
+def _extract_opaque_handles(
+    root, source: bytes, relative: str
+) -> list[OpaqueHandleInfo]:
+    result = []
+    for node in _walk(root):
+        if node.type != "type_definition" or not _is_external_declaration(node):
+            continue
+        target = node.child_by_field_name("type")
+        if target is None or target.type not in {"struct_specifier", "union_specifier"}:
+            continue
+        declarator = node.child_by_field_name("declarator")
+        pointer_depth = _declarator_pointer_depth(declarator)
+        alias_node = _declarator_leaf_identifier(declarator)
+        target_node = target.child_by_field_name("name")
+        if pointer_depth < 1 or alias_node is None or target_node is None:
+            continue
+        result.append(OpaqueHandleInfo(
+            name=_text(source, alias_node),
+            target_type=_normalize_base(_text(source, target_node)),
+            pointer_depth=pointer_depth,
+            declaration=_clean(_text(source, node)),
+            file=relative,
+            line=node.start_point[0] + 1,
+        ))
+    return result
+
+
+def _deduplicate_opaque_handles(
+    handles: Iterable[OpaqueHandleInfo],
+) -> tuple[OpaqueHandleInfo, ...]:
+    by_name: dict[str, OpaqueHandleInfo] = {}
+    conflicts: set[str] = set()
+    for handle in handles:
+        key = _normalize_base(handle.name)
+        previous = by_name.setdefault(key, handle)
+        if (
+            previous.target_type != handle.target_type
+            or previous.pointer_depth != handle.pointer_depth
+        ):
+            conflicts.add(key)
+    return tuple(sorted(
+        (handle for key, handle in by_name.items() if key not in conflicts),
+        key=lambda handle: (handle.name, handle.file, handle.line),
+    ))
 
 
 def _extract_functions(root, source: bytes, relative: str) -> list[_ParsedFunction]:
@@ -287,7 +359,7 @@ def _return_type_details(source: bytes, node, declarator, function_declarator,
     name = _text(source, name_node)
     prefix = signature.split(name, 1)[0].strip() if name in signature else ast_base
     macro = re.search(
-        r"\b([A-Z][A-Z0-9_]*(?:_PUBLIC|_API)|API|EXPORT)\s*"
+        r"\b([A-Z][A-Z0-9_]{2,})\s*"
         r"\(([^()]*(?:\([^()]*\)[^()]*)*)\)",
         prefix,
     )
@@ -436,7 +508,7 @@ def _render_type(base: str, pointer_depth: int, qualifiers: Iterable[str] = ()) 
 def _declarator_leaf_identifier(node):
     if node is None:
         return None
-    if node.type == "identifier":
+    if node.type in {"identifier", "type_identifier"}:
         return node
     direct = node.child_by_field_name("declarator")
     if direct is not None:
@@ -453,13 +525,27 @@ def _declarator_leaf_identifier(node):
 def _resolve_function(function: FunctionInfo, resolver: TypeResolver) -> FunctionInfo:
     parameters = []
     for parameter in function.parameters:
-        resolved = resolver.resolve(parameter.base_type)
-        parameters.append(replace(parameter, base_type=resolved or parameter.base_type,
-                                  is_struct_like=resolved is not None))
-    return_struct = resolver.resolve(function.return_base_type)
-    function = replace(function, parameters=tuple(parameters),
-                       return_base_type=return_struct or function.return_base_type,
-                       return_is_struct_like=return_struct is not None)
+        resolved, hidden_depth, opaque = resolver.resolve_details(parameter.base_type)
+        pointer_depth = parameter.pointer_depth + hidden_depth
+        parameters.append(replace(
+            parameter,
+            base_type=resolved or parameter.base_type,
+            is_pointer=pointer_depth > 0,
+            pointer_depth=pointer_depth,
+            is_struct_like=resolved is not None,
+            is_opaque_handle=opaque,
+        ))
+    return_struct, hidden_depth, opaque = resolver.resolve_details(
+        function.return_base_type
+    )
+    function = replace(
+        function,
+        parameters=tuple(parameters),
+        return_base_type=return_struct or function.return_base_type,
+        return_pointer_depth=function.return_pointer_depth + hidden_depth,
+        return_is_struct_like=return_struct is not None,
+        return_is_opaque_handle=opaque,
+    )
     return replace(function, access_hints=_access_hints(function))
 
 
@@ -625,6 +711,7 @@ def write_functions_json(result: ParseResult, path: Path, *, project: Path | Non
         "schema_version": FUNCTIONS_SCHEMA_VERSION,
         "files": list(result.files),
         "structs": [info.to_dict() for info in result.structs],
+        "opaque_handles": [handle.to_dict() for handle in result.opaque_handles],
         "functions": [function.to_dict() for function in result.functions],
         "warnings": list(result.warnings),
     }

@@ -219,6 +219,34 @@ class Stage1Tests(unittest.TestCase):
 
         self.assertEqual(result.documents[0].signature, expected)
 
+    def test_calling_convention_macro_signature_formatting_is_accepted(self):
+        responses = self.responses()
+        response = json.loads(responses[0])
+        expected = (
+            "enum XML_Status XMLCALL XML_Parse(XML_Parser parser, "
+            "const char *s, int len, int isFinal);"
+        )
+        response["signature"] = expected.removesuffix(";")
+        function_id = self.triplet.functions[0].function_id
+        functions_document = json.loads(json.dumps(self.functions_document))
+        for function in functions_document["functions"]:
+            if function["id"] == function_id:
+                function["name"] = self.triplet.functions[0].function
+                function["signature"] = expected
+                break
+        responses[0] = json.dumps(response)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            functions_path = root / "functions.json"
+            functions_path.write_text(json.dumps(functions_document), encoding="utf-8")
+            result = Stage1Generator(MockLLM(responses)).run(
+                self.triplet,
+                functions_json=functions_path,
+                artifacts=root / "artifacts",
+            )
+
+        self.assertEqual(result.documents[0].signature, expected)
+
     def test_semantically_different_signature_is_rejected(self):
         response = json.loads(self.responses()[0])
         response["signature"] = response["signature"].replace(

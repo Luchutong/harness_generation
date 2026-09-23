@@ -65,6 +65,10 @@ def _render_svg(output: Path) -> None:
 def _print_summary(result) -> None:
     print(f"Parsed functions: {len(result.parsed.functions)}")
     print(f"Struct types: {len(result.parsed.structs)}")
+    if result.usage is not None:
+        print(f"Usage traces: {len(result.usage.traces)}")
+        print(f"Usage patterns: {len(result.usage.patterns)}")
+        print(f"Usage semantic reviews: {len(result.usage.semantic_reviews)}")
     for label in ("ISF", "PRF", "HPF"):
         print(f"\n{label}:")
         for annotation in result.annotations:

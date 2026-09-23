@@ -25,7 +25,14 @@ python -m sfg_builder \
   --model deepseek-v4-flash
 ```
 
-LLM 模式只发送单个函数的 signature、body、目标参数、AST hints 和直接相关的 struct 定义，不发送整个项目。stream 参数使用 `direct`、`yes_no`、`multiple_choice` 三个不同 Prompt；固定至少两票为 byte stream 才标记 ISF。单个请求超时、异常或非法 JSON 会记录 error decision，并按 unknown/false 保守降级，不中止其他函数。
+LLM 模式的角色与方向判断只发送单个函数的 signature、body、目标参数、AST hints
+和直接相关的 struct 定义，不发送整个项目。usage review 只发送同一资源的一小批
+已抽取模式及其中函数的 signature/documentation，不发送无关源码。stream 参数使用
+`direct`、`yes_no`、`multiple_choice` 三个不同 Prompt；固定至少两票为 byte stream
+才标记 ISF。单个请求超时、异常或非法 JSON 会记录 error decision，并按
+unknown/false 或原始静态 usage 保守降级，不中止其他函数。usage review 的批请求
+失败时递归拆分；单模式再重试一次，仍失败才使用静态模式。每次尝试都保存在
+`semantic_reviews`，便于区分模型判断与服务波动。
 
 `--render` 在系统存在 Graphviz `dot` 时额外生成 `sfg.svg`。Graphviz 不是 Python 依赖，渲染失败不影响已经写出的 JSON 和 DOT。
 
@@ -38,7 +45,7 @@ LLM 模式只发送单个函数的 signature、body、目标参数、AST hints �
   → candidates.json
   → annotations.json
   → flows.json
-  → sfg.json + sfg.dot
+  → sfg.json + sfg.dot + ownership.json + usage_patterns.json
 ```
 
 - `functions.json`：扫描文件、typedef/struct、函数 metadata、body 和 AST field read/write hints。
@@ -47,6 +54,9 @@ LLM 模式只发送单个函数的 signature、body、目标参数、AST hints �
 - `flows.json`：每个相关函数的 input/output structs、源码位置、复杂流标记和 warning。
 - `sfg.json`：唯一 struct 节点、`(null)` 节点、函数边以及完整 FunctionFlow。
 - `sfg.dot`：同一张图的 Graphviz 表示。
+- `ownership.json`：保守静态推断得到的资源 producer/cleanup 关系。
+- `usage_patterns.json`：项目内 tests、examples 与 production callers 的调用轨迹、
+  同变量生命周期模式、路径条件、支持度，以及受约束的 LLM review/merge 记录。
 
 ## 静态与语义边界
 

@@ -15,6 +15,7 @@ EXPECTED_ARTIFACTS = {
     "sfg.json",
     "sfg.dot",
     "ownership.json",
+    "usage_patterns.json",
 }
 
 

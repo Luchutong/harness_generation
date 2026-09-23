@@ -37,7 +37,7 @@ class TripletCLITests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         document = json.loads((self.artifacts / "triplets.json").read_text())
-        self.assertEqual(document["schema_version"], 4)
+        self.assertEqual(document["schema_version"], 5)
         self.assertEqual(len(document["triplets"]), 1)
         triplet = document["triplets"][0]
         self.assertTrue(triplet["id"].startswith("ft_parser_from_memory_"))
@@ -88,6 +88,36 @@ class TripletCLITests(unittest.TestCase):
         item = self.artifacts / "triplets" / f"{self._triplet_id()}.json"
         self.assertTrue(item.is_file())
         self.assertEqual(json.loads(item.read_text())["triplet"]["id"], self._triplet_id())
+
+    def test_rank_writes_auditable_budgeted_selection_manifest(self):
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(main([
+                "triplets", "--artifacts", str(self.artifacts)
+            ]), 0)
+        stdout = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
+            code = main([
+                "triplets", "rank", "--artifacts", str(self.artifacts),
+                "--max-ft", "1", "--max-calls", "20",
+            ])
+        self.assertEqual(code, 0)
+        document = json.loads(
+            (self.artifacts / "ft_selection.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(document["schema_version"], 2)
+        self.assertEqual(document["policy_version"], "ft-priority-v3")
+        self.assertEqual(document["summary"]["selected_count"], 1)
+        self.assertEqual(
+            document["selection"][0]["triplet_id"], self._triplet_id()
+        )
+        self.assertEqual(
+            {item["name"] for item in document["ranking"][0]["metrics"]},
+            {
+                "input_evidence", "structural_confidence",
+                "structural_opportunity", "harness_readiness", "usage_support",
+            },
+        )
+        self.assertIn("estimated_calls=", stdout.getvalue())
 
     def test_statistics_count_memberships_and_multi_role_functions(self):
         annotations = (

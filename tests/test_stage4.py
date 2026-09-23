@@ -713,6 +713,178 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
                     artifacts=Path(temporary),
                 )
 
+    def test_out_parameter_ownership_binds_producer_and_cleanup_arguments(self):
+        relation = TripletOwnershipRelation(
+            id="own_out_parser",
+            producer_function_id=self.triplet.isf.function_id,
+            producer_function=self.triplet.isf.function,
+            resource_type="Parser",
+            cleanup_function_id="src/parser.c:1:parser_free",
+            cleanup_function="parser_free",
+            cleanup_argument="address_of_return_value",
+            consumers=("parser_next", "node_process"),
+            nullable=False,
+            evidence=("tests/parser_test.c:8",),
+            confidence=0.9,
+            source="usage_mining",
+            producer_binding="out_parameter",
+            producer_argument_index=0,
+            lifecycle_kind="owned_resource",
+            support_total=2,
+            support_by_source={"test": 2},
+            usage_pattern_id="up_out_parser",
+        )
+        triplet = replace(self.triplet, ownership_relations=(relation,))
+        plan = json.loads(self.harness_plan())
+        plan["cleanup_sequence"][0].update({
+            "relation_id": relation.id,
+            "producer_function": relation.producer_function,
+            "resource_type": relation.resource_type,
+            "producer_binding": {"kind": "out_parameter", "identifier": "parser"},
+            "arguments": ["&parser"],
+            "after": ["parser_from_memory", "parser_next", "node_process"],
+        })
+        parsed = parse_harness_plan(
+            json.dumps(plan), triplet=triplet,
+            isf_metadata=json.loads(
+                (self.phase1_artifacts / "functions.json").read_text()
+            )["functions"][0],
+        )
+        _validate_ownership_calls(
+            _analyze_cpp(self.harness_code()).calls, triplet, parsed
+        )
+
+    def test_error_path_cleanup_requires_a_real_code_guard(self):
+        relation = TripletOwnershipRelation(
+            id="own_error_parser",
+            producer_function_id=self.triplet.isf.function_id,
+            producer_function=self.triplet.isf.function,
+            resource_type="Parser",
+            cleanup_function_id="src/parser.c:1:parser_free",
+            cleanup_function="parser_free",
+            cleanup_argument="address_of_return_value",
+            consumers=("parser_next", "node_process"),
+            nullable=False,
+            evidence=("src/client.c:20",), confidence=0.9,
+            source="usage_mining", producer_binding="out_parameter",
+            producer_argument_index=0, lifecycle_kind="owned_resource",
+            conditions=("rc != 0",), path_kind="error", support_total=1,
+            support_by_source={"production": 1}, usage_pattern_id="up_error_parser",
+        )
+        triplet = replace(self.triplet, ownership_relations=(relation,))
+        plan_value = json.loads(self.harness_plan())
+        plan_value["cleanup_sequence"][0].update({
+            "relation_id": relation.id, "producer_function": relation.producer_function,
+            "resource_type": relation.resource_type,
+            "producer_binding": {"kind": "out_parameter", "identifier": "parser"},
+            "arguments": ["&parser"],
+            "after": ["parser_from_memory", "parser_next", "node_process"],
+            "conditions": ["status != 0"],
+        })
+        parsed = parse_harness_plan(
+            json.dumps(plan_value), triplet=triplet,
+            isf_metadata=json.loads(
+                (self.phase1_artifacts / "functions.json").read_text()
+            )["functions"][0],
+        )
+        unguarded = self.harness_code()
+        with self.assertRaisesRegex(Stage4Error, "error-path cleanup parser_free lacks a guard"):
+            _validate_ownership_calls(_analyze_cpp(unguarded).calls, triplet, parsed)
+        guarded = unguarded.replace(
+            "    parser_free(&parser);",
+            "    if (size > 1) { parser_free(&parser); }",
+        )
+        _validate_ownership_calls(_analyze_cpp(guarded).calls, triplet, parsed)
+
+    def test_reference_count_relation_binds_existing_argument(self):
+        relation = TripletOwnershipRelation(
+            id="own_ref_parser",
+            producer_function_id="src/parser.c:13:parser_next",
+            producer_function="parser_next",
+            resource_type="Parser",
+            cleanup_function_id="src/parser.c:1:parser_free",
+            cleanup_function="parser_free",
+            cleanup_argument="address_of_return_value",
+            consumers=("node_process",), nullable=False,
+            evidence=("src/client.c:11",), confidence=0.9,
+            source="usage_mining", producer_binding="existing_argument",
+            producer_argument_index=0, lifecycle_kind="reference_count",
+            support_total=1, support_by_source={"production": 1},
+            usage_pattern_id="up_ref_parser",
+        )
+        triplet = replace(self.triplet, ownership_relations=(relation,))
+        plan_value = json.loads(self.harness_plan())
+        plan_value["cleanup_sequence"][0].update({
+            "relation_id": relation.id, "producer_function": "parser_next",
+            "resource_type": "Parser",
+            "producer_binding": {"kind": "existing_argument", "identifier": "parser"},
+            "arguments": ["&parser"],
+            "after": ["parser_next", "node_process"],
+        })
+        parsed = parse_harness_plan(
+            json.dumps(plan_value), triplet=triplet,
+            isf_metadata=json.loads(
+                (self.phase1_artifacts / "functions.json").read_text()
+            )["functions"][0],
+        )
+        _validate_ownership_calls(
+            _analyze_cpp(self.harness_code()).calls, triplet, parsed
+        )
+
+    def test_observed_sequence_preserves_repeated_api_calls_in_plan_and_code(self):
+        relation = TripletOwnershipRelation(
+            id="own_repeated_parse",
+            producer_function_id=self.triplet.isf.function_id,
+            producer_function=self.triplet.isf.function,
+            resource_type="Parser",
+            cleanup_function_id="src/parser.c:1:parser_free",
+            cleanup_function="parser_free",
+            cleanup_argument="address_of_return_value",
+            consumers=("parser_next", "node_process"), nullable=False,
+            evidence=("tests/repeated.c:8",), confidence=0.9,
+            source="usage_mining+llm", producer_binding="out_parameter",
+            producer_argument_index=0, lifecycle_kind="owned_resource",
+            support_total=2, support_by_source={"test": 2},
+            usage_pattern_id="usg_repeated",
+            observed_sequence=(
+                "parser_from_memory", "parser_next", "parser_next",
+                "node_process", "parser_free",
+            ),
+        )
+        triplet = replace(self.triplet, ownership_relations=(relation,))
+        plan_value = json.loads(self.harness_plan())
+        repeated = dict(plan_value["call_sequence"][1])
+        repeated["purpose"] = "read a second node"
+        plan_value["call_sequence"].insert(2, repeated)
+        plan_value["cleanup_sequence"][0].update({
+            "relation_id": relation.id,
+            "producer_function": relation.producer_function,
+            "resource_type": relation.resource_type,
+            "producer_binding": {"kind": "out_parameter", "identifier": "parser"},
+            "arguments": ["&parser"],
+            "after": ["parser_from_memory", "parser_next", "node_process"],
+        })
+        metadata = json.loads(
+            (self.phase1_artifacts / "functions.json").read_text()
+        )["functions"][0]
+        parsed = parse_harness_plan(
+            json.dumps(plan_value), triplet=triplet, isf_metadata=metadata
+        )
+        code = self.harness_code().replace(
+            "    Node node = parser_next(&parser);",
+            "    Node node = parser_next(&parser);\n"
+            "    Node node2 = parser_next(&parser);\n"
+            "    (void)node2;",
+        )
+        _validate_ownership_calls(_analyze_cpp(code).calls, triplet, parsed)
+
+        missing_repeat = json.loads(json.dumps(plan_value))
+        del missing_repeat["call_sequence"][2]
+        with self.assertRaisesRegex(Stage4Error, "preserve observed usage sequence"):
+            parse_harness_plan(
+                json.dumps(missing_repeat), triplet=triplet, isf_metadata=metadata
+            )
+
     def test_stage4_allows_multiple_ownership_relations_with_same_cleanup(self):
         first = TripletOwnershipRelation(
             id="own_parser_from_memory",
