@@ -118,6 +118,20 @@ def test_support_is_aggregated_by_test_example_and_production_callers(tmp_path):
     assert loaded[0]["support_total"] == 3
 
 
+def test_terminal_void_consumer_is_not_inferred_as_cleanup():
+    terminal_consumer = function(
+        "ParserFinish", parameters=(parameter("parser", "Parser"),),
+    )
+    caller = function(
+        "terminal_consumer", file="tests/terminal.c",
+        body="{ Parser p = ParserCreate(); ParserParse(p); ParserFinish(p); }",
+    )
+    patterns = mine_usage_patterns(
+        (*lifecycle_api()[:2], terminal_consumer, caller)
+    ).patterns
+    assert patterns == ()
+
+
 def test_same_variable_dataflow_does_not_join_unrelated_handles():
     caller = function(
         "mixed", file="tests/mixed.c",

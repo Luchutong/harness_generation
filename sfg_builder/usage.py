@@ -339,7 +339,7 @@ def _patterns_from_trace(
             for cleanup_offset, cleanup_call, cleanup_arg in _cleanup_candidates(later, known):
                 preceding = [
                     item for item in later[:cleanup_offset]
-                    if not _is_cleanup_call(item[0], known, terminal=False)
+                    if not _is_cleanup_call(item[0], known)
                 ]
                 consumers = tuple(item.function for item, _ in preceding)
                 consumer_ids = tuple(item.function_id for item, _ in preceding)
@@ -374,7 +374,7 @@ def _patterns_from_trace(
                     continue
                 preceding = [
                     item for item in later[:cleanup_offset]
-                    if not _is_cleanup_call(item[0], known, terminal=False)
+                    if not _is_cleanup_call(item[0], known)
                 ]
                 producer_info = known[call.function_id]
                 resource = (producer_info.parameters[producer_arg].base_type
@@ -444,17 +444,17 @@ def _cleanup_candidates(
 ) -> list[tuple[int, UsageCall, int]]:
     result = []
     for offset, (call, arg_index) in enumerate(calls):
-        if _is_cleanup_call(call, known, terminal=(offset == len(calls) - 1)):
+        if _is_cleanup_call(call, known):
             result.append((offset, call, arg_index))
     return result
 
 
 def _is_cleanup_call(
-    call: UsageCall, known: Mapping[str, FunctionInfo], *, terminal: bool
+    call: UsageCall, known: Mapping[str, FunctionInfo]
 ) -> bool:
     function = known[call.function_id]
     return (_CLEANUP_RE.search(call.function) is not None
-            or (terminal and function.return_base_type == "void"))
+            and function.return_base_type == "void")
 
 
 def _resolve_callees(

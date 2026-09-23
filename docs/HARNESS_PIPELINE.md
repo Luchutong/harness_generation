@@ -296,9 +296,9 @@ artifacts/<project>/
             └── crashes/
 ```
 
-`triplets.json` 是 canonical FT output；当前 schema v4 包含 bypass semantics 与
-ownership relations，并继续读取旧 schema。`triplets/<ft_id>.json` 是通过
-`--individual` 请求的可选 inspection artifact。所有新增目录都叠加在 Phase 1
+`triplets.json` 是 canonical FT output；当前 schema v5 包含 bypass semantics、ownership
+relations 和 usage-lifecycle evidence，并继续读取 schema v1-v4。`triplets/<ft_id>.json`
+是通过 `--individual` 请求的可选 inspection artifact。所有新增目录都叠加在 Phase 1
 输出之上，不覆盖 SFG pipeline 的源 artifact。
 
 ## CLI
@@ -418,14 +418,14 @@ probe 确认 clang、ar、libFuzzer、ASan、UBSan 可用时，测试会执行�
 
 ## Schema、兼容性与已知限制
 
-- 新写入的 `functions.json` 使用 schema v2：函数 `file` 始终相对于 target project
+- 新写入的 `functions.json` 使用 schema v3：函数 `file` 始终相对于 target project
   root，`project` 是相对于 artifact directory 的 locator，并带有
-  `source_path_base="project"`。`SourcePathResolver` 同时支持 v1 absolute project
-  root 和 v2 relative locator；移动 artifact 而不保留其相对目录关系时，可用
+  `source_path_base="project"`；同时可包含 `opaque_handles` 及 opaque handle 生命周期字段。
+  `SourcePathResolver` 同时支持 v1/v2/v3；移动 artifact 而不保留其相对目录关系时，可用
   generation CLI 的 `--project-root` 显式覆盖。
-- 新写入的 `triplets.json` 使用 schema v2 和内容寻址 FT ID；loader 继续接受 v1。
-  旧 `ft_0001` 目录不会自动删除或迁移。重新提取后应使用 canonical
-  `triplets.json` 中的新 ID；旧 pipeline state 仍保留供人工审计。
+- 新写入的 `triplets.json` 使用 schema v5 和内容寻址 FT ID；loader 继续接受 schema v1-v4。
+  旧 `ft_0001` 目录不会自动删除或迁移。重新提取后应使用 canonical `triplets.json` 中的
+  新 ID；旧 pipeline state 仍保留供人工审计。
 - simple 的 `parser_from_memory` 同时标为 ISF 和 HPF。这是合法 multi-role，但会让
   HPF 统计包含 ISF anchor；消费者不能假设角色计数互斥。
 - Stage 3/4 的每次 LLM invocation 在校验前即保存独立 attempt。Stage 4 attempt
@@ -594,9 +594,9 @@ CLI capability。普通测试不调用真实 LLM。
 
 1. 真实模型输出具有随机性，仍可能触发 bounded rollback；本次完整运行中第一次 Stage 4
    漏掉 `<stdint.h>`，compiler failure 被加入重试 prompt，第二次 Stage 4 成功。
-2. Stage 1/2 的失败 response 目前不像 Stage 3/4 一样按 `attempt_NNN` 完整分目录保存，
+2. `Stage 1/2` 的失败 response 目前不像 Stage 3/4 一样按 `attempt_NNN` 完整分目录保存，
    深层回滚时仍可能覆盖同名 raw artifact。
 3. Crash stack 缺少源码 frame 时只能保留 raw stderr，不能可靠区分 harness/target。
 4. 当前 smoke 只证明闭环可执行，不代表 coverage 充分、长期稳定或不存在目标缺陷。
-5. `.env.example` 不应长期保存真实 API key；应迁移到被忽略的 `.env` 并保留占位符。
-6. 工作树包含大量未提交文件和既有删除；本次未自动 push，也未替用户清理或提交。
+5. `.env.example` 只保留占位符；真实 API key 必须放在被忽略的 `.env` 中，并在任何
+   共享或提交前撤销已暴露的旧凭据。
