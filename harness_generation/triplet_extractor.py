@@ -36,10 +36,24 @@ class FunctionTripletExtractionError(ValueError):
     """The loaded artifacts cannot produce a well-defined Function Triplet."""
 
 
+class _OversizedTriplet(Exception):
+    def __init__(self, function_count: int):
+        self.function_count = function_count
+
+
 class FunctionTripletExtractor:
     """Extract one FT per unique ISF anchor from an adapted multi-edge SFG."""
 
-    def extract(self, artifacts: SFGArtifacts) -> tuple[FunctionTriplet, ...]:
+    def __init__(self) -> None:
+        self.exclusions: list[dict[str, Any]] = []
+
+    def extract(
+        self, artifacts: SFGArtifacts, *, paper_minimal: bool = False,
+        max_functions_per_ft: int | None = None,
+    ) -> tuple[FunctionTriplet, ...]:
+        if max_functions_per_ft is not None and max_functions_per_ft < 1:
+            raise ValueError("max_functions_per_ft must be positive")
+        self.exclusions = []
         roles_by_function = _annotation_roles(artifacts.annotations)
         isf_ids = tuple(sorted(
             function_id for function_id, roles in roles_by_function.items()
@@ -47,25 +61,32 @@ class FunctionTripletExtractor:
         ))
         triplets = []
         for anchor_id in isf_ids:
-            patterns = _usage_patterns_for_anchor(artifacts, anchor_id)
-            if patterns:
-                triplets.extend(
-                    self._extract_one(
+            # SynapseFlow Algorithm 1 emits one FT per unique ISF. Usage-pattern
+            # variants are a repository extension, disabled for the paper
+            # reproduction path through this switch.
+            patterns = (() if paper_minimal else
+                        _usage_patterns_for_anchor(artifacts, anchor_id))
+            for pattern in patterns or (None,):
+                try:
+                    triplets.append(self._extract_one(
                         artifacts, anchor_id, isf_ids, roles_by_function,
                         usage_pattern=pattern,
-                    )
-                    for pattern in patterns
-                )
-            else:
-                triplets.append(self._extract_one(
-                    artifacts, anchor_id, isf_ids, roles_by_function
-                ))
+                        max_functions_per_ft=max_functions_per_ft,
+                    ))
+                except _OversizedTriplet as exc:
+                    self.exclusions.append({
+                        "anchor_function_id": anchor_id,
+                        "usage_pattern_id": pattern.get("id") if pattern else None,
+                        "reason": "too_many_functions",
+                        "function_count": exc.function_count,
+                    })
         return tuple(sorted(triplets, key=lambda triplet: triplet.id))
 
     def _extract_one(self, artifacts: SFGArtifacts, anchor_id: str,
                      isf_ids: tuple[str, ...],
                      roles_by_function: Mapping[str, tuple[str, ...]],
-                     usage_pattern: Mapping[str, Any] | None = None) -> FunctionTriplet:
+                     usage_pattern: Mapping[str, Any] | None = None,
+                     max_functions_per_ft: int | None = None) -> FunctionTriplet:
         new_graph, masked_edges, masked_isfs, removed_isfs = _role_aware_graph(
             artifacts.graph, anchor_id, frozenset(isf_ids), roles_by_function
         )
@@ -81,29 +102,38 @@ class FunctionTripletExtractor:
         input_structs = {edge.source for edge in anchor_edges}
         output_structs = {edge.target for edge in anchor_edges}
 
-        in_nodes = set(input_structs)
-        for node in sorted(input_structs):
-            in_nodes.update(_reachable_without_crossing(
-                new_graph, node, incoming=True, boundaries=opaque_boundary_nodes
-            ))
-        out_nodes = set(output_structs)
-        for node in sorted(output_structs):
-            out_nodes.update(_reachable_without_crossing(
-                new_graph, node, incoming=False, boundaries=opaque_boundary_nodes
-            ))
-        selected_nodes = in_nodes | out_nodes
-        selected_edges = tuple(
-            edge for edge in new_graph.edges
-            if edge.source in selected_nodes and edge.target in selected_nodes
-            and (
-                edge.function_id == anchor_id
-                or not ({edge.source, edge.target} & opaque_boundary_nodes)
+        if (
+            _is_null_source_producer(anchor_edges)
+            and _has_owned_return_lifecycle(artifacts, anchor_id)
+        ):
+            in_nodes = set(input_structs)
+            out_nodes = set(output_structs)
+            selected_nodes = in_nodes | out_nodes
+            selected_edges = anchor_edges
+        else:
+            in_nodes = set(input_structs)
+            for node in sorted(input_structs):
+                in_nodes.update(_reachable_without_crossing(
+                    new_graph, node, incoming=True, boundaries=opaque_boundary_nodes
+                ))
+            out_nodes = set(output_structs)
+            for node in sorted(output_structs):
+                out_nodes.update(_reachable_without_crossing(
+                    new_graph, node, incoming=False, boundaries=opaque_boundary_nodes
+                ))
+            selected_nodes = in_nodes | out_nodes
+            selected_edges = tuple(
+                edge for edge in new_graph.edges
+                if edge.source in selected_nodes and edge.target in selected_nodes
+                and (
+                    edge.function_id == anchor_id
+                    or not ({edge.source, edge.target} & opaque_boundary_nodes)
+                )
+            ) + tuple(
+                edge for edge in masked_edges
+                if edge.source in selected_nodes and edge.target in selected_nodes
+                and not ({edge.source, edge.target} & opaque_boundary_nodes)
             )
-        ) + tuple(
-            edge for edge in masked_edges
-            if edge.source in selected_nodes and edge.target in selected_nodes
-            and not ({edge.source, edge.target} & opaque_boundary_nodes)
-        )
 
         selected_roles: dict[str, set[str]] = {
             anchor_id: set(roles_by_function[anchor_id])
@@ -123,6 +153,10 @@ class FunctionTripletExtractor:
             selected_roles.setdefault(function_id, set()).update(roles)
         selected_edges = _merge_sfg_edges(selected_edges, closure_edges)
         selected_nodes.update(closure_structures)
+
+        if (max_functions_per_ft is not None
+                and len(selected_roles) > max_functions_per_ft):
+            raise _OversizedTriplet(len(selected_roles))
 
         references = {
             function_id: _function_reference(
@@ -242,6 +276,30 @@ def _delegating_alternatives(
     return sorted(groups, key=lambda item: item["functions"])
 
 
+def _is_null_source_producer(edges: tuple[SFGEdge, ...]) -> bool:
+    """Return true for entry APIs that create a resource from scalar/byte input.
+
+    A ``(null) -> Resource`` edge represents a producer, not evidence that every
+    other producer or consumer of ``Resource`` is mandatory for the same FT.
+    Lifecycle closure can still add the matching cleanup edge.
+    """
+
+    return bool(edges) and any(
+        is_null_node(edge.source) and not is_null_node(edge.target)
+        for edge in edges
+    )
+
+
+def _has_owned_return_lifecycle(
+    artifacts: SFGArtifacts, function_id: str
+) -> bool:
+    return any(
+        isinstance(relation, Mapping)
+        and _relation_for_selected_producer(artifacts, relation, {function_id}) is not None
+        for relation in artifacts.ownership
+    )
+
+
 def _body_call_sites(body: str) -> tuple[tuple[str, bool], ...]:
     """Return calls and whether each is a direct terminal action."""
     source = ("void __ft_wrapper(void) " + body).encode("utf-8")
@@ -298,8 +356,14 @@ def _authority_summary(
     }
 
 
-def extract_function_triplets(artifacts: SFGArtifacts) -> tuple[FunctionTriplet, ...]:
-    return FunctionTripletExtractor().extract(artifacts)
+def extract_function_triplets(
+    artifacts: SFGArtifacts, *, paper_minimal: bool = False,
+    max_functions_per_ft: int | None = None,
+) -> tuple[FunctionTriplet, ...]:
+    return FunctionTripletExtractor().extract(
+        artifacts, paper_minimal=paper_minimal,
+        max_functions_per_ft=max_functions_per_ft,
+    )
 
 
 def _stable_anchor_id(
@@ -766,6 +830,7 @@ def _opaque_lifecycle_closure(
     tuple[Mapping[str, Any], ...],
 ]:
     """Close selected opaque-handle consumers over one create/free pair per type."""
+    selected_ids = set(selected_function_ids)
     required: dict[str, set[str]] = {}
     for function_id in selected_function_ids:
         function = artifacts.functions_by_id.get(function_id, {})
@@ -780,22 +845,32 @@ def _opaque_lifecycle_closure(
                 and resource_type
             ):
                 required.setdefault(resource_type, set()).add(function_id)
-    if not required:
-        return {}, (), (), ()
 
     relations_by_type: dict[str, list[Mapping[str, Any]]] = {}
     for relation in artifacts.ownership:
         if not isinstance(relation, Mapping):
             continue
+        relation = _relation_for_selected_producer(
+            artifacts, relation, selected_ids
+        ) or relation
         resource_type = relation.get("resource_type")
         confidence = relation.get("confidence")
+        producer_id = relation.get("producer_function_id")
         if (
-            resource_type in required
+            isinstance(resource_type, str)
+            and (
+                resource_type in required
+                or producer_id in selected_ids
+            )
             and isinstance(confidence, (int, float))
             and not isinstance(confidence, bool)
             and float(confidence) >= 0.80
         ):
             relations_by_type.setdefault(str(resource_type), []).append(relation)
+            if producer_id in selected_ids:
+                required.setdefault(str(resource_type), set()).add(str(producer_id))
+    if not required:
+        return {}, (), (), ()
 
     roles: dict[str, tuple[str, ...]] = {}
     edges: list[SFGEdge] = []
@@ -806,6 +881,11 @@ def _opaque_lifecycle_closure(
         candidates = relations_by_type.get(resource_type, [])
         if not candidates:
             continue
+        preferred = [
+            relation for relation in candidates
+            if relation.get("producer_function_id") in selected_ids
+        ]
+        candidates = preferred or candidates
         candidates.sort(key=lambda relation: _lifecycle_relation_rank(artifacts, relation))
         relation = candidates[0]
         producer_id = relation.get("producer_function_id")
@@ -887,6 +967,50 @@ def _lifecycle_relation_rank(
     )
 
 
+def _relation_for_selected_producer(
+    artifacts: SFGArtifacts,
+    relation: Mapping[str, Any],
+    selected_ids: set[str],
+) -> Mapping[str, Any] | None:
+    producer_id = relation.get("producer_function_id")
+    if producer_id in selected_ids:
+        return relation
+    producer = artifacts.functions_by_id.get(producer_id, {})
+    if not producer:
+        return None
+    for selected_id in sorted(selected_ids):
+        selected = artifacts.functions_by_id.get(selected_id, {})
+        if _same_api_shape(selected, producer):
+            return {**relation, "producer_function_id": selected_id}
+    return None
+
+
+def _same_api_shape(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    if not left or not right or left.get("name") != right.get("name"):
+        return False
+    if (
+        left.get("return_base_type") != right.get("return_base_type")
+        or left.get("return_pointer_depth") != right.get("return_pointer_depth")
+    ):
+        return False
+    left_parameters = left.get("parameters", [])
+    right_parameters = right.get("parameters", [])
+    if not isinstance(left_parameters, list) or not isinstance(right_parameters, list):
+        return False
+    if len(left_parameters) != len(right_parameters):
+        return False
+    for left_parameter, right_parameter in zip(left_parameters, right_parameters):
+        if not isinstance(left_parameter, Mapping) or not isinstance(right_parameter, Mapping):
+            return False
+        if (
+            left_parameter.get("base_type") != right_parameter.get("base_type")
+            or left_parameter.get("pointer_depth") != right_parameter.get("pointer_depth")
+            or bool(left_parameter.get("is_const")) != bool(right_parameter.get("is_const"))
+        ):
+            return False
+    return True
+
+
 def _lifecycle_edge(
     artifacts: SFGArtifacts,
     function_id: str,
@@ -925,12 +1049,21 @@ def _merge_sfg_edges(
     by_key: dict[tuple[Any, ...], SFGEdge] = {}
     for edge in (*original, *additions):
         key = (
-            edge.function_id, edge.source, edge.target, edge.labels,
-            edge.file, edge.line,
+            edge.function_id, edge.source, edge.target, edge.file, edge.line,
         )
         previous = by_key.get(key)
-        if previous is None or (previous.inferred and not edge.inferred):
+        if previous is None:
             by_key[key] = edge
+        else:
+            by_key[key] = replace(
+                previous if not previous.inferred else edge,
+                labels=_canonical_roles((*previous.labels, *edge.labels)),
+                inferred=previous.inferred and edge.inferred,
+                inference_reason=(
+                    previous.inference_reason if previous.inference_reason == edge.inference_reason
+                    else previous.inference_reason or edge.inference_reason
+                ),
+            )
     return tuple(sorted(
         by_key.values(),
         key=lambda edge: (

@@ -7,6 +7,26 @@ from harness_generation.generation_context import project_type_context
 
 
 class GenerationContextTests(unittest.TestCase):
+    def test_api_corpus_json_is_loaded_next_to_functions_artifact(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            functions_path = Path(temporary) / "functions.json"
+            functions_path.write_text("{}", encoding="utf-8")
+            (Path(temporary) / "api_corpus.json").write_text(json.dumps({
+                "items": [
+                    {
+                        "title": "xmlReadMemory lifecycle",
+                        "text": "xmlReadMemory returns xmlDocPtr; release it with xmlFreeDoc.",
+                    }
+                ]
+            }), encoding="utf-8")
+            context = project_type_context(
+                {"schema_version": 3, "project": "", "files": [], "structs": []},
+                functions_path=functions_path,
+            )
+
+        self.assertEqual(context["api_corpus"][0]["title"], "xmlReadMemory lifecycle")
+        self.assertIn("xmlFreeDoc", context["api_corpus"][0]["text"])
+
     def test_headers_follow_selected_source_include_closure(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "project"
@@ -197,6 +217,69 @@ class GenerationContextTests(unittest.TestCase):
             context["portable_abi_declarations"][0]["declaration"],
             'extern "C" int md_parse(const char * text, unsigned size, '
             "const MD_PARSER * parser, void * userdata);",
+        )
+
+    def test_safe_headers_do_not_get_erased_portable_callback_abi(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "project"
+            root.mkdir()
+            (root / "entry.c").write_text(
+                '#include "api.h"\n'
+                "int parse_with_cb(Callback cb) { return cb ? cb(1) : 0; }\n"
+                "static int local_helper(int value) { return value; }\n",
+                encoding="utf-8",
+            )
+            (root / "api.h").write_text(
+                "typedef int (*Callback)(int value);\n"
+                "int parse_with_cb(Callback cb);\n",
+                encoding="utf-8",
+            )
+            functions_path = Path(temporary) / "functions.json"
+            document = {
+                "schema_version": 3,
+                "project": "project",
+                "files": ["entry.c", "api.h"],
+                "functions": [],
+                "structs": [],
+            }
+            functions_path.write_text(json.dumps(document), encoding="utf-8")
+
+            context = project_type_context(
+                document,
+                functions_path=functions_path,
+                source_files=("entry.c",),
+                functions=(
+                    {
+                        "name": "parse_with_cb",
+                        "signature": "int parse_with_cb(Callback cb);",
+                        "storage": [],
+                        "parameters": [{
+                            "name": "cb",
+                            "type": "Callback",
+                            "base_type": "Callback",
+                            "pointer_depth": 0,
+                            "is_const": False,
+                        }],
+                    },
+                    {
+                        "name": "local_helper",
+                        "signature": "int local_helper(int value);",
+                        "storage": ["static"],
+                        "parameters": [{
+                            "name": "value",
+                            "type": "int",
+                            "base_type": "int",
+                            "pointer_depth": 0,
+                            "is_const": False,
+                        }],
+                    },
+                ),
+            )
+
+        self.assertEqual(context["cplusplus_unsafe_headers"], [])
+        self.assertEqual(
+            [item["function"] for item in context["portable_abi_declarations"]],
+            ["local_helper"],
         )
 
     def test_callback_typedefs_are_read_from_the_include_closure(self):

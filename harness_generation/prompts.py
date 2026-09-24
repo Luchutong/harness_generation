@@ -81,7 +81,7 @@ class PromptTemplate:
 
 STAGE1_FUNCTION_DOC = PromptTemplate(
     name="stage1_function_doc",
-    version="stage1-function-doc-v2",
+    version="stage1-function-doc-v3",
     template="""You are documenting a C function for a later harness-generation pass.
 Use only the supplied source and context. Do not redefine the function or invent
 functions, types, APIs, or semantics that cannot be supported by the source.
@@ -89,6 +89,11 @@ Inspect referenced struct definitions. If a parameter struct contains callback
 fields, explain which callbacks the API requires and initialize them in the
 example with concrete safe functions. A comment saying callbacks should be set
 is not a runnable example. Keep documented optional callbacks null when useful.
+The later validation build can expose file-local FT functions, so do not avoid a
+direct call merely because the supplied source marks the function static.
+example_code must include a direct call expression to the documented function
+name, such as target_function(...), using the exact function name being
+documented.
 
 Function signature:
 {function_signature}
@@ -173,7 +178,7 @@ Previous validation feedback (empty on the first attempt):
 
 STAGE4_HARNESS_TRANSFORM = PromptTemplate(
     name="stage4_harness_transform",
-    version="stage4-harness-transform-v9",
+    version="stage4-harness-transform-v10",
     template="""Implement the supplied HarnessPlan as a C++ libFuzzer harness.
 The final harness is a C++ translation unit, but it fuzzes the C target through
 C-compatible declarations. It must include <stddef.h> and <stdint.h> explicitly
@@ -197,8 +202,10 @@ If project_context lists cplusplus_unsafe_headers, those headers are evidence
 only and must not be included by the final C++ harness. Use the supplied
 portable_abi_declarations for FT functions whose public project headers are
 missing or unsafe in C++. When a portable ABI declaration maps a callback typedef
-to void*, pass nullptr unless the target contract explicitly requires callback
-behavior. When enum constants are available only from unsafe headers, use their
+to void*, define a local helper with the real typedef signature and pass it
+through the required ABI cast; do not replace FT callback parameters with
+nullptr just because the portable declaration says void*. When enum constants
+are available only from unsafe headers, use their
 documented integer value instead of including the unsafe header.
 When the ISF takes a callback table, read project_context.callback_tables and
 assign every field marked "required" a static function whose parameters and
@@ -208,12 +215,43 @@ marked "required" may stay null. When the ISF takes a parameter listed in
 project_context.callback_typedefs or in a declarations callback_parameters, pass
 either nullptr or a function matching that typedef exactly; a helper of a
 different arity is undefined behavior when the target calls through the typedef.
+For FT functions themselves, prefer a real matching callback over nullptr.
+This is mandatory for write/close/escape style callback parameters such as
+iowrite, ioclose, and escaping: define local helpers, store observable state in
+ioctx when applicable, and let fuzzer bytes choose helper behavior such as
+partial writes, close status, escaping output length, and conversion status.
+Do not model FT callback variation by selecting nullptr in a ternary or fallback;
+the callback argument itself must stay non-null, and fuzzer-controlled variation
+belongs inside the helper or its context.
+When an FT function accepts an encoder/encoding-handler pointer and the type is
+declared, build a non-null local encoder object instead of passing nullptr.
+Initialize its output conversion member with a matching helper when available,
+and derive at least one encoder behavior choice from the fuzzer input.
 
 Use only the supplied project functions plus necessary standard C/C++ library
 utilities. Emit only C++ source without Markdown fences. Do not use using
 namespace std. You may use straightforward C++ helpers such as std::array,
 std::vector, std::min/std::max, lambdas, and scoped local helpers when they make
-the input model clearer, but avoid complex classes or unrelated abstractions.
+the input model clearer, but do not use lambdas or function-object variables for
+operations called like functions because the static validator treats those calls
+as unknown APIs. Use ordinary local variables, direct expressions, loops, or
+named static helper functions instead. Avoid complex classes or unrelated
+abstractions.
+Do not call project APIs outside the Function Triplet unless they are explicitly
+listed as FT-scoped ownership cleanup or protocol helpers. Treat the functions
+named by HarnessPlan.call_sequence and cleanup_sequence as the ft_functions
+allowlist for project API calls. If a required struct type is publicly declared,
+construct a local instance and backing storage directly instead of calling non-FT
+allocators/free functions. For example, when an FT needs an xmlBuffer input and
+xmlBuffer is declared, initialize a local xmlBuffer plus a bounded xmlChar
+backing array; do not call xmlBufferCreate or xmlBufferFree unless those
+functions are part of the FT.
+Do not open, create, or close real files to satisfy FILE* or fd parameters.
+For FT functions whose purpose is to create an output buffer from FILE* or fd,
+use a guarded nullptr FILE* or invalid/sentinel fd value when no FT-provided
+producer exists; the structural obligation is the FT call itself, not successful
+OS file I/O. Do not call std::tmpfile, std::fclose, fopen, fclose, open, close,
+or similar helper I/O APIs.
 Pass the external data and size into the unique ISF according to its signature,
 retain downstream FT calls, initialize writable objects before use, and perform
 cleanup after processing. Ownership cleanup is permitted only for an exact
@@ -229,9 +267,12 @@ When a known target contract declares a grammar, construct bounded inputs from
 its start symbol and rules. Keep depth and output size bounded as specified by
 the HarnessPlan, and preserve fuzzer-controlled choices at grammar branches.
 When no protocol or known grammar contract is supplied, use raw byte/text
-passthrough. Do not invent a length prefix, magic, checksum, padding, or
-multi-frame framing. For explicit-length APIs, pass the fuzzer-controlled
-buffer and length directly, using casts only when declared types require them.
+passthrough plus an aggressive control prefix. Do not invent a length prefix,
+magic, checksum, padding, or multi-frame framing. Instead, consume a few leading
+bytes as branch selectors, small lengths, callback behavior flags, encoder
+choices, compression/status knobs, and API variant choices; use the remaining
+bytes as payload. For explicit-length APIs, pass fuzzer-controlled buffers and
+lengths directly, using casts only when declared types require them.
 
 HarnessPlan JSON:
 {harness_plan}
@@ -275,12 +316,23 @@ Previous validation feedback (empty on the first attempt):
 
 STAGE4_HARNESS_PLAN = PromptTemplate(
     name="stage4_harness_plan",
-    version="stage4-harness-plan-v9",
+    version="stage4-harness-plan-v11",
     template="""Create a structured HarnessPlan before any final C harness is
 written. Use the rough program, Function Triplet, and exact project declarations
 to decide state objects, fuzzer-input decoding, call order, data/size binding,
 required constraints, and cleanup. Do not output C source. Do not invent project
 APIs or redefine project types.
+The plan may use only project functions listed in ft_functions, FT-scoped
+ownership cleanup relations, and supplied protocol helpers. If setup needs a
+declared project struct, plan local stack/storage initialization rather than
+calling project allocators or frees outside ft_functions. For example, when an
+xmlBuffer input is needed and xmlBuffer is declared, use a local xmlBuffer and a
+bounded xmlChar backing array; do not plan xmlBufferCreate/xmlBufferFree unless
+they are listed in ft_functions.
+Do not plan real OS file creation or cleanup for FILE* or fd arguments. Use
+nullptr FILE* or invalid/sentinel fd values when no FT function produces the
+handle, and still call the relevant FT constructor under a guard. Never plan
+std::tmpfile, std::fclose, fopen, fclose, open, close, or similar helper I/O APIs.
 
 Exact FunctionTriplet identity:
 The HarnessPlan JSON field triplet_id MUST be exactly this string, byte-for-byte:
@@ -309,11 +361,21 @@ those names.{{"schema_version":1,"triplet_id":"{triplet_id}","entrypoint":"LLVMF
 "identifier":"..."}},"after":["..."],"conditions":["..."]}}],
 "constraints":["..."],"notes":["..."]}}
 
+cleanup_sequence is only for FT-scoped ownership_relations supplied below.
+If ownership_relations is empty, cleanup_sequence must be [] even when an HPF
+function semantically closes or releases a value. FT functions that carry HPF
+or cleanup-like behavior still belong in call_sequence exactly once to satisfy
+their structural step. Never duplicate an FT function in cleanup_sequence with
+an empty relation_id.
+
 Every listed structural step must be realized. A step with multiple functions
-contains proven alternatives, so call one of them. Separate steps are separate
-obligations even when they have the same source and target. When an
-ownership relation supplies observed_sequence, preserve its order and repeat a
-function exactly as many times as that sequence records; otherwise use it once.
+contains proven alternatives, so call one of them. Satisfying a step means
+calling a function it names, once: one call satisfies every step that names
+that function, even when those steps have different sources and targets, so
+never add a second call to answer a second step. The step count is not a call
+count. When an ownership relation supplies observed_sequence, preserve its
+order and repeat a function at most as many times as that sequence records;
+otherwise use it once.
 The unique ISF must appear in call_sequence and must use both fuzzer data and
 fuzzer size when the signature has a byte stream and length parameter. If a
 function is both PRF and HPF, keep it in call_sequence and mention cleanup
@@ -338,18 +400,34 @@ When a known target contract declares a grammar, select input_strategy.mode
 grammar start symbol in the strategy. The grammar may coexist with frame or
 sequence facts; preserve all supplied facts.
 When no protocol or known grammar contract is supplied, the plan must use raw
-byte/text passthrough:
+byte/text passthrough with an aggressive control prefix:
 do not invent a length prefix, magic, checksum, padding, or multi-frame framing.
-For explicit-length APIs, bind the fuzzer-controlled buffer and size directly.
+Instead, reserve a few leading bytes for branch selectors, small lengths,
+callback behavior flags, encoder choices, compression/status knobs, and API
+variant choices; bind the remaining bytes as content payload. The plan must not
+send the whole fuzzer input only as the same string argument to several write
+functions when the FT exposes callbacks, encoders, compression/status arguments,
+or alternative output-buffer constructors.
+For explicit-length APIs, bind fuzzer-controlled buffers and sizes directly.
 Read project_context.callback_tables. Every field marked "required" is called by
 the target through that table and must be given a concrete function of the
 declared signature, which must be listed as a constraint or a call argument.
 Fields not marked "required" may stay null. The table itself must never be
 passed zero-initialized and untouched.
 Read project_context.callback_typedefs and the callback_parameters of the
-portable ABI declarations. A parameter typed by one of those typedefs is either
-null or a function whose parameters and return type match the typedef exactly;
-never supply a helper of a different arity.
+portable ABI declarations. For FT functions, a parameter typed by one of those
+typedefs must use a concrete local function whose parameters and return type
+match the typedef exactly; use a cast only when the portable ABI declaration has
+erased the callback type to void*. This applies to write/close/escape style
+parameters such as iowrite, ioclose, and escaping. Null callbacks are acceptable
+only for callback table fields explicitly marked optional or for non-FT helper
+APIs whose source proves null disables an unrelated optional path.
+Do not use callback ? helper : nullptr patterns for FT callback parameters; use
+a non-null helper and let that helper inspect fuzzer-derived state.
+When a function has an encoder or encoding-handler pointer parameter and the
+type declaration is available, plan a non-null local encoder object. Initialize
+its output conversion member with a matching helper when the structure exposes
+one, and make at least one encoder behavior decision depend on fuzzer bytes.
 
 Rough program:
 {rough_code}
@@ -372,6 +450,10 @@ FT-scoped ownership relations (the only authority for external cleanup calls):
 
 Evidence-backed structural steps:
 {structural_steps}
+
+Coverage obligations, derived from the structural steps above (this is what the
+plan validator enforces, item by item):
+{coverage_obligations}
 
 Protocol contract, if supplied:
 {protocol_contract}
@@ -501,10 +583,117 @@ def stage3_rough_assembly(*, snippets: Any, structural_dependencies: Any,
     )
 
 
+def coverage_obligations(structural_steps: Any, ft_functions: Any) -> str:
+    """Render the step-by-step coverage checklist the plan validator enforces.
+
+    The validator (``stage4.py``) checks two separate things: every structural
+    step is satisfied by one of its own candidate functions, and every FT
+    function is invoked at least once.  A large FT can declare more steps than
+    functions -- ``xmlOutputBufferCreateBuffer`` carries both the
+    ``xmlBuffer -> xmlOutputBuffer`` and the
+    ``xmlCharEncodingHandler -> xmlOutputBuffer`` step -- so a plan built to
+    the step count over-calls and a plan built to the function count looks
+    short.  Spelling out both numbers, and which steps share a function, is
+    what keeps the two readings from being confused.
+    """
+
+    def _count(count: int, noun: str) -> str:
+        return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+    def _strings(value: Any) -> list[str]:
+        if not isinstance(value, (list, tuple)):
+            return []
+        return [name for name in value if isinstance(name, str)]
+
+    steps: list[tuple[str, str, list[str]]] = []
+    for step in structural_steps if isinstance(structural_steps, (list, tuple)) else ():
+        if not isinstance(step, Mapping):
+            continue
+        source = step.get("source")
+        target = step.get("target")
+        steps.append((
+            source if isinstance(source, str) else "?",
+            target if isinstance(target, str) else "?",
+            _strings(step.get("functions")),
+        ))
+    functions = sorted(set(_strings(ft_functions)))
+
+    lines = [
+        f"Structural steps declared: {len(steps)}. Distinct FT functions: "
+        f"{len(functions)}. These are two different numbers, and your plan must "
+        "be built from the functions, not from the steps.",
+        "",
+        "Structural steps (each must be satisfied: at least one function listed "
+        "for it appears in call_sequence or cleanup_sequence):",
+    ]
+    for index, (source, target, candidates) in enumerate(steps, start=1):
+        described = ", ".join(candidates) if candidates else "(no candidate function)"
+        lines.append(f"  {index}. {source} -> {target}: {described}")
+
+    claims: dict[str, list[int]] = {}
+    for index, (_, _, candidates) in enumerate(steps, start=1):
+        for name in candidates:
+            claims.setdefault(name, []).append(index)
+    shared = sorted(
+        (name, indexes) for name, indexes in claims.items() if len(indexes) > 1
+    )
+    lines.append("")
+    if shared:
+        lines.append(
+            "Functions claimed by more than one step -- one call each satisfies "
+            "all of them:"
+        )
+        lines.extend(
+            f"  - {name}: satisfies steps "
+            + ", ".join(str(index) for index in indexes)
+            for name, indexes in shared
+        )
+    else:
+        lines.append("No function is claimed by more than one step.")
+
+    uncovered = [name for name in functions
+                 if not any(name in candidates for _, _, candidates in steps)]
+    lines.append("")
+    if uncovered:
+        lines.append(
+            "Functions declared by no structural step (no step depends on them, "
+            "but every FT function must still be called):"
+        )
+        lines.extend(f"  - {name}" for name in uncovered)
+    else:
+        lines.append("Every FT function is claimed by at least one step above.")
+
+    lines.extend([
+        "",
+        "Invariants the validator checks after parsing your plan:",
+        f"  1. Every structural step above ({_count(len(steps), 'step')}) is "
+        "satisfied by at least one of its own candidate functions.",
+        f"  2. Every FT function ({_count(len(functions), 'function')}) appears at "
+        "least once across call_sequence and cleanup_sequence.",
+        "  3. No function appears more than once across call_sequence and "
+        "cleanup_sequence. The only exception is a function an ownership "
+        "relation's observed_sequence records more than once; repeat it at most "
+        "as many times as that sequence records.",
+        "",
+        "One call satisfies every step that names its function. Steps listing the "
+        "same function are one obligation realised by one call, never one call "
+        "each, and never a second call to balance the step count against the "
+        "function count.",
+    ])
+    if shared:
+        lines.append(
+            "A complete plan for this FT therefore invokes each of the "
+            f"{_count(len(functions), 'function')} once, not each of the "
+            f"{_count(len(steps), 'step')} once."
+        )
+    return "\n".join(lines)
+
+
 def stage4_harness_plan(*, triplet_id: Any, rough_code: Any, unique_isf: Any,
                         function_metadata: Any, bypass_semantics: Any = (),
                         ownership_relations: Any = (),
                         structural_steps: Any = (),
+                        ft_functions: Any = (),
                         project_context: Any = (),
                         protocol_contract: Any = None,
                         protocol_contract_bindings: Any = None,
@@ -522,6 +711,7 @@ def stage4_harness_plan(*, triplet_id: Any, rough_code: Any, unique_isf: Any,
         bypass_semantics=bypass_semantics,
         ownership_relations=ownership_relations,
         structural_steps=structural_steps,
+        coverage_obligations=coverage_obligations(structural_steps, ft_functions),
         project_context=project_context,
         protocol_contract=protocol_contract or {},
         protocol_contract_bindings=protocol_contract_bindings,

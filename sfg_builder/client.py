@@ -7,7 +7,7 @@ import json
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
-from .base import SemanticDecision, SemanticError
+from .base import SemanticBudgetExceeded, SemanticDecision, SemanticError
 from .models import AccessHint, FunctionInfo, ParameterInfo, StructInfo
 from .prompts import (DIRECTION_PROMPT_VERSION, ROLE_PROMPT_VERSION,
                       STREAM_PROMPT_VERSION, USAGE_REVIEW_PROMPT_VERSION,
@@ -20,14 +20,43 @@ OPERATIONS = {"process", "read", "transform", "init", "allocate", "cleanup", "fr
 DIRECTIONS = {"input", "output", "both", "unknown"}
 
 
+class BudgetedSemanticTransport:
+    """Count actual HTTP attempts, including retries from usage review."""
+
+    def __init__(self, transport: Callable[[dict[str, Any]], dict[str, Any]], limit: int,
+                 *, progress: Callable[[int, int], None] | None = None):
+        if limit < 1:
+            raise ValueError("semantic request limit must be positive")
+        self.transport = transport
+        self.limit = limit
+        self.calls = 0
+        self.progress = progress
+
+    def __call__(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.calls >= self.limit:
+            raise SemanticBudgetExceeded(
+                f"semantic request budget exhausted ({self.calls}/{self.limit}); "
+                "narrow --source-glob or raise --max-semantic-requests"
+            )
+        self.calls += 1
+        if self.progress is not None:
+            self.progress(self.calls, self.limit)
+        return self.transport(payload)
+
+
 class LLMSemanticAnalyzer:
     """Semantic provider whose transport is injected and whose schemas are validated."""
 
     semantic_backend = "llm"
+    semantic_source = "live"
 
-    def __init__(self, transport: Callable[[dict[str, Any]], dict[str, Any]], model: str):
+    def __init__(self, transport: Callable[[dict[str, Any]], dict[str, Any]], model: str,
+                 *, thinking: str | None = None):
+        if thinking not in (None, "enabled", "disabled"):
+            raise ValueError("thinking must be enabled, disabled, or null")
         self.transport = transport
         self.model = model
+        self.thinking = thinking
 
     def classify_stream_parameter(self, function: FunctionInfo, parameter: ParameterInfo,
                                   structs: tuple[StructInfo, ...], variant: str) -> SemanticDecision:
@@ -60,7 +89,7 @@ class LLMSemanticAnalyzer:
         prompt = direction_prompt(function, parameter, hint, structs)
         data, _response = self._request(prompt)
         if (data.get("parameter") != parameter.name
-                or data.get("struct_type") != parameter.base_type
+                or data.get("struct_type") not in {parameter.base_type, parameter.type.strip()}
                 or data.get("direction") not in DIRECTIONS
                 or not isinstance(data.get("reason"), str)
                 or "confidence" not in data):
@@ -118,8 +147,12 @@ class LLMSemanticAnalyzer:
             "temperature": 0,
             "max_tokens": max_tokens,
         }
+        if self.thinking is not None:
+            payload["thinking"] = {"type": self.thinking}
         try:
             response = self.transport(payload)
+        except SemanticBudgetExceeded:
+            raise
         except SemanticError:
             raise
         except Exception as exc:

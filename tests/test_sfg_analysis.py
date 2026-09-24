@@ -62,10 +62,10 @@ class AnnotationTests(unittest.TestCase):
             self.parsed.functions, self.candidates, self.parsed.structs)
         parse = next(item for item in annotations if item.function == "parser_from_memory")
         errors = [decision for decision in parse.decisions if decision.status == "error"]
-        self.assertEqual(len(errors), 5)
+        self.assertEqual(len(errors), 4)
         self.assertTrue(all("private" not in (decision.error or "") for decision in errors))
         self.assertFalse(parse.stream_parameters[0].is_byte_stream)
-        # Direction falls back to the AST write hint after the semantic call fails.
+        # The AST write hint resolves direction without a semantic request.
         self.assertEqual(parse.struct_directions[0].direction, "output")
 
     def test_two_valid_positive_votes_survive_one_failed_variant(self):

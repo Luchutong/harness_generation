@@ -15,7 +15,12 @@ from .triplet import FunctionTriplet, triplets_document
 
 VALIDATION_KINDS = ("intermediate", "compiler", "linker", "runtime")
 VALIDATION_STATUSES = frozenset({
-    "passed", "failed", "skipped", "unavailable", "passed_with_limitations",
+    "passed",
+    "failed",
+    "skipped",
+    "unavailable",
+    "passed_with_limitations",
+    "passed_with_warnings",
 })
 
 
@@ -514,8 +519,17 @@ class TripletArtifacts:
         values = set(statuses.values())
         if "failed" in values:
             overall = "failed"
-        elif len(statuses) == len(VALIDATION_KINDS) and values == {"passed"}:
-            overall = "passed"
+        elif len(statuses) == len(VALIDATION_KINDS):
+            if values == {"passed"}:
+                overall = "passed"
+            elif values <= {"passed", "passed_with_warnings"}:
+                overall = "passed_with_warnings"
+            elif "passed_with_limitations" in values or "passed" in values:
+                overall = "passed_with_limitations"
+            else:
+                overall = "unavailable"
+        elif "passed_with_warnings" in values:
+            overall = "passed_with_warnings"
         elif "passed_with_limitations" in values or "passed" in values:
             overall = "passed_with_limitations"
         elif values:

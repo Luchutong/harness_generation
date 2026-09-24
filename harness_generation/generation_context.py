@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -10,6 +11,8 @@ from typing import Any, Mapping
 
 _LOCAL_INCLUDE = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.MULTILINE)
 _MAX_HEADERS = 40
+_MAX_API_CORPUS_ITEMS = 24
+_MAX_API_CORPUS_TEXT = 20000
 
 # A callback member of a struct: ``int (*enter_block)(MD_BLOCKTYPE, void*)``.
 _CALLBACK_MEMBER = re.compile(
@@ -68,14 +71,21 @@ def project_type_context(
         headers.append({"file": file, "include": include})
     callback_tables = callback_table_declarations(types)
     callback_typedefs = _callback_typedefs(project_root, header_order)
+    declared_names = _declared_function_names(project_root, header_order)
     return {
         "headers": headers,
         "cplusplus_unsafe_headers": sorted(unsafe_headers),
         "callback_tables": callback_tables,
         "callback_typedefs": callback_typedefs,
         "portable_abi_declarations": _portable_abi_declarations(
-            functions, callback_typedefs
+            _portable_abi_functions(
+                functions,
+                expose_public=bool(unsafe_headers) or not header_order,
+                declared_names=declared_names,
+            ),
+            callback_typedefs,
         ),
+        "api_corpus": _api_corpus_context(functions_path),
         "types": sorted(types, key=lambda item: str(item.get("name", ""))),
     }
 
@@ -274,6 +284,50 @@ def _project_root(
     return path.resolve()
 
 
+def _api_corpus_context(functions_path: str | Path | None) -> list[dict[str, Any]]:
+    if functions_path is None:
+        return []
+    root = Path(functions_path).resolve().parent
+    json_path = root / "api_corpus.json"
+    text_path = root / "api_corpus.txt"
+    if json_path.is_file():
+        try:
+            loaded = json.loads(json_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return []
+        records = loaded.get("items", loaded) if isinstance(loaded, Mapping) else loaded
+        if not isinstance(records, list):
+            return []
+        result = []
+        for record in records[:_MAX_API_CORPUS_ITEMS]:
+            if isinstance(record, Mapping):
+                text = record.get("text", record.get("content", ""))
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                result.append({
+                    "title": str(record.get("title", record.get("source", "api evidence"))),
+                    "text": _bounded_text(text),
+                })
+            elif isinstance(record, str) and record.strip():
+                result.append({"title": "api evidence", "text": _bounded_text(record)})
+        return result
+    if text_path.is_file():
+        try:
+            text = text_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return []
+        if text.strip():
+            return [{"title": "api evidence", "text": _bounded_text(text)}]
+    return []
+
+
+def _bounded_text(value: str) -> str:
+    normalized = re.sub(r"\s+\n", "\n", value).strip()
+    if len(normalized) <= _MAX_API_CORPUS_TEXT:
+        return normalized
+    return normalized[:_MAX_API_CORPUS_TEXT].rstrip() + "\n[truncated]"
+
+
 def _local_includes(project_root: Path | None, file: str) -> tuple[str, ...]:
     if project_root is None:
         return ()
@@ -422,6 +476,53 @@ def _portable_abi_declarations(
             entry["callback_parameters"] = callbacks
         declarations.append(entry)
     return declarations
+
+
+def _portable_abi_functions(
+    functions: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+    *,
+    expose_public: bool,
+    declared_names: set[str],
+) -> tuple[Mapping[str, Any], ...]:
+    if expose_public:
+        return tuple(functions)
+    selected = []
+    for record in functions:
+        name = record.get("name")
+        storage = record.get("storage", ())
+        if (
+            isinstance(name, str)
+            and (
+                name not in declared_names
+                or
+                (
+                    isinstance(storage, list)
+                    and "static" in storage
+                )
+            )
+        ):
+            selected.append(record)
+    return tuple(selected)
+
+
+def _declared_function_names(
+    project_root: Path | None,
+    headers: list[str],
+) -> set[str]:
+    names: set[str] = set()
+    if project_root is None:
+        return names
+    for header in headers:
+        path = (project_root / header).resolve()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        names.update(
+            match.group(1)
+            for match in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", text)
+        )
+    return names
 
 
 def _portable_return_type(record: Mapping[str, Any], name: str) -> str:

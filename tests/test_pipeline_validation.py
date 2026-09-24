@@ -5,7 +5,10 @@ import tempfile
 import unittest
 
 from harness_generation.artifacts import ArtifactStore
-from harness_generation.pipeline_validation import PipelineStageValidator
+from harness_generation.pipeline_validation import (
+    PipelineStageValidator,
+    PipelineValidationConfig,
+)
 from harness_generation.stage1 import Stage1Result
 from harness_generation.stage2 import Stage2Result, required_processing_units
 from harness_generation.stage3 import Stage3Metadata, Stage3Result
@@ -23,6 +26,14 @@ SOURCE_ARTIFACTS = ROOT / "artifacts" / "simple"
 SIMPLE_PROJECT = ROOT / "tests" / "fixtures" / "simple_project"
 
 class PipelineStageValidatorTests(unittest.TestCase):
+    def test_hybrid_policy_requires_build_validation(self):
+        with self.assertRaisesRegex(ValueError, "requires build validation"):
+            PipelineValidationConfig(
+                stage4_policy="hybrid",
+                build_enabled=False,
+                fuzz_smoke=None,
+            )
+
     def test_persisted_target_build_is_preferred_over_simple_discovery(self):
         with tempfile.TemporaryDirectory() as temporary:
             artifacts = Path(temporary) / "artifacts"
@@ -312,6 +323,69 @@ void rough_sequence(Parser *parser, const unsigned char *data) {
             self.assertFalse((
                 attempt / "validation" / "compiler.json"
             ).exists())
+
+    def test_stage4_hybrid_converts_intermediate_failure_to_warning(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifacts = Path(temporary) / "artifacts"
+            artifacts.mkdir()
+            for name in ("functions.json", "triplets.json"):
+                shutil.copy2(SOURCE_ARTIFACTS / name, artifacts / name)
+            triplet = load_triplets_json(artifacts / "triplets.json")[0]
+            generation = artifacts / "generation" / triplet.id
+            attempt = generation / "stage4" / "attempt_001"
+            attempt.mkdir(parents=True)
+            harness = generation / "stage4_harness.c"
+            harness_code = """#include <stddef.h>
+#include <stdint.h>
+extern "C" {
+#include "parser.h"
+}
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+{
+    Parser parser = {0};
+    parser_from_memory(&parser, data, (unsigned long)size);
+    Node node = parser_next(&parser);
+    (void)node;
+    parser_free(&parser);
+    return 0;
+}
+"""
+            harness.write_text(harness_code, encoding="utf-8")
+
+            result = PipelineStageValidator(
+                triplet,
+                artifacts=artifacts,
+                functions_json=artifacts / "functions.json",
+                project_root=SIMPLE_PROJECT,
+                config=PipelineValidationConfig(
+                    stage4_policy="hybrid",
+                    fuzz_smoke=None,
+                ),
+            ).validate_stage4(Stage4Result(
+                triplet_id=triplet.id,
+                harness_code=harness_code,
+                harness_path=harness,
+                stable_path=None,
+                generation_metadata={},
+                attempt_directory=attempt,
+            ))
+
+            self.assertEqual(result.status, "passed")
+            intermediate = json.loads((
+                attempt / "validation" / "intermediate.json"
+            ).read_text(encoding="utf-8"))
+            self.assertEqual(intermediate["status"], "passed_with_warnings")
+            self.assertIn("strict_errors", intermediate["metadata"])
+            self.assertTrue((
+                attempt / "validation" / "compiler.json"
+            ).is_file())
+            self.assertTrue((
+                attempt / "validation" / "runtime.json"
+            ).is_file())
+            summary = json.loads((
+                generation / "validation" / "summary.json"
+            ).read_text(encoding="utf-8"))
+            self.assertEqual(summary["overall"], "passed_with_warnings")
 
 
 if __name__ == "__main__":

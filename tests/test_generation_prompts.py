@@ -17,8 +17,8 @@ from harness_generation.prompts import (
 
 
 # Pinned deliberately: a silent prompt edit must show up as a failing test.
-STAGE4_PLAN_VERSION = "stage4-harness-plan-v9"
-STAGE4_TRANSFORM_VERSION = "stage4-harness-transform-v9"
+STAGE4_PLAN_VERSION = "stage4-harness-plan-v11"
+STAGE4_TRANSFORM_VERSION = "stage4-harness-transform-v10"
 
 
 class GenerationPromptTests(unittest.TestCase):
@@ -88,7 +88,7 @@ class GenerationPromptTests(unittest.TestCase):
         self.assertEqual(
             [prompt.prompt_version for prompt in prompts],
             [
-                "stage1-function-doc-v2",
+                "stage1-function-doc-v3",
                 "stage2-structure-snippet-v3",
                 "stage3-rough-assembly-v3",
                 "protocol-convention-refinement-v1",
@@ -97,6 +97,7 @@ class GenerationPromptTests(unittest.TestCase):
             ],
         )
         self.assertIn("int parse(Parser *p)", str(prompts[0]))
+        self.assertIn("direct call expression", prompts[0].content)
         self.assertIn('"role": "ISF"', prompts[0].content)
         self.assertIn("parser_next", prompts[1].content)
         self.assertIn("Parser -> Node", prompts[2].content)
@@ -110,10 +111,15 @@ class GenerationPromptTests(unittest.TestCase):
         self.assertIn("multi-frame command loop", prompts[4].content)
         self.assertIn("payload_length", prompts[4].content)
         self.assertIn("HarnessPlan JSON", prompts[5].content)
+        self.assertIn("aggressive control prefix", prompts[5].content)
+        self.assertIn("non-null local encoder", prompts[5].content)
+        self.assertIn("xmlBufferCreate", prompts[5].content)
+        self.assertIn("std::tmpfile", prompts[5].content)
         self.assertIn("C++ libFuzzer harness", prompts[5].content)
         self.assertIn("#include <stdint.h>", prompts[5].content)
         self.assertIn('extern "C" int LLVMFuzzerTestOneInput', prompts[5].content)
         self.assertIn("std::vector", prompts[5].content)
+        self.assertIn("do not use lambdas", prompts[5].content)
         self.assertIn("multi-frame command loop", prompts[5].content)
 
     def test_rendered_prompt_is_printable_and_savable(self):
@@ -130,7 +136,7 @@ class GenerationPromptTests(unittest.TestCase):
             document = json.loads(path.read_text(encoding="utf-8"))
 
         self.assertEqual(document["name"], "stage1_function_doc")
-        self.assertEqual(document["prompt_version"], "stage1-function-doc-v2")
+        self.assertEqual(document["prompt_version"], "stage1-function-doc-v3")
         self.assertEqual(document["parameters"]["usage_context"], "test context")
         self.assertEqual(document["content"], prompt.content)
 
@@ -166,8 +172,15 @@ class GenerationPromptTests(unittest.TestCase):
         for template in (plan, transform):
             self.assertIn("callback_tables", template)
             self.assertIn("required", template)
+            self.assertIn("iowrite", template)
+            self.assertIn("ioclose", template)
+            self.assertIn("escaping", template)
+            self.assertIn("nullptr", template)
+            self.assertIn("ft_functions", template)
             with self.subTest(template=template[:40]):
                 self.assertIn("callback_typedefs", template)
+        self.assertIn("empty relation_id", plan)
+        self.assertIn("sentinel fd", plan)
 
 
 if __name__ == "__main__":

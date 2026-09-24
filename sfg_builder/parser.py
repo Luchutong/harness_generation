@@ -54,8 +54,16 @@ class _ParsedFunction:
 
 
 class CProjectParser:
-    def __init__(self, ignored_directories: Iterable[str] = DEFAULT_IGNORES):
+    def __init__(
+        self,
+        ignored_directories: Iterable[str] = DEFAULT_IGNORES,
+        *,
+        source_globs: Iterable[str] = (),
+    ):
         self.ignored_directories = tuple(ignored_directories)
+        self.source_globs = tuple(str(pattern) for pattern in source_globs)
+        if any(not pattern for pattern in self.source_globs):
+            raise ValueError("source_globs must contain non-empty patterns")
 
     def parse(self, project: Path) -> ParseResult:
         project = project.resolve()
@@ -109,7 +117,13 @@ class CProjectParser:
             source_suffixes=SOURCE_SUFFIXES,
             header_suffixes=(),
         )
-        yield from catalog.sources
+        if not self.source_globs:
+            yield from catalog.sources
+            return
+        for source in catalog.sources:
+            relative = source.relative_to(project).as_posix()
+            if any(fnmatch.fnmatch(relative, pattern) for pattern in self.source_globs):
+                yield source
 
 
 class TypeResolver:
@@ -577,6 +591,14 @@ def _return_type_details(source: bytes, node, declarator, function_declarator,
         if candidate:
             ast_base = candidate
             depth = candidate.count("*")
+    if re.fullmatch(r"[A-Z][A-Z0-9_]{2,}", ast_base):
+        remainder = ""
+        if prefix.startswith(ast_base):
+            remainder = prefix[len(ast_base):].strip()
+        if remainder:
+            annotations.append(ast_base)
+            ast_base = remainder
+            depth = max(depth, remainder.count("*"))
     if not ast_base:
         ast_base = _clean(prefix)
     ast_base = re.sub(r"\b(?:static|extern|inline|const|volatile|restrict)\b", " ", ast_base)

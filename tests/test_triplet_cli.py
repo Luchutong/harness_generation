@@ -89,6 +89,20 @@ class TripletCLITests(unittest.TestCase):
         self.assertTrue(item.is_file())
         self.assertEqual(json.loads(item.read_text())["triplet"]["id"], self._triplet_id())
 
+    def test_oversized_ft_is_excluded_with_report(self):
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            code = main([
+                "triplets", "--artifacts", str(self.artifacts),
+                "--max-functions-per-ft", "3",
+            ])
+        self.assertEqual(code, 0)
+        report = json.loads((self.artifacts / "triplet_exclusions.json").read_text())
+        self.assertEqual(report["excluded"][0]["function_count"], 4)
+        self.assertEqual(report["excluded"][0]["reason"], "too_many_functions")
+        self.assertEqual(json.loads((self.artifacts / "triplets.json").read_text())[
+            "triplets"
+        ], [])
+
     def test_rank_writes_auditable_budgeted_selection_manifest(self):
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             self.assertEqual(main([

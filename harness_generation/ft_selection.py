@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import math
@@ -556,9 +556,33 @@ def build_selection_manifest(
     max_ft: int | None = None,
     max_calls: int | None = None,
     min_score: float = 0.0,
+    max_structural_units: int | None = None,
+    max_functions: int | None = None,
 ) -> dict[str, Any]:
+    if max_structural_units is not None and max_structural_units < 0:
+        raise ValueError("max_structural_units must be non-negative")
+    if max_functions is not None and max_functions < 0:
+        raise ValueError("max_functions must be non-negative")
     triplet_items = tuple(triplets)
     ranked = rank_triplets(triplet_items, annotations)
+    if max_structural_units is not None:
+        ranked = tuple(
+            replace(
+                item,
+                eligible=False,
+                exclusion_reasons=(*item.exclusion_reasons, "too_many_structural_units"),
+            ) if item.structural_units > max_structural_units else item
+            for item in ranked
+        )
+    if max_functions is not None:
+        ranked = tuple(
+            replace(
+                item,
+                eligible=False,
+                exclusion_reasons=(*item.exclusion_reasons, "too_many_functions"),
+            ) if len(item.function_ids) > max_functions else item
+            for item in ranked
+        )
     selected = select_triplets(
         ranked, max_ft=max_ft, max_calls=max_calls, min_score=min_score
     )
@@ -572,6 +596,8 @@ def build_selection_manifest(
             "max_ft": max_ft,
             "max_calls": max_calls,
             "min_score": min_score,
+            "max_structural_units": max_structural_units,
+            "max_functions": max_functions,
         },
         "cost_model": {
             "unit": "baseline_llm_calls",

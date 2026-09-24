@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+import re
 
-from .base import SemanticAnalyzer, SemanticDecision
+from .base import (SemanticAnalyzer, SemanticBudgetExceeded, SemanticDecision,
+                   SemanticReplayMismatch)
 from .models import FunctionInfo, ParameterInfo, StructInfo
 from .prompts import STREAM_PROMPT_VERSION, STREAM_VARIANTS, stream_prompt
 
@@ -30,7 +32,13 @@ def vote_stream_parameter(analyzer: SemanticAnalyzer, function: FunctionInfo,
         for variant in STREAM_VARIANTS
     )
     valid = [decision for decision in decisions if decision.status == "ok"]
-    positives = sum(decision.data.get("is_byte_stream") is True for decision in valid)
+    # A filesystem name can be a contiguous char array without being fuzz
+    # input. The paper explicitly excludes semantic strings at this step.
+    positives = sum(
+        decision.data.get("is_byte_stream") is True
+        and decision.data.get("kind") in {"binary", "text"}
+        for decision in valid
+    )
     kinds = [decision.data.get("kind", "other") for decision in valid
              if isinstance(decision.data.get("kind", "other"), str)]
     kind = Counter(kinds).most_common(1)[0][0] if kinds else "other"
@@ -41,12 +49,24 @@ def vote_stream_parameter(analyzer: SemanticAnalyzer, function: FunctionInfo,
     reasons = [decision.data.get("reason") for decision in valid
                if isinstance(decision.data.get("reason"), str)]
     reason = "; ".join(dict.fromkeys(filter(None, reasons)))
+    if any(decision.data.get("is_byte_stream") is True
+           and decision.data.get("kind") in {"filename", "pathname", "struct", "other"}
+           for decision in valid):
+        reason = "semantic string/object kind vetoed byte-stream vote; " + reason
+    name_tokens = frozenset(re.findall(
+        r"[a-z]+", re.sub(r"([a-z])([A-Z])", r"\1_\2", parameter.name or "").lower()
+    ))
+    semantic_name = bool(name_tokens & {
+        "filename", "pathname", "path", "uri", "url",
+    })
+    if semantic_name:
+        reason = "semantic filename/path/URI parameter vetoed as external byte input; " + reason
     return StreamVoteResult(
-        positives >= 2,
+        positives >= 2 and not semantic_name,
         kind,
         confidence,
         reason or "semantic analysis unavailable",
-        positives,
+        (0 if semantic_name else positives),
         len(valid),
         decisions,
     )
@@ -60,6 +80,8 @@ def _safe_stream_call(analyzer: SemanticAnalyzer, function: FunctionInfo,
         if not isinstance(decision, SemanticDecision):
             raise TypeError("semantic analyzer returned an invalid decision")
         return decision
+    except (SemanticBudgetExceeded, SemanticReplayMismatch):
+        raise
     except Exception as exc:
         fallback = {"is_byte_stream": False, "kind": "other", "confidence": 0.0,
                     "reason": "semantic analyzer failed"}

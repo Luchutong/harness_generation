@@ -86,6 +86,21 @@ const foo_t *forms(struct Thing *a, Thing **b, const foo_t *item,
         thing = next(info for info in parsed.structs if info.name == "Thing")
         self.assertIn("{ int value; }", thing.declaration)
 
+    def test_bare_export_macro_before_return_type_is_annotation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            (project / "api.h").write_text('''
+typedef struct Doc Doc;
+#define XMLPUBFUN
+XMLPUBFUN Doc *parse_doc(const char *data, int size);
+''', encoding="utf-8")
+            parsed = CProjectParser().parse(project)
+
+        function = parsed.functions[0]
+        self.assertEqual(function.return_base_type, "Doc")
+        self.assertEqual(function.return_pointer_depth, 1)
+        self.assertEqual(function.return_type_annotations, ("XMLPUBFUN",))
+
     def test_forward_typedef_and_definition_are_one_struct_type(self):
         with tempfile.TemporaryDirectory() as temporary:
             project = Path(temporary)
@@ -170,6 +185,31 @@ Value *parse(const char *data, size_t size);
             parsed = CProjectParser(DEFAULT_IGNORES + ("generated",)).parse(project)
         self.assertEqual([function.name for function in parsed.functions], ["visible"])
         self.assertEqual(parsed.files, ("keep/visible.c",))
+
+    def test_source_globs_limit_large_project_parsing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            (project / "include").mkdir()
+            (project / "src").mkdir()
+            (project / "tools").mkdir()
+            (project / "include" / "api.h").write_text(
+                "int parse_api(const char *data, int size);\n",
+                encoding="utf-8",
+            )
+            (project / "src" / "api.c").write_text(
+                "int parse_api(const char *data, int size) { return size; }\n",
+                encoding="utf-8",
+            )
+            (project / "tools" / "tool.c").write_text(
+                "int unrelated_tool(void) { return 0; }\n",
+                encoding="utf-8",
+            )
+            parsed = CProjectParser(
+                source_globs=("include/*.h", "src/*.c")
+            ).parse(project)
+
+        self.assertEqual({function.name for function in parsed.functions}, {"parse_api"})
+        self.assertEqual(parsed.files, ("include/api.h", "src/api.c"))
 
     def test_function_metadata_and_functions_json(self):
         functions = {function.name: function for function in self.result.functions}

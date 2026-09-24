@@ -43,3 +43,47 @@ def test_partial_validation_summary_is_not_a_pass(tmp_path):
         "errors": [], "warnings": [], "metadata": {},
     })
     assert json.loads(layout.validation_summary.read_text())["overall"] != "passed"
+
+
+def test_hybrid_promotion_allows_intermediate_warning_only(tmp_path):
+    layout = ArtifactStore(tmp_path).for_triplet("ft_parse").ensure_generation()
+    source = "int LLVMFuzzerTestOneInput(const unsigned char *data, unsigned long size) { return 0; }"
+    plan = {"schema_version": 1, "triplet_id": "ft_parse"}
+    statuses = {
+        "intermediate": "passed_with_warnings",
+        "compiler": "passed",
+        "linker": "passed",
+        "runtime": "passed",
+    }
+    layout.write_text(layout.stage4_harness, source + "\n")
+    layout.write_json(layout.stage4_harness_plan, plan)
+    for name, status in statuses.items():
+        layout.write_validation(name, {
+            "validator": name,
+            "status": status,
+            "success": True,
+            "errors": [],
+            "warnings": ["strict Stage 4 policy warning"] if name == "intermediate" else [],
+            "metadata": {},
+        })
+
+    summary = {"schema_version": 1, "overall": "passed_with_warnings", **statuses}
+    assert not promote_harness(
+        layout,
+        harness_code=source,
+        harness_plan=plan,
+        validation_summary=summary,
+    )
+    assert not layout.harness.exists()
+
+    assert promote_harness(
+        layout,
+        harness_code=source,
+        harness_plan=plan,
+        validation_summary=summary,
+        stage4_policy="hybrid",
+    )
+    assert layout.harness.read_text(encoding="utf-8") == source + "\n"
+    manifest = json.loads(layout.promotion.read_text())
+    assert manifest["status"] == "stable_promoted"
+    assert manifest["stage4_policy"] == "hybrid"

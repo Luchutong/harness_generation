@@ -13,6 +13,7 @@ from harness_generation.orchestrator import (
     PipelineOrchestrator,
     PipelineState,
     StagedRollbackStrategy,
+    latest_unresolved_rollback,
 )
 from harness_generation.validation import ValidationResult
 
@@ -225,6 +226,109 @@ class PipelineOrchestratorTests(unittest.TestCase):
         self.assertEqual(decision.restart_stage, STAGE_4_HARNESS)
         with self.assertRaisesRegex(ValueError, "max_regen_per_level"):
             StagedRollbackStrategy(0)
+
+
+class LatestUnresolvedRollbackTests(unittest.TestCase):
+    def test_rollback_of_a_regenerated_stage_does_not_shadow_the_original(self):
+        # The slice of a real run that motivated the rule: stage 4 fails first,
+        # the wave restarts stage 3, stage 3 fails on its own, then stage 3
+        # passes and is checkpointed. The newest rollback belongs to stage 3,
+        # which has since been retired; stage 4 still owes an answer.
+        history = [
+            {"event": "stage_failed", "stage": "STAGE_4_HARNESS",
+             "reason": "Stage4Error: HarnessPlan omits FT functions: node_process"},
+            {"event": "rollback", "failed_stage": "STAGE_4_HARNESS",
+             "rollback_target": "STAGE_3_ROUGH", "attempt": 1,
+             "reason": "Stage4Error: HarnessPlan omits FT functions: node_process"},
+            {"event": "stage_started", "stage": "STAGE_3_ROUGH"},
+            {"event": "stage_failed", "stage": "STAGE_3_ROUGH",
+             "reason": "unexpected target function calls: parser_free"},
+            {"event": "rollback", "failed_stage": "STAGE_3_ROUGH",
+             "rollback_target": "STAGE_3_ROUGH", "attempt": 2,
+             "reason": "unexpected target function calls: parser_free"},
+            {"event": "stage_started", "stage": "STAGE_3_ROUGH"},
+            {"event": "stage_validated", "stage": "STAGE_3_ROUGH",
+             "status": "passed", "validator": "stage3"},
+            {"event": "checkpoint_created", "stage": "STAGE_3_ROUGH"},
+            {"event": "stage_started", "stage": "STAGE_4_HARNESS"},
+        ]
+        selected = latest_unresolved_rollback(history)
+        self.assertEqual(selected["failed_stage"], "STAGE_4_HARNESS")
+        self.assertIn("omits FT functions", selected["reason"])
+
+    def test_a_checkpoint_retires_limitations_just_as_plain_passes_do(self):
+        # ``checkpoint_created`` is recorded only after validation.accepted, so
+        # it retires a rollback for a stage that passed with declared
+        # limitations too. A status comparison against "passed" alone would
+        # leave that rollback shadowing forever.
+        history = [
+            {"event": "rollback", "failed_stage": "STAGE_3_ROUGH",
+             "reason": "stage3"},
+            {"event": "stage_validated", "stage": "STAGE_3_ROUGH",
+             "status": "passed_with_limitations"},
+            {"event": "checkpoint_created", "stage": "STAGE_3_ROUGH"},
+        ]
+        self.assertIsNone(latest_unresolved_rollback(history))
+
+    def test_a_validation_alone_does_not_retire_without_a_checkpoint(self):
+        # Validation and the checkpoint are separate events; only the
+        # checkpoint means the pipeline accepted the stage and moved on.
+        history = [
+            {"event": "rollback", "failed_stage": "STAGE_3_ROUGH",
+             "reason": "stage3"},
+            {"event": "stage_validated", "stage": "STAGE_3_ROUGH",
+             "status": "passed"},
+        ]
+        self.assertEqual(
+            latest_unresolved_rollback(history)["failed_stage"], "STAGE_3_ROUGH"
+        )
+
+    def test_a_repeated_failure_reports_the_newer_rollback(self):
+        history = [
+            {"event": "rollback", "failed_stage": "STAGE_3_ROUGH", "reason": "old"},
+            {"event": "checkpoint_created", "stage": "STAGE_3_ROUGH"},
+            {"event": "rollback", "failed_stage": "STAGE_3_ROUGH", "reason": "new"},
+        ]
+        self.assertEqual(latest_unresolved_rollback(history)["reason"], "new")
+
+    def test_every_retired_rollback_leaves_nothing_outstanding(self):
+        history = [
+            {"event": "rollback", "failed_stage": "STAGE_4_HARNESS",
+             "reason": "cleared"},
+            {"event": "checkpoint_created", "stage": "STAGE_4_HARNESS"},
+        ]
+        self.assertIsNone(latest_unresolved_rollback(history))
+        self.assertIsNone(latest_unresolved_rollback([]))
+        self.assertIsNone(latest_unresolved_rollback([
+            {"event": "stage_validated", "stage": "STAGE_1_DOCS",
+             "status": "passed"},
+        ]))
+
+    def test_malformed_history_is_skipped_rather_than_raising(self):
+        history = [
+            "not an event",
+            {"event": "rollback"},
+            {"event": "rollback", "failed_stage": 4},
+            {"event": "checkpoint_created", "stage": 3},
+            None,
+            {"event": "rollback", "failed_stage": "STAGE_2_SNIPPETS",
+             "reason": "survivor"},
+        ]
+        self.assertEqual(
+            latest_unresolved_rollback(history)["reason"], "survivor"
+        )
+
+    def test_a_rollback_without_a_stage_is_reported_rather_than_dropped(self):
+        # Malformed entries are not evidence that no failure happened, so the
+        # newest rollback is still surfaced when it cannot be attributed to a
+        # stage. Silence would be the one answer that hides a real problem.
+        history = [
+            {"event": "rollback", "failed_stage": "STAGE_3_ROUGH"},
+            {"event": "rollback", "reason": "unattributed"},
+        ]
+        self.assertEqual(
+            latest_unresolved_rollback(history)["reason"], "unattributed"
+        )
 
 
 if __name__ == "__main__":

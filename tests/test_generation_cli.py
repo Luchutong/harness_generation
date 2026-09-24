@@ -14,8 +14,12 @@ from harness_generation.llm import MockLLM
 from harness_generation.llm import OpenAICompatibleLLM
 from harness_generation.artifacts import ArtifactStore
 from harness_generation.generation_cli import (
+    _BudgetedLLM,
+    _check_catalog_size,
     _publish_harness,
     _resolve_llm,
+    _retry_context,
+    _retry_reason,
     _select_from_manifest,
 )
 from harness_generation.ft_selection import triplet_catalog_sha256
@@ -178,6 +182,53 @@ class GenerationCLITests(unittest.TestCase):
         }), encoding="utf-8")
         selected = _select_from_manifest((self.triplet, other), manifest)
         self.assertEqual([item.id for item in selected], ["ft_other", self.triplet.id])
+
+    def test_selection_manifest_rejects_stale_summary_and_limits(self):
+        manifest = self.artifacts / "stale_selection.json"
+        document = {
+            "schema_version": 2,
+            "inputs": {"triplets_sha256": triplet_catalog_sha256((self.triplet,))},
+            "selection": [{"triplet_id": self.triplet.id}],
+            "summary": {"selected_count": 2, "estimated_llm_calls": 999},
+        }
+        manifest.write_text(json.dumps(document))
+        with self.assertRaisesRegex(ValueError, "summary does not match"):
+            _select_from_manifest((self.triplet,), manifest)
+        document.pop("summary")
+        document["constraints"] = {"max_functions": 3}
+        manifest.write_text(json.dumps(document))
+        with self.assertRaisesRegex(ValueError, "max_functions constraint"):
+            _select_from_manifest((self.triplet,), manifest)
+
+    def test_generation_budget_rejects_before_first_llm_call(self):
+        for flag, limit in (("--max-ft-functions", "3"), ("--max-llm-calls", "1")):
+            with self.subTest(flag=flag):
+                llm = MockLLM(self.responses())
+                stderr = io.StringIO()
+                with redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+                    code = main([
+                        "generate", "--artifacts", str(self.artifacts),
+                        "--ft", self.triplet.id, flag, limit,
+                    ], llm=llm)
+                self.assertEqual(code, 1)
+                self.assertEqual(llm.calls, [])
+                self.assertIn(flag, stderr.getvalue())
+
+    def test_actual_generation_calls_and_catalog_size_are_capped(self):
+        from harness_generation.llm import LLMError
+
+        mock = MockLLM(["one", "two"])
+        client = _BudgetedLLM(mock, 1)
+        client.generate("first", prompt_version="test-v1")
+        with self.assertRaisesRegex(LLMError, "budget exhausted"):
+            client.generate("second", prompt_version="test-v1")
+        self.assertEqual(len(mock.calls), 1)
+
+        large = self.artifacts / "large_triplets.json"
+        with large.open("wb") as stream:
+            stream.truncate(2 * 1024 * 1024)
+        with self.assertRaisesRegex(ValueError, "max-catalog-mib"):
+            _check_catalog_size(large, 1)
 
     def test_generate_runs_all_stages_with_injected_mock_llm(self):
         llm = MockLLM(self.responses())
@@ -556,6 +607,7 @@ class GenerationCLITests(unittest.TestCase):
                 "LLM_API_KEY": "unit-test-only",
                 "LLM_MODEL": "configured-model",
                 "LLM_THINKING": "disabled",
+                "LLM_MAX_TOKENS": "8192",
             },
         )
 
@@ -564,7 +616,24 @@ class GenerationCLITests(unittest.TestCase):
         self.assertEqual(client.config.base_url, "https://llm.example.test/v1")
         self.assertEqual(client.config.api_key_env_name, "LLM_API_KEY")
         self.assertEqual(client.config.thinking, "disabled")
+        self.assertEqual(client.config.max_tokens, 8192)
         self.assertNotIn("unit-test-only", json.dumps(client.config.to_dict()))
+
+    def test_real_provider_rejects_invalid_max_tokens(self):
+        with self.assertRaisesRegex(ValueError, "LLM_MAX_TOKENS"):
+            _resolve_llm(
+                None,
+                provider="openai-compatible",
+                model=None,
+                mock_responses=None,
+                recorded_responses=None,
+                environ={
+                    "LLM_BASE_URL": "https://llm.example.test/v1",
+                    "LLM_API_KEY": "unit-test-only",
+                    "LLM_MODEL": "configured-model",
+                    "LLM_MAX_TOKENS": "0",
+                },
+            )
 
     def test_real_provider_rejects_invalid_thinking_mode(self):
         with self.assertRaisesRegex(ValueError, "LLM_THINKING"):
@@ -581,6 +650,78 @@ class GenerationCLITests(unittest.TestCase):
                     "LLM_THINKING": "automatic",
                 },
             )
+
+
+class RetryContextTests(unittest.TestCase):
+    """The file-reading half of the retry feedback path."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.state = Path(self.temporary.name) / "pipeline_state.json"
+
+    def write_history(self, history):
+        self.state.write_text(
+            json.dumps({"schema_version": 1, "history": history}),
+            encoding="utf-8",
+        )
+
+    def test_regenerating_stage_does_not_shadow_the_original_failure(self):
+        # Stage 4 fails, the wave restarts stage 3, stage 3 fails on its own,
+        # then stage 3 passes and is checkpointed. Reading the newest rollback
+        # would hand stage 4 the stage 3 reason, and the coverage failure it
+        # actually has to answer for would never reach it.
+        self.write_history([
+            {"event": "rollback", "failed_stage": "STAGE_4_HARNESS",
+             "validator": "orchestrator", "failure_type": "run_exception",
+             "attempt": 3, "rollback_target": "STAGE_3_ROUGH",
+             "reason": "Stage4Error: HarnessPlan omits FT functions: node_process"},
+            {"event": "stage_started", "stage": "STAGE_3_ROUGH"},
+            {"event": "rollback", "failed_stage": "STAGE_3_ROUGH",
+             "validator": "intermediate", "failure_type": "stage3_validation",
+             "attempt": 1, "rollback_target": "STAGE_3_ROUGH",
+             "reason": "unexpected target function calls: parser_free"},
+            {"event": "stage_validated", "stage": "STAGE_3_ROUGH",
+             "status": "passed", "validator": "stage3"},
+            {"event": "checkpoint_created", "stage": "STAGE_3_ROUGH"},
+            {"event": "stage_started", "stage": "STAGE_4_HARNESS"},
+        ])
+        context = _retry_context(2, self.state)
+        self.assertEqual(context["failed_stage"], "STAGE_4_HARNESS")
+        self.assertIn("omits FT functions", context["reason"])
+        self.assertIn("omits FT functions", _retry_reason(2, self.state))
+
+    def test_retry_context_reports_rollback_source_not_failed_stage(self):
+        # ``rollback_source`` is the checkpoint the wave restarted from;
+        # ``failed_stage`` is the stage whose failure caused it. They are
+        # different fields and are allowed to differ.
+        self.write_history([
+            {"event": "rollback", "failed_stage": "STAGE_4_HARNESS",
+             "rollback_target": "STAGE_3_ROUGH", "reason": "omits"},
+        ])
+        self.assertEqual(
+            _retry_context(2, self.state)["rollback_target"], "STAGE_3_ROUGH"
+        )
+        self.assertEqual(_retry_reason(2, self.state), "omits")
+
+    def test_no_level_or_no_rollback_yields_no_feedback(self):
+        self.write_history([])
+        self.assertIsNone(_retry_context(2, self.state))
+        self.assertIsNone(_retry_reason(2, self.state))
+        self.assertIsNone(_retry_context(None, self.state))
+        self.write_history([
+            {"event": "rollback", "failed_stage": "STAGE_4_HARNESS",
+             "reason": "cleared"},
+            {"event": "checkpoint_created", "stage": "STAGE_4_HARNESS"},
+        ])
+        self.assertIsNone(_retry_context(2, self.state))
+
+    def test_unreadable_state_file_yields_no_feedback(self):
+        self.assertIsNone(_retry_context(2, self.state))
+        self.state.write_text("{ not json", encoding="utf-8")
+        self.assertIsNone(_retry_context(2, self.state))
+        self.write_history("not a list")
+        self.assertIsNone(_retry_context(2, self.state))
 
 
 if __name__ == "__main__":

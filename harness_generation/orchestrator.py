@@ -202,6 +202,47 @@ class PipelineState:
         )
 
 
+def latest_unresolved_rollback(
+    history: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    """Return the newest rollback that a later checkpoint has not retired.
+
+    A rollback restarts the pipeline from ``restart_stage``, so a regenerated
+    stage can fail on its own and append a newer rollback before the failure
+    that caused the wave is resolved.  Reading the newest event alone therefore
+    reports the inner failure and hides the one the wave exists to answer for.
+
+    ``checkpoint_created`` is the retirement marker: it is recorded only after
+    ``validation.accepted``, so it covers both a plain pass and
+    ``passed_with_limitations``, which a status comparison would miss.  Walking
+    backwards retires the rollback of every stage that has been re-run and
+    checkpointed since.
+
+    ``None`` means no rollback is outstanding -- including when every recorded
+    rollback has since been retired, which is the state a first attempt of the
+    next stage runs in.  Such a stage has no failure of its own to answer for,
+    and is told so rather than handed a stale reason unrelated to it.
+    """
+
+    retired: set[str] = set()
+    for event in reversed(history):
+        if not isinstance(event, Mapping):
+            continue
+        kind = event.get("event")
+        if kind == "checkpoint_created":
+            stage = event.get("stage")
+            if isinstance(stage, str):
+                retired.add(stage)
+            continue
+        if kind != "rollback":
+            continue
+        failed_stage = event.get("failed_stage")
+        if isinstance(failed_stage, str) and failed_stage in retired:
+            continue
+        return event
+    return None
+
+
 @dataclass(frozen=True)
 class RollbackDecision:
     exhausted: bool

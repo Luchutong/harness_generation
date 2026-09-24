@@ -45,7 +45,7 @@ class MockSemanticAnalyzer:
                            ("data", "buffer", "buf", "bytes", "input", "memory",
                             "payload", "stream", "src"))
             if not accepted:
-                accepted = parameter.base_type in {"uint8_t", "int8_t", "unsigned char"}
+                accepted = _length_paired(function, parameter)
             if not accepted and _looks_like_parser_input(function, parameter):
                 accepted = True
             reason = ("byte-compatible pointer and stream-like declaration"

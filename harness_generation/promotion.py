@@ -27,12 +27,15 @@ def promote_harness(
     recipe_identity: str | None = None,
     contract_identity: str | None = None,
     candidate_id: str | None = None,
+    stage4_policy: str = "strict",
 ) -> bool:
-    """Publish a harness/plan pair only after an exact formal pass.
+    """Publish a harness/plan pair only after the selected validation gate passes.
 
     Ineligible candidates receive a manifest and leave any existing stable pair
     untouched. The two stable files are written only after all gate checks pass.
     """
+    if stage4_policy not in {"strict", "hybrid"}:
+        raise ValueError("stage4_policy must be strict or hybrid")
     statuses = {
         key: validation_summary.get(key)
         for key in ("intermediate", "compiler", "linker", "runtime")
@@ -54,13 +57,30 @@ def promote_harness(
         )
     except (OSError, UnicodeError, json.JSONDecodeError):
         pass
+    plan_matches_contract = (
+        harness_plan.get("schema_version") != 2
+        or harness_plan.get("contract_id") == contract_identity
+    )
+    if stage4_policy == "hybrid":
+        eligible_statuses = (
+            validation_summary.get("overall")
+            in {"passed", "passed_with_warnings"}
+            and statuses["intermediate"] in {"passed", "passed_with_warnings"}
+            and all(
+                statuses[key] == "passed"
+                for key in ("compiler", "linker", "runtime")
+            )
+        )
+    else:
+        eligible_statuses = (
+            validation_summary.get("overall") == "passed"
+            and all(value == "passed" for value in statuses.values())
+        )
     eligible = (
-        validation_summary.get("overall") == "passed"
-        and all(value == "passed" for value in statuses.values())
+        eligible_statuses
         and recorded_statuses == statuses
         and candidate_matches
-        and (harness_plan.get("schema_version") != 2
-             or harness_plan.get("contract_id") == contract_identity)
+        and plan_matches_contract
     )
     persisted_harness = harness_code.rstrip() + "\n"
     manifest = {
@@ -69,6 +89,7 @@ def promote_harness(
         "candidate_id": candidate_id,
         "recipe_identity": recipe_identity,
         "contract_identity": contract_identity,
+        "stage4_policy": stage4_policy,
         "validation_status": validation_summary.get("overall", "not_recorded"),
         "component_statuses": statuses,
         "recorded_component_statuses": recorded_statuses,

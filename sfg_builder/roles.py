@@ -7,7 +7,8 @@ import os
 from pathlib import Path
 import tempfile
 
-from .base import SemanticAnalyzer, SemanticDecision
+from .base import (SemanticAnalyzer, SemanticBudgetExceeded, SemanticDecision,
+                   SemanticReplayMismatch)
 from .models import (CandidateParameter, DecisionTrace, FunctionAnnotation,
                      FunctionCandidate, FunctionInfo, StreamParameterAnnotation,
                      StructInfo)
@@ -102,6 +103,8 @@ def _safe_role_call(analyzer: SemanticAnalyzer, function: FunctionInfo,
         if not isinstance(decision, SemanticDecision):
             raise TypeError("semantic analyzer returned an invalid decision")
         return decision
+    except (SemanticBudgetExceeded, SemanticReplayMismatch):
+        raise
     except Exception as exc:
         fallback = {"is_prf": False, "is_hpf": False, "operation": "other",
                     "reason": "semantic analyzer failed", "confidence": 0.0}
@@ -142,7 +145,9 @@ def _relevant_structs(function: FunctionInfo,
                  if info.name in names or names.intersection(info.aliases))
 
 
-def write_annotations_json(annotations: tuple[FunctionAnnotation, ...], path: Path) -> Path:
+def write_annotations_json(annotations: tuple[FunctionAnnotation, ...], path: Path,
+                           *, semantic_backend: str | None = None,
+                           semantic_source: str | None = None) -> Path:
     """Persist role annotations and their auditable semantic decisions."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -156,6 +161,10 @@ def write_annotations_json(annotations: tuple[FunctionAnnotation, ...], path: Pa
         "schema_version": 1,
         "annotations": serialized,
     }
+    if semantic_backend is not None:
+        payload["semantic_backend"] = semantic_backend
+    if semantic_source is not None:
+        payload["semantic_source"] = semantic_source
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:

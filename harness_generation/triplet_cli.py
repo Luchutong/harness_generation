@@ -8,10 +8,11 @@ import sys
 
 from .artifacts import ArtifactStore
 from .ft_selection import build_selection_manifest
+from .generation_cli import _check_catalog_size
 from .records import write_json
 from .sfg_adapter import load_sfg_artifacts
 from .triplet import FunctionTriplet, load_triplets_json
-from .triplet_extractor import extract_function_triplets
+from .triplet_extractor import FunctionTripletExtractor
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,17 +31,32 @@ def _extract_command(argv: list[str]) -> int:
                         help="Directory containing Phase 1 JSON artifacts")
     parser.add_argument("--individual", action="store_true",
                         help="Also write triplets/<ft_id>.json files")
+    parser.add_argument("--paper-minimal", action="store_true",
+                        help="Emit one FT per unique ISF, without usage-pattern variants")
+    parser.add_argument("--max-functions-per-ft", type=_positive_integer, default=20,
+                        help="Skip FTs exceeding this many functions (default: 20)")
     args = parser.parse_args(argv)
     try:
         artifacts = load_sfg_artifacts(args.artifacts)
-        triplets = extract_function_triplets(artifacts)
+        extractor = FunctionTripletExtractor()
+        triplets = extractor.extract(
+            artifacts, paper_minimal=args.paper_minimal,
+            max_functions_per_ft=args.max_functions_per_ft,
+        )
         output = ArtifactStore(args.artifacts).write_triplets(
             triplets, individual=args.individual
         )
+        exclusions = args.artifacts / "triplet_exclusions.json"
+        write_json(exclusions, {
+            "schema_version": 1,
+            "max_functions_per_ft": args.max_functions_per_ft,
+            "excluded": extractor.exclusions,
+        }, sort_keys=True, allow_nan=False)
     except (OSError, ValueError) as exc:
         print(f"Triplet extraction failed: {exc}", file=sys.stderr)
         return 1
     print(f"[FT] Wrote {output}")
+    print(f"[FT] Excluded {len(extractor.exclusions)} oversized FT variants; wrote {exclusions}")
     for triplet in triplets:
         print(
             f"[FT] {triplet.id} anchor={triplet.isf.function} "
@@ -57,9 +73,12 @@ def _show_command(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="harness-generation triplets show",
                                      description="Inspect one Function Triplet")
     parser.add_argument("--artifacts", required=True, type=Path)
+    parser.add_argument("--max-catalog-mib", type=_positive_integer, default=128,
+                        help="Maximum triplets.json size to load (default: 128 MiB)")
     parser.add_argument("--id", required=True, dest="triplet_id")
     args = parser.parse_args(argv)
     try:
+        _check_catalog_size(args.artifacts / "triplets.json", args.max_catalog_mib)
         triplets = load_triplets_json(args.artifacts / "triplets.json")
         triplet = next(
             (item for item in triplets if item.id == args.triplet_id), None
@@ -79,13 +98,23 @@ def _rank_command(argv: list[str]) -> int:
         description="Rank Function Triplets and select a diverse set under a budget",
     )
     parser.add_argument("--artifacts", required=True, type=Path)
+    parser.add_argument("--max-catalog-mib", type=_positive_integer, default=128,
+                        help="Maximum triplets.json size to load (default: 128 MiB)")
     parser.add_argument(
-        "--max-ft", type=_non_negative_integer,
+        "--max-ft", type=_non_negative_integer, default=20,
         help="Maximum number of FTs to select",
     )
     parser.add_argument(
-        "--max-calls", type=_non_negative_integer,
+        "--max-calls", type=_non_negative_integer, default=300,
         help="Maximum estimated baseline LLM calls",
+    )
+    parser.add_argument(
+        "--max-structural-units", type=_non_negative_integer, default=20,
+        help="Exclude FTs needing more Stage 2 units",
+    )
+    parser.add_argument(
+        "--max-functions", type=_non_negative_integer, default=20,
+        help="Exclude FTs containing more functions (default: 20)",
     )
     parser.add_argument(
         "--min-score", type=_score, default=0.0,
@@ -98,6 +127,7 @@ def _rank_command(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     try:
         store = ArtifactStore(args.artifacts)
+        _check_catalog_size(store.triplets, args.max_catalog_mib)
         artifacts = load_sfg_artifacts(args.artifacts)
         triplets = load_triplets_json(store.triplets)
         manifest = build_selection_manifest(
@@ -106,6 +136,8 @@ def _rank_command(argv: list[str]) -> int:
             max_ft=args.max_ft,
             max_calls=args.max_calls,
             min_score=args.min_score,
+            max_structural_units=args.max_structural_units,
+            max_functions=args.max_functions,
         )
         output = args.output or store.ft_selection
         write_json(output, manifest, sort_keys=True, allow_nan=False)
@@ -144,6 +176,13 @@ def _non_negative_integer(value: str) -> int:
         raise argparse.ArgumentTypeError("must be an integer") from exc
     if parsed < 0:
         raise argparse.ArgumentTypeError("must be non-negative")
+    return parsed
+
+
+def _positive_integer(value: str) -> int:
+    parsed = _non_negative_integer(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be positive")
     return parsed
 
 

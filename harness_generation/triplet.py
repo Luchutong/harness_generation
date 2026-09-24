@@ -393,6 +393,13 @@ def missing_structural_steps(
     release it twice.  A step with no call at all is reported as the alternatives
     it is, so the diagnostic names what is actually missing.  An ``expected``
     function outside every step keeps the per-function rule.
+
+    One function can carry out more than one step -- ``xmlOutputBuffer`` is
+    built from either an ``xmlBuffer`` or an ``xmlCharEncodingHandler``, so
+    ``xmlOutputBufferCreateBuffer`` appears in two separate steps.  Both are
+    left unimplemented by the same missing call, and naming that function twice
+    would read as a demand for two calls when one satisfies both.  The result is
+    therefore deduplicated.
     """
 
     invoked = set(called)
@@ -402,7 +409,7 @@ def missing_structural_steps(
         " or ".join(group) for group in groups if not invoked.intersection(group)
     ]
     missing.extend(sorted(set(expected) - covered - invoked))
-    return tuple(sorted(missing))
+    return tuple(sorted(set(missing)))
 
 
 def stable_triplet_id(

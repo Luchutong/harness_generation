@@ -15,7 +15,8 @@ from .artifacts import ArtifactStore
 from .llm import (LLMClient, LLMConfig, LLMError, MockLLM,
                   OpenAICompatibleLLM, RecordedResponseLLM)
 from .fuzz_smoke import LibFuzzerSmokeConfig
-from .ft_selection import FT_SELECTION_SCHEMA_VERSION, triplet_catalog_sha256
+from .ft_selection import (FT_SELECTION_SCHEMA_VERSION, estimate_structural_units,
+                           triplet_catalog_sha256)
 from .orchestrator import (
     PIPELINE_STAGES,
     STAGE_1_DOCS,
@@ -27,6 +28,7 @@ from .orchestrator import (
     PipelineRunResult,
     PipelineStage,
     PipelineState,
+    latest_unresolved_rollback,
 )
 from .pipeline_validation import (
     PipelineStageValidator,
@@ -74,6 +76,16 @@ def main(
     parser.add_argument(
         "--until-stage", type=int, choices=range(1, 5), default=4
     )
+    parser.add_argument("--max-ft", type=_positive_integer, default=20,
+                        help="Maximum FTs in one run (default: 20)")
+    parser.add_argument("--max-ft-functions", type=_positive_integer, default=20,
+                        help="Maximum functions in each FT (default: 20)")
+    parser.add_argument("--max-structural-units", type=_positive_integer, default=20,
+                        help="Maximum Stage 2 units in each FT (default: 20)")
+    parser.add_argument("--max-llm-calls", type=_positive_integer, default=300,
+                        help="Hard cap on generation requests in this run (default: 300)")
+    parser.add_argument("--max-catalog-mib", type=_positive_integer, default=128,
+                        help="Maximum triplets.json size to load (default: 128 MiB)")
     parser.add_argument(
         "--max-regen-per-level",
         type=_positive_integer,
@@ -93,6 +105,16 @@ def main(
     parser.add_argument(
         "--target-contract", type=Path,
         help="Load an explicit typed target input/resource contract",
+    )
+    parser.add_argument(
+        "--stage4-policy",
+        choices=("strict", "hybrid"),
+        default=None,
+        help=(
+            "Stage 4 validation policy: strict stops on intermediate policy "
+            "errors; hybrid downgrades them to warnings and requires real "
+            "build/runtime success"
+        ),
     )
     parser.add_argument("--resume", action="store_true")
     if run_command:
@@ -137,6 +159,10 @@ def main(
         "--model",
         help="Override LLM_MODEL for the real provider",
     )
+    parser.add_argument(
+        "--allow-unverified-semantic-artifacts", action="store_true",
+        help="Allow real generation from Phase 1 artifacts lacking LLM provenance",
+    )
     args = parser.parse_args(arguments)
     if run_command and args.smoke_fuzz and not args.build:
         parser.error("--smoke-fuzz requires --build")
@@ -147,6 +173,11 @@ def main(
         )
         build_requested = not run_command or args.build
         effective_validation = validation_config or PipelineValidationConfig()
+        if args.stage4_policy is not None:
+            effective_validation = replace(
+                effective_validation,
+                stage4_policy=args.stage4_policy,
+            )
         if args.target_build is not None:
             if validation_config is not None and validation_config.target_build is not None:
                 raise ValueError("cannot combine --target-build with target_build config")
@@ -170,6 +201,7 @@ def main(
         )
         store = ArtifactStore(args.artifacts)
         store.ensure_catalogs()
+        _check_catalog_size(store.triplets, args.max_catalog_mib)
         triplets = load_triplets_json(store.triplets)
         if all_triplets:
             selected = (
@@ -178,6 +210,13 @@ def main(
             )
         else:
             selected = (_select_triplet(triplets, args.triplet_id),)
+        _check_generation_budget(
+            selected, max_ft=args.max_ft,
+            max_ft_functions=args.max_ft_functions,
+            max_structural_units=args.max_structural_units,
+            max_llm_calls=args.max_llm_calls,
+            until_stage=args.until_stage,
+        )
         if args.target_contract is not None:
             contract = TargetContract.from_dict(json.loads(
                 args.target_contract.read_text(encoding="utf-8")
@@ -195,6 +234,10 @@ def main(
             mock_responses=args.mock_responses,
             recorded_responses=args.recorded_responses,
         )
+        if (isinstance(client, OpenAICompatibleLLM)
+                and not args.allow_unverified_semantic_artifacts):
+            _require_llm_semantics(store.annotations)
+        client = _BudgetedLLM(client, args.max_llm_calls)
         failures = 0
         for triplet in selected:
             result = _generate_triplet(
@@ -234,6 +277,96 @@ def main(
     except (OSError, ValueError, LLMError) as error:
         print(f"Generation failed: {error}", file=sys.stderr)
         return 1
+
+
+class _BudgetedLLM:
+    """Enforce the request limit even when validation regenerates stages."""
+
+    def __init__(self, client: LLMClient, limit: int):
+        self.client = client
+        self.limit = limit
+        self.calls = 0
+
+    def generate(self, prompt, *, prompt_version=None):
+        if self.calls >= self.limit:
+            raise LLMError(
+                f"generation request budget exhausted ({self.calls}/{self.limit}); "
+                "raise --max-llm-calls to continue"
+            )
+        self.calls += 1
+        return self.client.generate(prompt, prompt_version=prompt_version)
+
+
+def _check_generation_budget(
+    triplets: Sequence[FunctionTriplet], *, max_ft: int,
+    max_ft_functions: int, max_structural_units: int,
+    max_llm_calls: int, until_stage: int,
+) -> None:
+    if len(triplets) > max_ft:
+        raise ValueError(f"selected {len(triplets)} FTs; --max-ft is {max_ft}")
+    estimated = 0
+    for triplet in triplets:
+        functions = len(triplet.functions)
+        units = estimate_structural_units(triplet)
+        if functions > max_ft_functions:
+            raise ValueError(
+                f"FT {triplet.id} has {functions} functions; "
+                f"--max-ft-functions is {max_ft_functions}"
+            )
+        if units > max_structural_units:
+            raise ValueError(
+                f"FT {triplet.id} has {units} Stage 2 units; "
+                f"--max-structural-units is {max_structural_units}"
+            )
+        estimated += (functions + (units if until_stage >= 2 else 0)
+                      + (1 if until_stage >= 3 else 0)
+                      + (2 if until_stage >= 4 else 0))
+    if estimated > max_llm_calls:
+        raise ValueError(
+            f"selected FTs need at least {estimated} generation requests; "
+            f"--max-llm-calls is {max_llm_calls}"
+        )
+
+
+def _require_llm_semantics(path: Path) -> None:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("cannot verify Phase 1 semantic provenance") from exc
+    if (not isinstance(document, dict)
+            or document.get("semantic_backend") != "llm"):
+        raise ValueError(
+            "Phase 1 annotations were not verified as real LLM decisions; "
+            "rerun sfg_builder --semantic-analyzer llm or use "
+            "--allow-unverified-semantic-artifacts"
+        )
+    annotations = document.get("annotations")
+    if not isinstance(annotations, list) or any(
+        not isinstance(annotation, dict)
+        or not isinstance(annotation.get("decisions"), list)
+        for annotation in annotations
+    ):
+        raise ValueError("Phase 1 annotations have invalid semantic records")
+    decisions = [decision for annotation in annotations
+                 for decision in annotation["decisions"]]
+    if not decisions or any(
+        not isinstance(decision, dict) or decision.get("status") != "ok"
+        for decision in decisions
+    ):
+        raise ValueError(
+            "Phase 1 contains missing or failed semantic decisions; rerun "
+            "sfg_builder or use --allow-unverified-semantic-artifacts"
+        )
+
+
+def _check_catalog_size(path: Path, max_mib: int) -> None:
+    size = path.stat().st_size
+    if size > max_mib * 1024 * 1024:
+        raise ValueError(
+            f"triplets.json is {size / 1024 / 1024:.1f} MiB; "
+            f"--max-catalog-mib is {max_mib}. Regenerate with "
+            "triplets --max-functions-per-ft or raise the limit"
+        )
 
 
 def _generate_triplet(
@@ -415,6 +548,10 @@ def _stage_handlers(
                     if validators.target_build is not None else None
                 ),
                 contract_identity=contract_identity,
+                stage4_policy=(
+                    validation_config.stage4_policy
+                    if validation_config is not None else "strict"
+                ),
             ),
         ),
     )
@@ -422,6 +559,7 @@ def _stage_handlers(
 
 def _publish_harness(
     layout, result, *, recipe_identity=None, contract_identity=None,
+    stage4_policy="strict",
 ):
     summary_path = layout.validation_summary
     summary = {}
@@ -439,6 +577,7 @@ def _publish_harness(
         validation_summary=summary,
         recipe_identity=recipe_identity,
         contract_identity=contract_identity,
+        stage4_policy=stage4_policy,
     )
     if promoted:
         return replace(result, stable_path=layout.harness)
@@ -487,16 +626,16 @@ def _retry_context(
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     history = document.get("history", []) if isinstance(document, dict) else []
-    for event in reversed(history if isinstance(history, list) else []):
-        if isinstance(event, dict) and event.get("event") == "rollback":
-            return {
-                key: event.get(key)
-                for key in (
-                    "failed_stage", "validator", "failure_type", "attempt",
-                    "rollback_target", "reason",
-                )
-            }
-    return None
+    event = latest_unresolved_rollback(history if isinstance(history, list) else [])
+    if event is None:
+        return None
+    return {
+        key: event.get(key)
+        for key in (
+            "failed_stage", "validator", "failure_type", "attempt",
+            "rollback_target", "reason",
+        )
+    }
 
 
 def _positive_integer(value: str) -> int:
@@ -621,6 +760,7 @@ def _resolve_llm(
     api_key = environment.get("LLM_API_KEY", "").strip()
     selected_model = (model or environment.get("LLM_MODEL", "")).strip()
     thinking = environment.get("LLM_THINKING", "").strip().lower() or None
+    max_tokens_value = environment.get("LLM_MAX_TOKENS", "").strip()
     missing = []
     if not base_url:
         missing.append("LLM_BASE_URL")
@@ -634,12 +774,22 @@ def _resolve_llm(
         )
     if thinking not in {None, "enabled", "disabled"}:
         raise ValueError("LLM_THINKING must be enabled or disabled")
+    max_tokens = None
+    if max_tokens_value:
+        try:
+            max_tokens = int(max_tokens_value)
+        except ValueError as error:
+            raise ValueError("LLM_MAX_TOKENS must be a positive integer") from error
+        if max_tokens <= 0:
+            raise ValueError("LLM_MAX_TOKENS must be a positive integer")
+    overrides = {} if max_tokens is None else {"max_tokens": max_tokens}
     return OpenAICompatibleLLM(
         LLMConfig(
             model=selected_model,
             base_url=base_url,
             api_key_env_name="LLM_API_KEY",
             thinking=thinking,
+            **overrides,
         ),
         environ=environment,
     )
@@ -703,4 +853,35 @@ def _select_from_manifest(
     unknown = [ft_id for ft_id in ids if ft_id not in by_id]
     if unknown:
         raise ValueError("FT selection references unknown triplet: " + ", ".join(unknown))
-    return tuple(by_id[ft_id] for ft_id in ids)
+    selected = tuple(by_id[ft_id] for ft_id in ids)
+    actual_calls = sum(
+        len(item.functions) + estimate_structural_units(item) + 3
+        for item in selected
+    )
+    summary = document.get("summary")
+    if summary is not None and (
+        not isinstance(summary, dict)
+        or summary.get("selected_count") != len(selected)
+        or summary.get("estimated_llm_calls") != actual_calls
+    ):
+        raise ValueError("FT selection summary does not match the selected catalog entries")
+    constraints = document.get("constraints", {})
+    if not isinstance(constraints, dict):
+        raise ValueError("FT selection constraints must be an object")
+    for name in ("max_ft", "max_calls", "max_functions", "max_structural_units"):
+        value = constraints.get(name)
+        if value is not None and (type(value) is not int or value < 0):
+            raise ValueError(f"FT selection {name} must be a non-negative integer")
+    if constraints.get("max_ft") is not None and len(selected) > constraints["max_ft"]:
+        raise ValueError("FT selection exceeds its max_ft constraint")
+    if constraints.get("max_calls") is not None and actual_calls > constraints["max_calls"]:
+        raise ValueError("FT selection exceeds its max_calls constraint")
+    if (constraints.get("max_functions") is not None
+            and any(len(item.functions) > constraints["max_functions"]
+                    for item in selected)):
+        raise ValueError("FT selection exceeds its max_functions constraint")
+    if (constraints.get("max_structural_units") is not None
+            and any(estimate_structural_units(item) > constraints["max_structural_units"]
+                    for item in selected)):
+        raise ValueError("FT selection exceeds its max_structural_units constraint")
+    return selected

@@ -7,7 +7,7 @@ import hashlib
 import json
 from typing import Any, Iterable, Mapping
 
-from .base import SemanticAnalyzer, SemanticDecision
+from .base import SemanticAnalyzer, SemanticBudgetExceeded, SemanticDecision
 from .models import FunctionAnnotation, FunctionInfo
 from .prompts import USAGE_REVIEW_PROMPT_VERSION, usage_review_prompt
 from .usage import UsageMiningResult, UsagePattern
@@ -69,6 +69,8 @@ def review_usage_semantics(
                 batch, decision.prompt, decision.prompt_version,
                 decision.response, decision.confidence, "ok", None, backend,
             ))
+        except SemanticBudgetExceeded:
+            raise
         except Exception as error:
             traces.append(_trace(
                 batch, prompt, USAGE_REVIEW_PROMPT_VERSION, {}, 0.0,

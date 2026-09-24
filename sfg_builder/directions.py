@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from .base import SemanticAnalyzer, SemanticDecision
+from .base import (SemanticAnalyzer, SemanticBudgetExceeded, SemanticDecision,
+                   SemanticReplayMismatch)
 from .models import (AccessHint, DecisionTrace, FunctionAnnotation, FunctionInfo,
                      ParameterInfo, StructDirection, StructInfo)
 from .prompts import DIRECTION_PROMPT_VERSION, direction_prompt
@@ -36,9 +37,12 @@ class StructDirectionAnalyzer:
                     continue
                 hint = hints.get(parameter.name or "")
                 if parameter.is_pointer:
-                    decision = _safe_pointer_direction(
+                    decision = (_safe_pointer_direction(
                         self.analyzer, function, parameter, hint, relevant_structs,
-                    )
+                    ) if needs_semantic_direction(parameter, hint) else
+                        _decisive_static_direction(
+                            function, parameter, hint, relevant_structs,
+                        ))
                 else:
                     decision = _by_value_direction(function, parameter, hint, relevant_structs)
                 directions.append(StructDirection(
@@ -69,6 +73,8 @@ def _safe_pointer_direction(analyzer: SemanticAnalyzer, function: FunctionInfo,
         decision = analyzer.infer_struct_direction(function, parameter, hint, structs)
         _validate_direction(decision, parameter)
         return decision
+    except (SemanticBudgetExceeded, SemanticReplayMismatch):
+        raise
     except Exception as exc:
         direction, reason, confidence = _static_fallback(parameter, hint)
         data = {"parameter": parameter.name, "struct_type": parameter.base_type,
@@ -92,6 +98,45 @@ def _by_value_direction(function: FunctionInfo, parameter: ParameterInfo,
         "struct_type": parameter.base_type,
         "direction": "input",
         "reason": "C passes a non-pointer struct parameter by value",
+        "confidence": 1.0,
+    }
+    return SemanticDecision(
+        data,
+        direction_prompt(function, parameter, hint, structs),
+        STATIC_PROMPT_VERSION,
+        data,
+        1.0,
+    )
+
+
+def needs_semantic_direction(
+    parameter: ParameterInfo, hint: AccessHint | None,
+) -> bool:
+    """Only unresolved struct pointers need the paper's semantic direction step."""
+    return bool(parameter.is_struct_like and parameter.is_pointer
+                and not parameter.is_const
+                and not (hint and (hint.reads or hint.writes)))
+
+
+def _decisive_static_direction(
+    function: FunctionInfo, parameter: ParameterInfo,
+    hint: AccessHint | None, structs: tuple[StructInfo, ...],
+) -> SemanticDecision:
+    if hint and hint.reads and hint.writes:
+        direction, reason = "both", "AST reports member reads and writes"
+    elif hint and hint.writes:
+        direction, reason = "output", "AST reports member writes"
+    elif hint and hint.reads:
+        direction, reason = "input", "AST reports member reads"
+    elif parameter.is_const:
+        direction, reason = "input", "const-qualified struct pointer"
+    else:
+        raise ValueError("struct pointer direction has no decisive static evidence")
+    data = {
+        "parameter": parameter.name,
+        "struct_type": parameter.base_type,
+        "direction": direction,
+        "reason": reason,
         "confidence": 1.0,
     }
     return SemanticDecision(

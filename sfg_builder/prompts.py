@@ -10,7 +10,7 @@ from .models import AccessHint, FunctionInfo, ParameterInfo, StructInfo
 
 STREAM_PROMPT_VERSION = "sfg-stream-v1"
 ROLE_PROMPT_VERSION = "sfg-role-v1"
-DIRECTION_PROMPT_VERSION = "sfg-direction-v1"
+DIRECTION_PROMPT_VERSION = "sfg-direction-v2"
 USAGE_REVIEW_PROMPT_VERSION = "sfg-usage-review-v1"
 STREAM_VARIANTS = ("direct", "yes_no", "multiple_choice")
 
@@ -53,7 +53,10 @@ def direction_prompt(function: FunctionInfo, parameter: ParameterInfo, hint: Acc
     return (
         _context(function, structs)
         + f"\nTarget struct pointer: {parameter.name}: {parameter.type}"
-        + f"\nAST access hints: {hint_json}\nReturn only this JSON object: "
+        + f"\nAST access hints: {hint_json}"
+        + f"\nSet parameter exactly to {parameter.name!r} and struct_type exactly "
+          f"to the base type {parameter.base_type!r}, without pointer symbols."
+          "\nReturn only this JSON object: "
         + '{"parameter":"...","struct_type":"...",'
           '"direction":"input|output|both|unknown","reason":"...","confidence":0.0}'
     )

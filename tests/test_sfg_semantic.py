@@ -63,6 +63,46 @@ class SemanticIsolationTests(unittest.TestCase):
         self.assertTrue(all("provider details" not in (decision.error or "")
                             for decision in result.decisions))
 
+    def test_filename_kind_vetoes_inconsistent_positive_boolean(self):
+        class InconsistentAnalyzer(MockSemanticAnalyzer):
+            def classify_stream_parameter(self, function, parameter, structs, variant):
+                decision = super().classify_stream_parameter(
+                    function, parameter, structs, variant
+                )
+                data = {"is_byte_stream": True, "kind": "filename",
+                        "confidence": 0.95, "reason": "contiguous filename string"}
+                return SemanticDecision(
+                    data, decision.prompt, decision.prompt_version, data, 0.95,
+                )
+
+        result = vote_stream_parameter(
+            InconsistentAnalyzer(), self.function, self.stream_parameter, (),
+        )
+        self.assertFalse(result.is_byte_stream)
+        self.assertEqual(result.positive_votes, 0)
+        self.assertIn("vetoed", result.reason)
+
+    def test_uri_name_is_not_raw_input_even_when_model_calls_it_text(self):
+        from dataclasses import replace
+
+        class PositiveTextAnalyzer(MockSemanticAnalyzer):
+            def classify_stream_parameter(self, function, parameter, structs, variant):
+                decision = super().classify_stream_parameter(
+                    function, parameter, structs, variant
+                )
+                data = {"is_byte_stream": True, "kind": "text",
+                        "confidence": 0.9, "reason": "contiguous URI text"}
+                return SemanticDecision(
+                    data, decision.prompt, decision.prompt_version, data, 0.9,
+                )
+
+        uri = replace(self.stream_parameter, name="URI")
+        result = vote_stream_parameter(
+            PositiveTextAnalyzer(), self.function, uri, (),
+        )
+        self.assertFalse(result.is_byte_stream)
+        self.assertEqual(result.positive_votes, 0)
+
     def test_llm_requires_raw_json_object_and_strict_schema(self):
         valid = _transport(
             '{"is_byte_stream":true,"kind":"binary","confidence":0.8,"reason":"bytes"}')
@@ -82,6 +122,37 @@ class SemanticIsolationTests(unittest.TestCase):
                 with self.assertRaises(SemanticError):
                     analyzer.classify_stream_parameter(
                         self.function, self.stream_parameter, (), "direct")
+
+    def test_llm_semantic_thinking_can_be_disabled_for_json_decisions(self):
+        payloads = []
+
+        def transport(payload):
+            payloads.append(payload)
+            return _transport(
+                '{"is_byte_stream":true,"kind":"binary","confidence":0.8,"reason":"bytes"}'
+            )(payload)
+
+        LLMSemanticAnalyzer(transport, "test", thinking="disabled").classify_stream_parameter(
+            self.function, self.stream_parameter, (), "direct"
+        )
+        self.assertEqual(payloads[0]["thinking"], {"type": "disabled"})
+        with self.assertRaises(ValueError):
+            LLMSemanticAnalyzer(transport, "test", thinking="unsupported")
+
+    def test_direction_accepts_named_pointer_type_from_provider(self):
+        content = json.dumps({
+            "parameter": self.struct_parameter.name,
+            "struct_type": self.struct_parameter.type,
+            "direction": "output",
+            "reason": "writes through the pointer",
+            "confidence": 0.8,
+        })
+        decision = LLMSemanticAnalyzer(
+            _transport(content), "test", thinking="disabled"
+        ).infer_struct_direction(
+            self.function, self.struct_parameter, None, self.parsed.structs
+        )
+        self.assertEqual(decision.data["direction"], "output")
 
     def test_llm_usage_review_has_a_strict_batched_contract(self):
         pattern = {

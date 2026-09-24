@@ -266,6 +266,41 @@ class FunctionTripletSerializationTests(unittest.TestCase):
             ("configure",),
         )
 
+    def test_one_function_on_two_steps_is_reported_once(self):
+        # xmlOutputBufferCreateBuffer builds an xmlOutputBuffer from either an
+        # xmlBuffer or an xmlCharEncodingHandler, so it carries two structural
+        # steps. One missing call leaves both unimplemented, and naming it twice
+        # would read as a demand for two calls when one satisfies both.
+        builder = function("src/parser.c:30:build", "build", ("PRF",), 30)
+        edges = tuple(
+            TripletEdge(
+                builder.function_id, builder.function, source, "Context",
+                builder.roles, builder.file, builder.line,
+            )
+            for source in ("Buffer", "Handler")
+        )
+        triplet = FunctionTriplet(
+            self.isf, (builder,), (self.hpf,),
+            (self.isf, builder, self.hpf),
+            ("Buffer", "Context", "Handler"),
+            (self.parse_edge, *edges, self.destroy_edge), {},
+        )
+        self.assertEqual(
+            [step.functions for step in triplet.structural_steps()],
+            [("parse",), ("build",), ("destroy",), ("build",)],
+        )
+        missing = triplet.missing_structural_steps(())
+        self.assertEqual(missing, ("build", "destroy", "parse"))
+        self.assertEqual(len(set(missing)), len(missing))
+        # Calling it once satisfies both steps, so nothing is left over.
+        self.assertEqual(
+            triplet.missing_structural_steps(("parse", "build", "destroy")), ()
+        )
+        # And a plan that skips it is still told, once, that it is missing.
+        self.assertEqual(
+            triplet.missing_structural_steps(("parse", "destroy")), ("build",)
+        )
+
     def test_missing_structural_steps_keeps_the_per_function_rule_without_steps(self):
         self.assertEqual(
             missing_structural_steps(("parse", "process", "destroy"), (), ("process",)),

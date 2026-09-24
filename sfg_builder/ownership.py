@@ -172,6 +172,7 @@ def _infer_resource_relations(
         by_name.setdefault(function.name, []).append(function)
     inferred: list[OwnershipRelation] = []
     for resource_type in sorted(resource_origins):
+        allocation_cache: dict[str, bool] = {}
         producers = [
             function for function in linkable
             if function.id not in explicit_producers
@@ -180,7 +181,9 @@ def _infer_resource_relations(
             and _producer_evidence(function)
             and (
                 not _PARSE_LIKE_WORD.search(_split_camel(function.name))
-                or _parse_has_allocation_origin(function, by_name, set())
+                or _parse_has_allocation_origin(
+                    function, by_name, set(), memo=allocation_cache
+                )
             )
         ]
         cleanups = [
@@ -250,6 +253,9 @@ def _cleanup_parameter(
 
 
 _CALL_SITE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
+_ALLOC_SLOT_ASSIGNMENT = re.compile(
+    r"\b(?:mem_)?alloc\s*=\s*([A-Za-z_]\w*)\b"
+)
 
 
 def _parse_has_allocation_origin(
@@ -257,17 +263,26 @@ def _parse_has_allocation_origin(
     by_name: dict[str, list[FunctionInfo]],
     visited: set[str],
     budget: list[int] | None = None,
+    memo: dict[str, bool] | None = None,
 ) -> bool:
     """Require parse-like owned returns to reach a real allocator or contract."""
+    if memo is None:
+        memo = {}
+    cached = memo.get(function.id)
+    if cached is not None and function.id not in visited:
+        return cached
     if budget is None:
         budget = [256]
-    if (budget[0] <= 0 or function.id in visited
-            or len(visited) >= 16
+    if function.id in visited:
+        return False
+    if (budget[0] <= 0 or len(visited) >= 16
             or _BORROWED_RETURN.search(function.documentation)):
+        memo[function.id] = False
         return False
     budget[0] -= 1
     visited = visited | {function.id}
     if function.return_ownership is not None and function.return_ownership.owned:
+        memo[function.id] = True
         return True
     # A parser returning one of its inputs is a borrowed view even if it also
     # allocates temporary scratch objects elsewhere in its body.
@@ -276,28 +291,29 @@ def _parse_has_allocation_origin(
             r"\breturn\s+" + re.escape(parameter.name) + r"\s*;",
             function.body,
         ):
+            memo[function.id] = False
             return False
     if _DIRECT_ALLOCATION.search(function.body):
+        memo[function.id] = True
         return True
     for callee_name in dict.fromkeys(_CALL_SITE.findall(function.body)):
         callee = _resolve_local_callee(function, by_name.get(callee_name, ()))
         if callee is not None and _parse_has_allocation_origin(
-            callee, by_name, visited, budget
+            callee, by_name, visited, budget, memo
         ):
+            memo[function.id] = True
             return True
     # Some libraries allocate through a configurable callback. Follow only a
     # concrete default allocator installed into an allocation slot; the slot's
     # name and the callee's body together provide the ownership evidence.
-    for callee_name, candidates in by_name.items():
-        if re.search(
-            r"\b(?:mem_)?alloc\s*=\s*" + re.escape(callee_name) + r"\b",
-            function.body,
+    for callee_name in dict.fromkeys(_ALLOC_SLOT_ASSIGNMENT.findall(function.body)):
+        callee = _resolve_local_callee(function, by_name.get(callee_name, ()))
+        if callee is not None and _parse_has_allocation_origin(
+            callee, by_name, visited, budget, memo
         ):
-            callee = _resolve_local_callee(function, candidates)
-            if callee is not None and _parse_has_allocation_origin(
-                callee, by_name, visited, budget
-            ):
-                return True
+            memo[function.id] = True
+            return True
+    memo[function.id] = False
     return False
 
 

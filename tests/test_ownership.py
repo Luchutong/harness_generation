@@ -201,3 +201,27 @@ def test_opaque_handle_typedef_recovers_create_use_free_lifecycle():
     assert relation.resource_type == "Parser"
     assert relation.confidence >= 0.8
     assert relation.source == "opaque_handle_static_inference"
+
+
+def test_parse_allocation_origin_follows_recursive_wrapper_once():
+    parsed = parse_source('''
+    typedef struct Value { int field; } Value;
+    Value *value_parse_inner(const char *text) {
+        (void)text;
+        return malloc(sizeof(Value));
+    }
+    Value *value_parse(Value *existing, const char *text) {
+        if (existing != 0)
+            return value_parse(existing, text);
+        return value_parse_inner(text);
+    }
+    void value_free(Value *value) { free(value); }
+    ''')
+
+    relations = derive_ownership_relations(
+        parsed.functions, struct_resource_types=("Value",)
+    )
+
+    assert {relation.producer_function for relation in relations} == {
+        "value_parse", "value_parse_inner",
+    }

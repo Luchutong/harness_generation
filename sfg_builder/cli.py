@@ -11,6 +11,8 @@ import sys
 
 from .parser import DEFAULT_IGNORES, ProjectParseError
 from .pipeline import SFGPipeline
+from .client import BudgetedSemanticTransport
+from .replay import ReplayedSemanticAnalyzer
 from .semantic import LLMSemanticAnalyzer, MockSemanticAnalyzer, OpenAICompatibleTransport
 
 
@@ -20,29 +22,73 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", required=True, type=Path, help="Artifact directory")
     parser.add_argument("--ignore-dir", action="append", default=[], metavar="PATTERN",
                         help="Additional ignored directory name/glob; repeatable")
-    parser.add_argument("--semantic-analyzer", choices=("mock", "llm"), default="mock",
+    parser.add_argument("--source-glob", action="append", default=[], metavar="GLOB",
+                        help="Only parse project-relative source/header paths matching this glob; repeatable")
+    parser.add_argument("--semantic-analyzer", choices=("mock", "llm", "replay"), default="mock",
                         help="Semantic backend; mock is deterministic and requires no API key")
+    parser.add_argument("--replay-annotations", type=Path,
+                        help="Recorded real LLM annotations for zero-network replay")
     parser.add_argument("--model", default="deepseek-v4-flash")
     parser.add_argument("--endpoint", default="https://api.deepseek.com/chat/completions")
+    parser.add_argument("--thinking", choices=("enabled", "disabled"),
+                        help="Set thinking mode for semantic LLM requests")
+    parser.add_argument("--max-semantic-requests", type=_positive_integer, default=300,
+                        help="Hard cap on real semantic LLM requests (default: 300)")
+    parser.add_argument("--paper-minimal", action="store_true",
+                        help="Skip usage-pattern mining and LLM review outside paper Phase 1")
     parser.add_argument("--render", action="store_true", help="Render sfg.svg with Graphviz dot")
     args = parser.parse_args(argv)
-    if args.semantic_analyzer == "llm":
+    if args.semantic_analyzer == "replay":
+        if not args.paper_minimal or args.replay_annotations is None:
+            parser.error("replay requires --paper-minimal and --replay-annotations")
+        analyzer = ReplayedSemanticAnalyzer(args.replay_annotations)
+    elif args.semantic_analyzer == "llm":
         api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
         if not api_key:
             parser.error("--semantic-analyzer llm requires DEEPSEEK_API_KEY")
-        analyzer = LLMSemanticAnalyzer(OpenAICompatibleTransport(api_key, args.endpoint), args.model)
+        analyzer = LLMSemanticAnalyzer(
+            BudgetedSemanticTransport(
+                OpenAICompatibleTransport(api_key, args.endpoint),
+                args.max_semantic_requests,
+                progress=lambda count, limit: (
+                    print(f"[SFG] semantic requests: {count}/{limit}", file=sys.stderr)
+                    if count == 1 or count % 10 == 0 else None
+                ),
+            ), args.model,
+            thinking=args.thinking,
+        )
     else:
         analyzer = MockSemanticAnalyzer()
+    if args.semantic_analyzer != "replay" and args.replay_annotations is not None:
+        parser.error("--replay-annotations requires --semantic-analyzer replay")
     try:
-        result = SFGPipeline(analyzer, ignored_directories=DEFAULT_IGNORES + tuple(args.ignore_dir)).run(
-            args.project, args.output)
+        result = SFGPipeline(
+            analyzer,
+            ignored_directories=DEFAULT_IGNORES + tuple(args.ignore_dir),
+            source_globs=tuple(args.source_glob),
+            max_semantic_requests=(args.max_semantic_requests
+                                   if args.semantic_analyzer == "llm" else None),
+            paper_minimal=args.paper_minimal,
+        ).run(args.project, args.output)
     except (ProjectParseError, OSError, ValueError) as exc:
         print(f"SFG build failed: {exc}", file=sys.stderr)
         return 1
     _print_summary(result)
+    if args.semantic_analyzer == "llm":
+        print(f"Semantic HTTP requests: {analyzer.transport.calls}")
     if args.render:
         _render_svg(args.output)
     return 0
+
+
+def _positive_integer(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
 
 
 def _render_svg(output: Path) -> None:

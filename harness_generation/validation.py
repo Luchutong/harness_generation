@@ -26,7 +26,12 @@ from .triplet import (
 
 VALIDATION_SCHEMA_VERSION = 1
 VALIDATION_STATUSES = frozenset({
-    "passed", "failed", "skipped", "unavailable", "passed_with_limitations",
+    "passed",
+    "failed",
+    "skipped",
+    "unavailable",
+    "passed_with_limitations",
+    "passed_with_warnings",
 })
 
 
@@ -70,7 +75,9 @@ class ValidationResult:
             object.__setattr__(self, "status", status)
         if status not in VALIDATION_STATUSES:
             raise ValueError("ValidationResult.status is invalid")
-        if status in {"passed", "passed_with_limitations"}:
+        if status in {
+            "passed", "passed_with_limitations", "passed_with_warnings",
+        }:
             consistent = self.success is True and not self.errors
         elif status == "failed":
             consistent = self.success is False and bool(self.errors)
@@ -85,7 +92,9 @@ class ValidationResult:
     def accepted(self) -> bool:
         """Accept only a passed policy, with declared limitations if needed."""
 
-        return self.status in {"passed", "passed_with_limitations"}
+        return self.status in {
+            "passed", "passed_with_limitations", "passed_with_warnings",
+        }
 
     @property
     def stable_eligible(self) -> bool:

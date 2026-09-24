@@ -249,6 +249,7 @@ class Stage4Generator:
                 relation.to_dict() for relation in triplet.ownership_relations
             ],
             structural_steps=[step.to_dict() for step in triplet.structural_steps()],
+            ft_functions=[function.function for function in triplet.functions],
             project_context=project_context,
             protocol_contract=protocol_contract,
             protocol_contract_bindings=(
@@ -369,6 +370,7 @@ class Stage4Generator:
                 analysis,
                 triplet,
                 isf_metadata,
+                function_metadata,
                 all_project_functions,
                 harness_plan,
                 protocol_helpers=reconciliation.callable_helpers,
@@ -1168,6 +1170,7 @@ def _validate_harness(
     analysis: _HarnessAnalysis,
     triplet: FunctionTriplet,
     isf_metadata: Mapping[str, Any],
+    function_metadata: Mapping[str, Mapping[str, Any]],
     all_project_functions: set[str],
     plan: HarnessPlan,
     *,
@@ -1264,9 +1267,29 @@ def _validate_harness(
         call, isf_metadata, entry.assignments, plan.input_strategy,
     ) for call in isf_calls):
         raise Stage4Error("Stage 4 ISF call is not connected to external data/size")
-    _validate_callback_bindings(
-        analysis, entry, isf_calls, isf_metadata, project_context or {}
+    ft_metadata_by_name = {
+        str(metadata.get("name")): metadata
+        for metadata in function_metadata.values()
+        if isinstance(metadata.get("name"), str)
+    }
+    additional_callback_groups = tuple(
+        (
+            [call for call in entry_calls if call.name == name],
+            metadata,
+        )
+        for name, metadata in sorted(ft_metadata_by_name.items())
+        if name != triplet.isf.function
     )
+    _validate_callback_bindings(
+        analysis,
+        entry,
+        isf_calls,
+        isf_metadata,
+        project_context or {},
+        additional_call_groups=additional_callback_groups,
+        require_non_null_typedef_callbacks=True,
+    )
+    _validate_non_null_encoder_arguments(entry_calls, ft_metadata_by_name)
 
     first_isf = min(call.start_byte for call in isf_calls)
     prf_names = {function.function for function in triplet.prfs}
@@ -1298,6 +1321,9 @@ def _validate_callback_bindings(
     isf_calls: list[_Call],
     isf_metadata: Mapping[str, Any],
     project_context: Mapping[str, Any],
+    *,
+    additional_call_groups: Iterable[tuple[list[_Call], Mapping[str, Any]]] = (),
+    require_non_null_typedef_callbacks: bool = False,
 ) -> None:
     """Require every callback the target will invoke to be a real, matching function.
 
@@ -1311,84 +1337,192 @@ def _validate_callback_bindings(
     typedefs = _callback_typedefs_by_name(project_context)
     if not tables and not typedefs:
         return
-    parameters = isf_metadata.get("parameters", [])
-    if not isinstance(parameters, list):
-        return
-    table_parameters = [
-        (index, str(parameter.get("base_type")), tables[str(parameter.get("base_type"))])
-        for index, parameter in enumerate(parameters)
-        if isinstance(parameter, Mapping)
-        and parameter.get("is_struct_like") is True
-        and parameter.get("is_pointer") is True
-        and str(parameter.get("base_type")) in tables
-    ]
-    typedef_parameters = [
-        (index, str(parameter.get("base_type")), typedefs[str(parameter.get("base_type"))])
-        for index, parameter in enumerate(parameters)
-        if isinstance(parameter, Mapping)
-        and str(parameter.get("base_type")) in typedefs
-    ]
-    if not table_parameters and not typedef_parameters:
-        return
     definitions = {function.name: function for function in analysis.functions}
     assignments = tuple(sorted(entry.assignments, key=lambda item: item.start_byte))
-    for call in isf_calls:
-        before_call = tuple(item for item in assignments if item.start_byte < call.start_byte)
-        for index, type_name, fields in table_parameters:
-            for variable in _table_argument_variables(call, index):
-                for field in fields:
-                    signature = _callback_signature(field["return_type"], field["parameter_types"])
-                    expression = _callback_field_expression(before_call, variable, field["name"])
-                    if expression is None:
-                        if field["required"]:
-                            raise Stage4Error(
-                                f"callback table {type_name}.{field['name']} must be "
-                                f"initialized before {call.name}: the target calls it "
-                                f"through {type_name}, and it must have signature {signature}"
-                            )
-                        continue
-                    if _is_null_expression(expression):
-                        if field["required"]:
-                            raise Stage4Error(
-                                f"callback table {type_name}.{field['name']} must not be null "
-                                f"before {call.name}: the target calls it through "
-                                f"{type_name}, and it must have signature {signature}"
-                            )
-                        continue
-                    if _callback_target_name(expression) not in definitions:
+    call_groups = (
+        (list(isf_calls), isf_metadata),
+        *tuple(additional_call_groups),
+    )
+    for calls, metadata in call_groups:
+        parameters = metadata.get("parameters", [])
+        if not isinstance(parameters, list):
+            continue
+        table_parameters = [
+            (index, str(parameter.get("base_type")), tables[str(parameter.get("base_type"))])
+            for index, parameter in enumerate(parameters)
+            if isinstance(parameter, Mapping)
+            and parameter.get("is_struct_like") is True
+            and parameter.get("is_pointer") is True
+            and str(parameter.get("base_type")) in tables
+        ]
+        typedef_parameters = [
+            (index, str(parameter.get("base_type")), typedefs[str(parameter.get("base_type"))])
+            for index, parameter in enumerate(parameters)
+            if isinstance(parameter, Mapping)
+            and str(parameter.get("base_type")) in typedefs
+        ]
+        if not table_parameters and not typedef_parameters:
+            continue
+        for call in calls:
+            _validate_callback_call(
+                call,
+                table_parameters=table_parameters,
+                typedef_parameters=typedef_parameters,
+                assignments=assignments,
+                definitions=definitions,
+                require_non_null_typedef_callbacks=require_non_null_typedef_callbacks,
+            )
+
+
+def _validate_callback_call(
+    call: _Call,
+    *,
+    table_parameters: Iterable[tuple[int, str, tuple[Mapping[str, Any], ...]]],
+    typedef_parameters: Iterable[tuple[int, str, Mapping[str, Any]]],
+    assignments: tuple[_Assignment, ...],
+    definitions: Mapping[str, _FunctionDefinition],
+    require_non_null_typedef_callbacks: bool,
+) -> None:
+    before_call = tuple(item for item in assignments if item.start_byte < call.start_byte)
+    for index, type_name, fields in table_parameters:
+        for variable in _table_argument_variables(call, index):
+            for field in fields:
+                signature = _callback_signature(field["return_type"], field["parameter_types"])
+                expression = _callback_field_expression(before_call, variable, field["name"])
+                if expression is None:
+                    if field["required"]:
                         raise Stage4Error(
-                            f"callback table {type_name}.{field['name']} must be a function "
-                            f"defined by the harness with signature {signature}, got "
-                            f"{expression.strip()!r}"
+                            f"callback table {type_name}.{field['name']} must be "
+                            f"initialized before {call.name}: the target calls it "
+                            f"through {type_name}, and it must have signature {signature}"
                         )
-                    _require_callback_signature(
-                        definitions[_callback_target_name(expression)],
-                        field["return_type"],
-                        field["parameter_types"],
-                        f"callback table {type_name}.{field['name']}",
+                    continue
+                if _is_null_expression(expression):
+                    if field["required"]:
+                        raise Stage4Error(
+                            f"callback table {type_name}.{field['name']} must not be null "
+                            f"before {call.name}: the target calls it through "
+                            f"{type_name}, and it must have signature {signature}"
+                        )
+                    continue
+                if _callback_target_name(expression) not in definitions:
+                    raise Stage4Error(
+                        f"callback table {type_name}.{field['name']} must be a function "
+                        f"defined by the harness with signature {signature}, got "
+                        f"{expression.strip()!r}"
                     )
-        for index, typedef_name, typedef in typedef_parameters:
+                _require_callback_signature(
+                    definitions[_callback_target_name(expression)],
+                    field["return_type"],
+                    field["parameter_types"],
+                    f"callback table {type_name}.{field['name']}",
+                )
+    for index, typedef_name, typedef in typedef_parameters:
+        if index >= len(call.arguments):
+            continue
+        expression = call.arguments[index].text
+        signature = _callback_signature(
+            typedef["return_type"], typedef["parameter_types"]
+        )
+        if _is_null_expression(expression):
+            if require_non_null_typedef_callbacks:
+                raise Stage4Error(
+                    f"{call.name} argument {index} is typed {typedef_name} and "
+                    f"must be a non-null harness function with signature {signature}"
+                )
+            continue
+        name = _callback_target_name(expression)
+        if name not in definitions:
+            targets = _callback_variable_targets(
+                name, assignments, call.start_byte, definitions
+            )
+            if targets:
+                for target in targets:
+                    _require_callback_signature(
+                        definitions[target],
+                        typedef["return_type"],
+                        typedef["parameter_types"],
+                        f"argument {index} of {call.name} ({typedef_name})",
+                    )
+                continue
+            raise Stage4Error(
+                f"{call.name} argument {index} is typed {typedef_name} and must be "
+                f"null or a function defined by the harness with signature "
+                f"{signature}, got {expression.strip()!r}"
+            )
+        _require_callback_signature(
+            definitions[name],
+            typedef["return_type"],
+            typedef["parameter_types"],
+            f"argument {index} of {call.name} ({typedef_name})",
+        )
+
+
+def _callback_variable_targets(
+    variable: str,
+    assignments: tuple[_Assignment, ...],
+    call_start_byte: int,
+    definitions: Mapping[str, _FunctionDefinition],
+) -> tuple[str, ...]:
+    if not variable.isidentifier():
+        return ()
+    targets: list[str] = []
+    for assignment in assignments:
+        if assignment.start_byte >= call_start_byte or assignment.target != variable:
+            continue
+        target = _callback_target_name(assignment.expression)
+        if target in definitions:
+            targets.append(target)
+            continue
+        if re.search(r"\b(?:nullptr|NULL)\b", assignment.expression):
+            return ()
+        candidates = [
+            dependency for dependency in assignment.dependencies
+            if dependency in definitions
+        ]
+        if not candidates:
+            return ()
+        targets.extend(candidates)
+    return tuple(dict.fromkeys(targets))
+
+
+def _validate_non_null_encoder_arguments(
+    entry_calls: tuple[_Call, ...],
+    metadata_by_name: Mapping[str, Mapping[str, Any]],
+) -> None:
+    for call in entry_calls:
+        metadata = metadata_by_name.get(call.name)
+        if metadata is None:
+            continue
+        parameters = metadata.get("parameters", [])
+        if not isinstance(parameters, list):
+            continue
+        for index, parameter in enumerate(parameters):
+            if not _is_encoder_parameter(parameter):
+                continue
             if index >= len(call.arguments):
                 continue
-            expression = call.arguments[index].text
-            if _is_null_expression(expression):
-                continue
-            name = _callback_target_name(expression)
-            signature = _callback_signature(
-                typedef["return_type"], typedef["parameter_types"]
-            )
-            if name not in definitions:
+            if _is_null_expression(call.arguments[index].text):
                 raise Stage4Error(
-                    f"{call.name} argument {index} is typed {typedef_name} and must be "
-                    f"null or a function defined by the harness with signature "
-                    f"{signature}, got {expression.strip()!r}"
+                    f"{call.name} encoder argument {index} must be non-null in "
+                    "aggressive Stage 4 harnesses"
                 )
-            _require_callback_signature(
-                definitions[name],
-                typedef["return_type"],
-                typedef["parameter_types"],
-                f"argument {index} of {call.name} ({typedef_name})",
-            )
+
+
+def _is_encoder_parameter(parameter: Any) -> bool:
+    if not isinstance(parameter, Mapping):
+        return False
+    name = str(parameter.get("name", "")).lower()
+    base_type = str(parameter.get("base_type", "")).lower()
+    declared_type = str(parameter.get("type", "")).lower()
+    return (
+        parameter.get("is_pointer") is True
+        and (
+            "encoder" in name
+            or "encodinghandler" in base_type.replace("_", "")
+            or "encodinghandler" in declared_type.replace("_", "")
+        )
+    )
 
 
 def _table_argument_variables(call: _Call, index: int) -> tuple[str, ...]:
@@ -1453,8 +1587,18 @@ def _declared_type_key(declared: str) -> str:
     text = re.sub(r"\b(?:const|volatile|struct|enum|union)\b", " ", text)
     depth = text.count("*")
     tokens = text.replace("*", " ").replace("(", " ").replace(")", " ").split()
+    if len(tokens) > 1 and tokens[-1].isidentifier() and tokens[-1] not in _TYPE_WORDS:
+        tokens = tokens[:-1]
     base = tokens[-1] if tokens else "void"
     return f"{_CALLBACK_TYPE_ALIASES.get(base, base)}/{depth}"
+
+
+_TYPE_WORDS = frozenset({
+    "void", "char", "short", "int", "long", "float", "double", "signed",
+    "unsigned", "bool", "_Bool", "size_t", "ssize_t",
+    "int8_t", "int16_t", "int32_t", "int64_t",
+    "uint8_t", "uint16_t", "uint32_t", "uint64_t",
+})
 
 
 def _parameter_declared_type(parameter: _Parameter) -> str:
@@ -1472,6 +1616,14 @@ def _without_casts(expression: str) -> str:
     """Strip leading casts so ``(cb_t)foo`` and ``(void*)0`` read as ``foo``/``0``."""
     text = expression.strip()
     while True:
+        cpp_cast = re.fullmatch(
+            r"(?:reinterpret_cast|static_cast|const_cast)<[^>]+>\((.*)\)",
+            text,
+            flags=re.DOTALL,
+        )
+        if cpp_cast is not None:
+            text = cpp_cast.group(1).strip()
+            continue
         stripped = re.sub(r"^\([^()]*\)\s*", "", text)
         if stripped == text:
             return text
@@ -1727,9 +1879,57 @@ def _validate_entry_signature(entry: _FunctionDefinition) -> None:
         raise Stage4Error("second fuzzer parameter must be size_t size")
 
 
+_INPUT_COPY_CALLS = {
+    "memcpy": (0, (1,)),
+    "memmove": (0, (1,)),
+    "std::memcpy": (0, (1,)),
+    "std::memmove": (0, (1,)),
+    "std::copy": (2, (0, 1)),
+    "std::copy_n": (2, (0,)),
+}
+
+
+def _argument_identifiers(argument: Any, source: bytes) -> tuple[str, ...]:
+    """Return ordinary identifiers referenced by an expression argument."""
+    return tuple(dict.fromkeys(
+        _node_text(source, current) for current in _walk(argument)
+        if current.type == "identifier"
+    ))
+
+
+def _copy_assignment(node: Any, source: bytes) -> _Assignment | None:
+    """Turn a recognized buffer-copy call into a conservative taint edge."""
+    callee = node.child_by_field_name("function")
+    arguments_node = node.child_by_field_name("arguments")
+    if callee is None or arguments_node is None:
+        return None
+    callee_name = _node_text(source, callee)
+    indexes = _INPUT_COPY_CALLS.get(callee_name)
+    arguments = tuple(arguments_node.named_children)
+    if indexes is None or len(arguments) <= max(indexes[0], *indexes[1]):
+        return None
+    destination = _argument_identifiers(arguments[indexes[0]], source)
+    if not destination:
+        return None
+    dependencies = tuple(dict.fromkeys(
+        identifier
+        for index in indexes[1]
+        for identifier in _argument_identifiers(arguments[index], source)
+    ))
+    return _Assignment(
+        destination[0], dependencies, _node_text(source, node), node.start_byte,
+        True, "",
+    )
+
+
 def _assignments(body: Any, source: bytes) -> Iterable[_Assignment]:
-    """Record local data dependencies before each target call."""
+    """Record local assignments and recognized buffer-copy data dependencies."""
     for node in _walk(body):
+        if node.type == "call_expression":
+            copy = _copy_assignment(node, source)
+            if copy is not None:
+                yield copy
+            continue
         if node.type == "assignment_expression":
             left = node.child_by_field_name("left")
             right = node.child_by_field_name("right")

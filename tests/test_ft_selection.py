@@ -198,6 +198,26 @@ class FTSelectionTests(unittest.TestCase):
         self.assertEqual(manifest["summary"]["selected_count"], 1)
         self.assertFalse(manifest["cost_model"]["includes_retries"])
 
+    def test_minimal_selection_excludes_large_structural_assemblies(self):
+        triplet = sample_triplet()
+        units = len(triplet.structural_steps())
+        manifest = build_selection_manifest(
+            (triplet,), annotations(), max_ft=1,
+            max_structural_units=units - 1,
+        )
+        self.assertEqual(manifest["selection"], [])
+        self.assertIn(
+            "too_many_structural_units",
+            manifest["ranking"][0]["exclusion_reasons"],
+        )
+
+    def test_selection_excludes_ft_over_function_limit(self):
+        manifest = build_selection_manifest(
+            (sample_triplet(),), annotations(), max_functions=2,
+        )
+        self.assertEqual(manifest["selection"], [])
+        self.assertIn("too_many_functions", manifest["ranking"][0]["exclusion_reasons"])
+
 
 if __name__ == "__main__":
     unittest.main()

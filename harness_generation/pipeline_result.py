@@ -12,7 +12,9 @@ from .records import write_json
 
 
 PIPELINE_RESULT_SCHEMA_VERSION = 1
-_ACCEPTED = frozenset({"passed", "passed_with_limitations"})
+_ACCEPTED = frozenset({
+    "passed", "passed_with_limitations", "passed_with_warnings",
+})
 _STAGES = (
     "STAGE_1_DOCS", "STAGE_2_SNIPPETS", "STAGE_3_ROUGH", "STAGE_4_HARNESS"
 )

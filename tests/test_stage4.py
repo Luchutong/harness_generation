@@ -15,6 +15,8 @@ from harness_generation.stage4 import (
     Stage4Error,
     Stage4Generator,
     _analyze_cpp,
+    _isf_uses_external_input,
+    _validate_non_null_encoder_arguments,
     _validate_callback_bindings,
     _validate_ownership_calls,
     _validate_parent_plan_revision,
@@ -135,6 +137,82 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 }
 """)
         self.assertEqual([call.name for call in analysis.calls], ["parse_input"])
+
+    @staticmethod
+    def _string_isf_uses_fuzzer_input(statements):
+        code = f"""#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {{
+    {statements}
+    return 0;
+}}"""
+        analysis = _analyze_cpp(code)
+        entry = next(
+            function for function in analysis.functions
+            if function.name == "LLVMFuzzerTestOneInput"
+        )
+        call = next(call for call in entry.calls if call.name == "write_string")
+        metadata = {"parameters": [
+            {"name": "out", "base_type": "void", "is_pointer": True,
+             "is_struct_like": True},
+            {"name": "str", "base_type": "char", "is_pointer": True,
+             "is_struct_like": False},
+        ]}
+        return _isf_uses_external_input(call, metadata, entry.assignments)
+
+    def test_copy_into_nul_terminated_buffer_reaches_string_isf(self):
+        self.assertTrue(self._string_isf_uses_fuzzer_input("""
+    char *copy = (char *)malloc(size + 1);
+    memcpy(copy, data, size);
+    copy[size] = '\\0';
+    write_string(out, copy);"""))
+
+    def test_copy_into_vector_data_reaches_string_isf(self):
+        self.assertTrue(self._string_isf_uses_fuzzer_input("""
+    std::vector<char> buffer;
+    buffer.resize(size + 1);
+    std::memcpy(buffer.data(), data, size);
+    buffer[size] = '\\0';
+    write_string(out, buffer.data());"""))
+
+    def test_transitive_copy_reaches_string_isf(self):
+        self.assertTrue(self._string_isf_uses_fuzzer_input("""
+    char a[128], b[128];
+    memcpy(a, data, size);
+    memmove(b, a, size);
+    write_string(out, b);"""))
+
+    def test_bytewise_copy_still_reaches_string_isf(self):
+        self.assertTrue(self._string_isf_uses_fuzzer_input("""
+    char copy[128];
+    copy[0] = data[0];
+    write_string(out, copy);"""))
+
+    def test_copy_from_unrelated_bytes_does_not_reach_string_isf(self):
+        self.assertFalse(self._string_isf_uses_fuzzer_input("""
+    char copy[128], unrelated[128];
+    memcpy(copy, unrelated, size);
+    write_string(out, copy);"""))
+        self.assertFalse(self._string_isf_uses_fuzzer_input("""
+    char copy[128];
+    memset(copy, 'A', size);
+    write_string(out, copy);"""))
+        self.assertFalse(self._string_isf_uses_fuzzer_input("""
+    write_string(out, "constant");
+    (void)data; (void)size;"""))
+
+    def test_copy_n_from_fuzzer_data_reaches_string_isf(self):
+        self.assertTrue(self._string_isf_uses_fuzzer_input("""
+    char copy[128];
+    std::copy_n(data, size, copy);
+    write_string(out, copy);"""))
+
+    def test_copy_after_isf_does_not_supply_input(self):
+        self.assertFalse(self._string_isf_uses_fuzzer_input("""
+    char copy[128];
+    write_string(out, copy);
+    memcpy(copy, data, size);"""))
 
     @classmethod
     def setUpClass(cls):
@@ -595,6 +673,83 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
                         functions_json=self.phase1_artifacts / "functions.json",
                         artifacts=Path(temporary),
                     )
+
+    def test_rejects_a_plan_that_calls_a_function_twice(self):
+        # Nothing else exercises this rule. With no ownership relation recording
+        # a repetition, every FT function is owed exactly one call, so a second
+        # entry is a plan that would acquire or release the same thing twice.
+        plan = json.loads(self.harness_plan())
+        plan["call_sequence"].append(dict(plan["call_sequence"][1]))
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(
+                Stage4Error, "duplicates FT functions: parser_next"
+            ):
+                Stage4Generator(
+                    MockLLM([json.dumps(plan), self.harness_code()])
+                ).run(
+                    self.triplet,
+                    rough_code=self.rough_code(),
+                    functions_json=self.phase1_artifacts / "functions.json",
+                    artifacts=Path(temporary),
+                )
+
+    def test_allows_the_repetition_an_ownership_relation_records(self):
+        # The exception to the rule above: when a relation's observed_sequence
+        # records a function more than once, repeating it that many times is
+        # the proven usage, not a duplicate.
+        relation = TripletOwnershipRelation(
+            id="or_parser_reused_0001",
+            producer_function_id=self.triplet.isf.function_id,
+            producer_function=self.triplet.isf.function,
+            resource_type="Parser",
+            cleanup_argument="address_of_return_value",
+            cleanup_function="parser_free",
+            cleanup_function_id=next(
+                function.function_id for function in self.triplet.functions
+                if function.function == "parser_free"
+            ),
+            consumers=("parser_next",),
+            path_kind="normal",
+            nullable=False,
+            observed_sequence=(
+                "parser_from_memory", "parser_from_memory", "parser_free"
+            ),
+        )
+        triplet = replace(self.triplet, ownership_relations=(relation,))
+        plan = json.loads(self.harness_plan())
+        plan["call_sequence"].insert(1, dict(plan["call_sequence"][0]))
+        plan["cleanup_sequence"][0].update({
+            "relation_id": relation.id,
+            "producer_function": relation.producer_function,
+            "resource_type": relation.resource_type,
+            "after": [*plan["cleanup_sequence"][0]["after"],
+                      relation.producer_function],
+            "producer_binding": {
+                "kind": "return_value", "identifier": "parser",
+            },
+        })
+        parsed = parse_harness_plan(
+            json.dumps(plan), triplet=triplet,
+            isf_metadata=json.loads(
+                (self.phase1_artifacts / "functions.json").read_text()
+            )["functions"][0],
+        )
+        self.assertEqual(
+            [item["function"] for item in parsed.call_sequence].count(
+                "parser_from_memory"
+            ),
+            2,
+        )
+        # The same plan is a duplicate the moment no relation records the
+        # repetition, so the allowance above is what let it through.
+        with self.assertRaisesRegex(Stage4Error, "duplicates FT functions"):
+            parse_harness_plan(
+                json.dumps(plan),
+                triplet=replace(triplet, ownership_relations=()),
+                isf_metadata=json.loads(
+                    (self.phase1_artifacts / "functions.json").read_text()
+                )["functions"][0],
+            )
 
     def test_rejects_demo_logging_file_io_unknown_api_and_redefinition(self):
         insertion = "    parser_free(&parser);\n"
@@ -1476,6 +1631,152 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 }"""
         self._validate_callback_bindings(template % "nullptr", PARSE_UTF8_METADATA)
         self._validate_callback_bindings(template % "filter", PARSE_UTF8_METADATA)
+        self._validate_callback_bindings(
+            template % "reinterpret_cast<void *>(filter)", PARSE_UTF8_METADATA
+        )
+
+    def test_callback_bindings_accept_a_matching_function_pointer_variable(self):
+        code = """#include <stddef.h>
+#include <stdint.h>
+extern "C" unsigned long parseUTF8(const char *inbufptr, unsigned inbuflen,
+                                   unsigned parser_flags, int outflags,
+                                   const char **outptr,
+                                   JSTextFilterFun onCodeBlock);
+static int filter_a(const char *metaptr, uint32_t metalen, const char *inptr,
+                    uint32_t inlen, const char **outptrp) {
+    (void)metaptr; (void)metalen; (void)inptr; (void)inlen; (void)outptrp;
+    return 0;
+}
+static int filter_b(const char *metaptr, uint32_t metalen, const char *inptr,
+                    uint32_t inlen, const char **outptrp) {
+    (void)metaptr; (void)metalen; (void)inptr; (void)inlen; (void)outptrp;
+    return 0;
+}
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    const char *output = nullptr;
+    JSTextFilterFun cb = filter_a;
+    if (size != 0 && data[0] != 0) cb = filter_b;
+    (void)parseUTF8((const char *)data, (unsigned)size, 0, 1, &output,
+                    reinterpret_cast<void *>(cb));
+    return 0;
+}"""
+        self._validate_callback_bindings(code, PARSE_UTF8_METADATA)
+
+    def test_callback_bindings_accept_a_non_null_helper_ternary(self):
+        code = """#include <stddef.h>
+#include <stdint.h>
+extern "C" unsigned long parseUTF8(const char *inbufptr, unsigned inbuflen,
+                                   unsigned parser_flags, int outflags,
+                                   const char **outptr,
+                                   JSTextFilterFun onCodeBlock);
+static int filter_a(const char *metaptr, uint32_t metalen, const char *inptr,
+                    uint32_t inlen, const char **outptrp) {
+    (void)metaptr; (void)metalen; (void)inptr; (void)inlen; (void)outptrp;
+    return 0;
+}
+static int filter_b(const char *metaptr, uint32_t metalen, const char *inptr,
+                    uint32_t inlen, const char **outptrp) {
+    (void)metaptr; (void)metalen; (void)inptr; (void)inlen; (void)outptrp;
+    return 0;
+}
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    const char *output = nullptr;
+    JSTextFilterFun cb = (size != 0 && data[0] != 0) ? filter_a : filter_b;
+    (void)parseUTF8((const char *)data, (unsigned)size, 0, 1, &output, cb);
+    return 0;
+}"""
+        self._validate_callback_bindings(code, PARSE_UTF8_METADATA)
+
+    def test_callback_signature_comparison_ignores_declared_parameter_names(self):
+        context = {
+            "callback_typedefs": [{
+                "name": "EscapeFun",
+                "return_type": "int",
+                "parameter_types": [
+                    "unsigned char *out",
+                    "int *outlen",
+                    "const unsigned char *in",
+                    "int *inlen",
+                ],
+            }]
+        }
+        metadata = {
+            "name": "writeEscape",
+            "parameters": [
+                {"name": "cb", "base_type": "EscapeFun", "type": "EscapeFun",
+                 "is_pointer": False, "is_struct_like": False},
+            ],
+        }
+        code = """#include <stddef.h>
+#include <stdint.h>
+extern "C" int writeEscape(EscapeFun cb);
+static int escape(unsigned char *out, int *outlen, const unsigned char *in,
+                  int *inlen) {
+    (void)out; (void)outlen; (void)in; (void)inlen;
+    return 0;
+}
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    (void)data; (void)size;
+    return writeEscape(escape);
+}"""
+        self._validate_callback_bindings(code, metadata, context)
+
+    def test_callback_bindings_reject_null_typedef_argument_in_aggressive_mode(self):
+        code = """#include <stddef.h>
+#include <stdint.h>
+extern "C" unsigned long parseUTF8(const char *inbufptr, unsigned inbuflen,
+                                   unsigned parser_flags, int outflags,
+                                   const char **outptr,
+                                   JSTextFilterFun onCodeBlock);
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    const char *output = nullptr;
+    (void)parseUTF8((const char *)data, (unsigned)size, 0, 1, &output, nullptr);
+    return 0;
+}"""
+        analysis = _analyze_cpp(code)
+        entry = next(
+            function for function in analysis.functions
+            if function.name == "LLVMFuzzerTestOneInput"
+        )
+        calls = [call for call in entry.calls if call.name == "parseUTF8"]
+        with self.assertRaisesRegex(Stage4Error, "non-null harness function"):
+            _validate_callback_bindings(
+                analysis,
+                entry,
+                calls,
+                PARSE_UTF8_METADATA,
+                CALLBACK_CONTEXT,
+                require_non_null_typedef_callbacks=True,
+            )
+
+    def test_aggressive_encoder_validation_rejects_null_encoder(self):
+        code = """#include <stddef.h>
+#include <stdint.h>
+typedef struct Encoder Encoder;
+extern "C" int writeWithEncoder(const uint8_t *data, size_t size, Encoder *encoder);
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    return writeWithEncoder(data, size, nullptr);
+}"""
+        analysis = _analyze_cpp(code)
+        entry = next(
+            function for function in analysis.functions
+            if function.name == "LLVMFuzzerTestOneInput"
+        )
+        metadata = {
+            "writeWithEncoder": {
+                "name": "writeWithEncoder",
+                "parameters": [
+                    {"name": "data", "base_type": "uint8_t", "type": "const uint8_t *",
+                     "is_pointer": True},
+                    {"name": "size", "base_type": "size_t", "type": "size_t",
+                     "is_pointer": False},
+                    {"name": "encoder", "base_type": "Encoder", "type": "Encoder *",
+                     "is_pointer": True},
+                ],
+            }
+        }
+        with self.assertRaisesRegex(Stage4Error, "encoder argument"):
+            _validate_non_null_encoder_arguments(tuple(entry.calls), metadata)
 
     def _validate_callback_bindings(
         self, code, isf_metadata, project_context=None

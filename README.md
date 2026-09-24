@@ -41,8 +41,9 @@ flowchart LR
 ## 真实 API 快速开始
 
 仓库保留了一条黄金路径 demo：用 `benchmarks/json_parser` 作为小型 C 项目，完整执行
-SFG 构建、FT 抽取、FT ranking、Stage 1-4 真实 LLM 生成、编译、链接、runtime 和
-fuzz smoke。
+真实 LLM 语义标注与 SFG 构建、每个 ISF 一个 FT 的论文模式抽取、FT ranking、
+Stage 1-4 真实 LLM 生成、编译、链接、runtime 和 fuzz smoke。与论文逐项对照及
+仍存在的差异见[论文最小路径核对](docs/PAPER_MINIMAL_AUDIT.md)。
 
 ```bash
 cd /home/luchitong/work/harness_generation
@@ -50,7 +51,8 @@ cd /home/luchitong/work/harness_generation
 ```
 
 脚本默认读取 `.env` 中的 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL` 和可选
-`LLM_THINKING`，不会把 key 写入 artifact。输出目录默认是
+`LLM_THINKING`；SFG 与 harness 生成使用同一模型，SFG 语义请求不完整时脚本停止。
+脚本不会把 key 写入 artifact。输出目录默认是
 `artifacts/demo_real_json_<timestamp>/`，该目录被 `.gitignore` 忽略。
 
 也可以显式指定输出目录：
@@ -59,9 +61,10 @@ cd /home/luchitong/work/harness_generation
 ./scripts/run_minimal_demo.sh /tmp/harness_generation_demo
 ```
 
-当前机器上已经用真实 API 验证过这条路径：`json_parser/json_parse` 的 FT 被选中，
-Stage 1、Stage 2、Stage 3、Stage 4、Intermediate、Compiler、Linker、Runtime 和
-Fuzz smoke 均为 `passed`。
+2026-09-24 已用真实 API 验证修改后的整条路径：Phase 1 的 24 个语义决策均成功，
+抽取两个 ISF 对应的两个 FT，选择 `json_parser/json_parse` 的双 snippet FT；
+Stage 1–4、Intermediate、Compiler、Linker、Runtime 和 Fuzz smoke 均通过。
+Stage 4 首次生成因资源清理顺序不正确被拒绝，回退后第二次生成通过。
 
 ## 动机与范围
 

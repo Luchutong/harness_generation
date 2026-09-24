@@ -62,12 +62,12 @@ class DirectionAnalysisTests(unittest.TestCase):
         self.assertEqual((both.reads, both.writes), (True, True))
         self.assertTrue(any("read+write" in evidence for evidence in both.evidence))
 
-    def test_all_struct_pointers_use_semantic_analyzer_with_ast_context(self):
+    def test_only_ambiguous_struct_pointers_use_semantic_analyzer(self):
         analyzer = RecordingDirectionAnalyzer()
         results = StructDirectionAnalyzer(analyzer).analyze(
             self.parsed.functions, self.roles, self.parsed.structs)
         by_name = {result.function: result for result in results}
-        self.assertEqual(len(analyzer.calls), 5)
+        self.assertEqual(len(analyzer.calls), 1)
         self.assertEqual(by_name["read_and_return"].struct_directions[0].direction, "input")
         self.assertEqual(by_name["fill"].struct_directions[0].direction, "output")
         self.assertEqual(by_name["bump"].struct_directions[0].direction, "both")
@@ -86,6 +86,11 @@ class DirectionAnalysisTests(unittest.TestCase):
             self.assertIn(function.signature, trace.prompt)
             self.assertIn(function.body, trace.prompt)
             self.assertIn("AST access hints", trace.prompt)
+        self.assertEqual(analyzer.calls[0][0].name, "opaque")
+        for name in ("read_and_return", "fill", "bump", "inspect"):
+            trace = next(trace for trace in by_name[name].decisions
+                         if trace.task == "struct_direction")
+            self.assertEqual(trace.prompt_version, "sfg-direction-static-v1")
 
     def test_semantic_failure_uses_ast_fallback_without_aborting(self):
         results = StructDirectionAnalyzer(FailingDirectionAnalyzer()).analyze(
@@ -95,14 +100,11 @@ class DirectionAnalysisTests(unittest.TestCase):
         self.assertEqual(by_name["bump"].struct_directions[0].direction, "both")
         self.assertEqual(by_name["inspect"].struct_directions[0].direction, "input")
         self.assertEqual(by_name["opaque"].struct_directions[0].direction, "unknown")
-        pointer_results = [result for result in results
-                           if result.function != "by_value"]
-        for result in pointer_results:
-            trace = next(trace for trace in result.decisions
-                         if trace.task == "struct_direction")
-            self.assertEqual(trace.status, "error")
-            self.assertEqual(trace.error, "TimeoutError")
-            self.assertNotIn("private provider failure", trace.error)
+        trace = next(trace for trace in by_name["opaque"].decisions
+                     if trace.task == "struct_direction")
+        self.assertEqual(trace.status, "error")
+        self.assertEqual(trace.error, "TimeoutError")
+        self.assertNotIn("private provider failure", trace.error)
 
     def test_direction_results_are_serialized_in_annotations_json(self):
         results = StructDirectionAnalyzer(MockSemanticAnalyzer()).analyze(

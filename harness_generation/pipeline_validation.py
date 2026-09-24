@@ -43,10 +43,15 @@ class PipelineValidationConfig:
     build_enabled: bool = True
     fuzz_smoke: LibFuzzerSmokeConfig | None = LibFuzzerSmokeConfig()
     fuzz_runner: FuzzRunner = subprocess.run
+    stage4_policy: str = "strict"
 
     def __post_init__(self) -> None:
         if type(self.build_enabled) is not bool:
             raise ValueError("build_enabled must be boolean")
+        if self.stage4_policy not in {"strict", "hybrid"}:
+            raise ValueError("stage4_policy must be strict or hybrid")
+        if self.stage4_policy == "hybrid" and not self.build_enabled:
+            raise ValueError("hybrid stage4_policy requires build validation")
         if self.target_build is not None and self.target_build_path is not None:
             raise ValueError("target_build and target_build_path are mutually exclusive")
         if self.target_build_path is not None:
@@ -286,9 +291,16 @@ class PipelineStageValidator:
                 relation.cleanup_function for relation in self.triplet.ownership_relations
             },
         )
-        _copy_attempt_validation(self.layout, attempt, "intermediate")
         if intermediate.status == "failed":
-            return _with_failure_type(intermediate, "intermediate_validation")
+            if self.config.stage4_policy == "hybrid":
+                intermediate = _hybrid_intermediate_result(intermediate)
+                self.layout.write_validation("intermediate", intermediate.to_dict())
+            else:
+                _copy_attempt_validation(self.layout, attempt, "intermediate")
+                return _with_failure_type(
+                    intermediate, "intermediate_validation"
+                )
+        _copy_attempt_validation(self.layout, attempt, "intermediate")
         if not self.config.build_enabled:
             return _result("stage4", (), metadata={
                 "component_statuses": (intermediate.status,),
@@ -524,6 +536,31 @@ def _limited_result(
             "component_statuses": list(component_statuses),
         },
         status="passed_with_limitations",
+    )
+
+
+def _hybrid_intermediate_result(result: ValidationResult) -> ValidationResult:
+    """Downgrade strict Stage 4 policy errors so real build/runtime can decide."""
+
+    strict_errors = tuple(dict.fromkeys(result.errors))
+    warnings = tuple(dict.fromkeys((
+        *result.warnings,
+        *(
+            f"Hybrid Stage 4 policy warning: {message}"
+            for message in strict_errors
+        ),
+    )))
+    return ValidationResult(
+        success=True,
+        errors=(),
+        warnings=warnings,
+        metadata={
+            **dict(result.metadata),
+            "hybrid_policy": "intermediate_errors_as_warnings",
+            "strict_status": result.status,
+            "strict_errors": list(strict_errors),
+        },
+        status="passed_with_warnings",
     )
 
 

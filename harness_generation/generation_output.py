@@ -8,7 +8,7 @@ import re
 # A transport delimiter the model echoed back, such as a stray ``</stdin>``
 # line. No C or C++ translation unit ends with a bare tag, so one is always an
 # artifact of the response envelope rather than generated code.
-_WRAPPER_TAG = re.compile(r"</?[A-Za-z][A-Za-z0-9_.:-]*>")
+_WRAPPER_TAG = re.compile(r"(?:</?[^<>\n]+>)+")
 
 
 def normalize_c_response(content: str) -> str:

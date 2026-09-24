@@ -357,6 +357,10 @@ class FunctionTripletExtractorTests(unittest.TestCase):
         ))
         triplets = self.extractor.extract(artifacts)
         self.assertEqual(len(triplets), 2)
+        paper_triplets = self.extractor.extract(artifacts, paper_minimal=True)
+        self.assertEqual(len(paper_triplets), 1)
+        self.assertEqual(paper_triplets[0].isf.function, "ParserParse")
+        self.assertIsNone(paper_triplets[0].metadata["usage_pattern"])
         self.assertEqual(len({item.id for item in triplets}), 2)
         self.assertEqual(
             {item.metadata["usage_pattern"]["id"] for item in triplets},

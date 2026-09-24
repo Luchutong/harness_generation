@@ -123,21 +123,21 @@ class Stage1Tests(unittest.TestCase):
             self.assertIn("resource_lifecycle_notes", document)
             self.assertEqual(
                 document["generation_metadata"]["prompt_version"],
-                "stage1-function-doc-v2",
+                "stage1-function-doc-v3",
             )
         for function, response in zip(self.triplet.functions, responses):
             self.assertEqual(raw[f"stage1_{function.function}.txt"], response)
             audit = audits[function.function]
             metadata = audit["metadata"]
             self.assertEqual(
-                audit["prompt"]["prompt_version"], "stage1-function-doc-v2"
+                audit["prompt"]["prompt_version"], "stage1-function-doc-v3"
             )
             self.assertEqual(audit["scoped_prompt"], audit["prompt"])
             self.assertEqual(audit["scoped_raw"], response)
             self.assertEqual(audit["parsed"]["function"], function.function)
             self.assertEqual(metadata["provider"], "mock")
             self.assertEqual(metadata["model"], "mock-model")
-            self.assertEqual(metadata["prompt_version"], "stage1-function-doc-v2")
+            self.assertEqual(metadata["prompt_version"], "stage1-function-doc-v3")
             self.assertEqual(metadata["attempt"], 1)
             self.assertIn("timestamp", metadata)
             self.assertIsNone(metadata["rollback_source"])

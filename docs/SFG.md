@@ -12,6 +12,10 @@ python -m sfg_builder \
   --output artifacts/simple
 ```
 
+Mock 仅用于离线测试，不能把它给出的 ISF 数量当成论文的真实语义抽取结果。
+Phase 1 保留头文件声明供类型解析，但只为有函数体的定义创建候选和 SFG 语义标签；
+`annotations.json` 保存 `semantic_backend` 以标明来源。
+
 也可以安装项目后执行 `sfg-builder`。可重复传入 `--ignore-dir PATTERN` 增加目录名或 glob；默认忽略 `.git`、`build`、`out`、`cmake-build*`、`third_party`、`vendor` 和 `external`。
 
 显式使用 LLM：
@@ -24,6 +28,30 @@ python -m sfg_builder \
   --semantic-analyzer llm \
   --model deepseek-v4-flash
 ```
+
+真实 LLM 模式默认最多发送 300 次语义请求，超过时在发送前停止；
+`--max-semantic-requests N` 可显式调整。对大型项目先用 `--source-glob GLOB`
+缩小扫描范围。预算包含 stream 投票、角色、方向及 usage review 的实际请求尝试，
+并非仅计算候选函数数。
+
+`--paper-minimal` 保留论文要求的三提示字节流投票、PRF/HPF 角色判断、
+模糊结构指针方向判断；跳过仓库扩展的 usage pattern 挖掘和 LLM 复审。
+结构指针若已有 `const` 或 AST 字段读写证据，直接记录静态方向；只有模糊指针
+才请求 LLM。它仍会调用模型，不能把完全静态的 mock 结果视为论文语义标注。
+论文模式还会在请求前排除签名中没有结构输入或输出的函数，因为当前 SFG
+无法为它们建立结构数据流。计票时 `filename`、`pathname` 等语义字符串类别
+不会被布尔字段中的“连续字节”误判为 ISF；路径、URI 参数名也会保守排除。
+
+修改确定性的筛选规则后，可复用已保存的真实模型决策，避免重复付费：
+
+```bash
+python -m sfg_builder --project target_project --output artifacts/target_replayed \
+  --semantic-analyzer replay --replay-annotations artifacts/target/annotations.json \
+  --paper-minimal
+```
+
+重放要求函数 ID 和完整提示词与原记录逐项匹配，且原记录来自真实 LLM；
+任何缺失或源码变化都会报错。重放产物将标记 `semantic_source=replayed`。
 
 LLM 模式的角色与方向判断只发送单个函数的 signature、body、目标参数、AST hints
 和直接相关的 struct 定义，不发送整个项目。usage review 只发送同一资源的一小批

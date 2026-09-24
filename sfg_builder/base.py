@@ -12,6 +12,14 @@ class SemanticError(Exception):
     """Raised when a semantic provider violates its transport or JSON contract."""
 
 
+class SemanticBudgetExceeded(ValueError):
+    """Raised before a semantic request would exceed the configured budget."""
+
+
+class SemanticReplayMismatch(ValueError):
+    """A recorded semantic decision cannot be matched to current source."""
+
+
 @dataclass(frozen=True)
 class SemanticDecision:
     data: dict[str, Any]

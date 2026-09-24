@@ -371,9 +371,25 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         self.assertTrue(limited.accepted)
         self.assertFalse(limited.stable_eligible)
         self.assertEqual(limited.to_dict()["status"], "passed_with_limitations")
+        warning = ValidationResult(
+            True,
+            (),
+            ("strict policy was downgraded",),
+            {"validator": "intermediate"},
+            status="passed_with_warnings",
+        )
+        self.assertTrue(warning.success)
+        self.assertTrue(warning.accepted)
+        self.assertFalse(warning.stable_eligible)
+        self.assertEqual(warning.to_dict()["status"], "passed_with_warnings")
 
     def test_only_unqualified_pass_is_stable_eligible(self):
-        for status in ("passed_with_limitations", "skipped", "unavailable"):
+        for status in (
+            "passed_with_limitations",
+            "passed_with_warnings",
+            "skipped",
+            "unavailable",
+        ):
             with self.subTest(status=status):
                 self.assertFalse(is_stable_eligible(status))
         self.assertTrue(is_stable_eligible("passed"))

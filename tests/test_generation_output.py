@@ -19,7 +19,10 @@ class GeneratedOutputTests(unittest.TestCase):
 
     def test_drops_a_trailing_echoed_transport_delimiter(self):
         source = "int f(void) { return 0; }"
-        for tag in ("</stdin>", "<stdout>", "</answer>", "</code>"):
+        for tag in (
+            "</stdin>", "<stdout>", "</answer>", "</code>",
+            "</｜｜DSML｜｜ parameter>", "</stddef.h></stdint.h>",
+        ):
             with self.subTest(tag=tag):
                 self.assertEqual(
                     normalize_c_response(f"{source}\n{tag}"), source
