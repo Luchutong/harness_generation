@@ -16,10 +16,10 @@ already:
     reaches the allow-set with nothing behind it.
 
 *Linkage.*
-    ``static uint16_t le16(const uint8_t *p)`` in ``mini_parser/target.c`` is a
-    real definition with real evidence behind it, and it is still a call the
-    harness cannot make: the harness is compiled as its own translation unit and
-    linked against the target's objects, so the symbol is not there to resolve.
+    A ``static`` helper in a target source file is a real definition with real
+    evidence behind it, and it is still a call the harness cannot make: the
+    harness is compiled as its own translation unit and linked against the
+    target's objects, so the symbol is not there to resolve.
 
 *Which definition.*
     Two files may each define a function of the same name.  Both are real; a

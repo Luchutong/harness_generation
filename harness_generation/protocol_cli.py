@@ -23,8 +23,8 @@ says so explicitly rather than being missing.
 Typical use::
 
     python -m harness_generation protocol-mine \\
-      --source benchmarks/mini_parser/target.c --function mp_parse \\
-      --output artifacts/mini_parser
+      --source benchmarks/json_parser/project/json.c --function json_parse \\
+      --output artifacts/demo_protocol
 """
 
 from __future__ import annotations

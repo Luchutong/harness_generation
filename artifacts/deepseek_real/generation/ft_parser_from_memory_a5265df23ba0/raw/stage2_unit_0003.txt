@@ -1,3 +1,0 @@
-```c
-parser_free(parser);
-```

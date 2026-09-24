@@ -36,10 +36,10 @@ class FeedbackLoopConfig:
     """Configuration for a bounded, single-lineage revision loop.
 
     ``parent_harness`` creates round 0 offline, which is useful for a known
-    baseline such as ``mini_parser``'s pass-through Harness.  ``parent_candidate``
-    resumes from any existing candidate with an ``automatic_feedback.json``.
-    Each later round expands one selected parent into ``children_per_round``
-    LLM-generated children, then selects one for the next round.
+    baseline pass-through harness.  ``parent_candidate`` resumes from any
+    existing candidate with an ``automatic_feedback.json``.  Each later round
+    expands one selected parent into ``children_per_round`` LLM-generated
+    children, then selects one for the next round.
     """
 
     source: Path

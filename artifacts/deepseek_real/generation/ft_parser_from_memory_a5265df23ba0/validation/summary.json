@@ -1,8 +1,0 @@
-{
-  "compiler": "passed",
-  "intermediate": "passed",
-  "linker": "passed",
-  "overall": "passed",
-  "runtime": "passed",
-  "schema_version": 1
-}
