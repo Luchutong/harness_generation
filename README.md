@@ -22,6 +22,26 @@ case study；同时也明确暴露出跨项目泛化仍然是主要瓶颈。
 | 真实项目 bug case study | 1 个，见 `markdown-wasm` |
 | 跨项目自动泛化 | 有限，仍是主要研究问题 |
 
+### 已确认的真实项目案例：`markdown-wasm`
+
+本项目在真实项目 `rsms/markdown-wasm` 的 vendored `md4c.c` 中复现了一个由 fork
+signedness 修改引入的 Unicode case-folding 缺陷：`md_unicode_bsearch__()` 查找失败
+返回 `-1`，但 `md4c.c` 将结果保存到 `unsigned index`，导致 `if (index >= 0)` 恒为真，
+随后访问 fold table 前方的内存。
+
+- **native 64-bit + ASan**：可由 `[中]: /x` 等输入触发越界读并 SEGV，属于可复现的
+  memory-safety / DoS finding。
+- **wasm32 shipped artifact**：同一错误通常不直接 trap，但会造成 silent label confusion；
+  报告中确认至少 354 个 codepoint alias 到无关 label，产生错误的 link-label 匹配。
+- **归因**：finding 可由手写 reference harness 独立复现，不是生成 harness 自身伪造的
+  crash；直接根因是该 fork 的 `unsigned index` 修改。
+
+当前结论严格限定为“真实项目中的 memory-safety / semantic defect”。实际应用中是否能
+稳定转化为可利用安全漏洞，以及 silent aliasing 是否影响具体应用的权限、过滤或链接策略，
+仍未确认。完整证据、触发输入和跨平台分析见
+[`docs/CASE_STUDY_MARKDOWN_WASM.md`](docs/CASE_STUDY_MARKDOWN_WASM.md) 与
+[`benchmarks/markdown_wasm/FOLD_REPORT.md`](benchmarks/markdown_wasm/FOLD_REPORT.md)。
+
 ## 核心流水线
 
 ```mermaid
