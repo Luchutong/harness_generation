@@ -31,6 +31,15 @@ def main(
     if arguments[:1] == ["triplets"]:
         from .triplet_cli import main as triplet_main
         return triplet_main(arguments[1:])
+    if arguments[:1] == ["candidates"]:
+        from .candidate_cli import main as candidate_main
+        return candidate_main(arguments[1:])
+    if arguments[:1] == ["candidate-validate"]:
+        from .semantic_discovery.cli import main as candidate_validate_main
+        return candidate_validate_main(arguments[1:])
+    if arguments[:1] == ["semantic-slice"]:
+        from .semantic_slicing.cli import main as semantic_slice_main
+        return semantic_slice_main(arguments[1:])
     if arguments[:1] in (["generate"], ["generate-all"], ["run"]):
         from .generation_cli import main as generation_main
         return generation_main(

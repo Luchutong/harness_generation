@@ -1,6 +1,9 @@
 """DeepSeek-powered C libFuzzer harness generation."""
 
 from .artifacts import ArtifactStore, TripletArtifacts
+from .entry_candidates import (CandidateCatalog, CandidateSignal, EntryCandidate,
+                               discover_candidates, discover_candidates_legacy)
+from .ft_relations import LegacyStructuralClosure, StructuralRelationPolicy, StructuralSelection
 from .compiler_validation import (BuildAdapter, CommandResult, CompilerConfig,
                                   CompilerValidator, validate_compiler)
 from .fuzzer_build import (FuzzerBuildConfig, FuzzerBuildValidator,
@@ -91,6 +94,14 @@ from .validation import (IntermediateValidator, ValidationResult,
                          validate_intermediate)
 
 __all__ = [
+    "CandidateCatalog",
+    "CandidateSignal",
+    "EntryCandidate",
+    "LegacyStructuralClosure",
+    "StructuralRelationPolicy",
+    "StructuralSelection",
+    "discover_candidates",
+    "discover_candidates_legacy",
     "CANONICAL_NULL_NODE",
     "ArtifactStore",
     "BuildAdapter",

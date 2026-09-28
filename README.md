@@ -9,6 +9,12 @@
 
 最小 demo 的输入是 `json.c`、`json.h` 和 `target_build.json`；生成结果属于运行时 artifact，不作为版本库内容维护。
 
+Candidate Discovery 与 FT Construction 现在可以独立执行：`harness-generation candidates --artifacts <目录> --policy legacy` 生成完整的入口假设目录，`harness-generation triplets --artifacts <目录>` 消费它。新目录位于 `candidate_discovery/candidates.json`，保留未选择和 oversized 的候选；现有 SFG 的根目录 `candidates.json` 继续保留。接口、宽候选策略和兼容路径见 [架构说明](docs/CANDIDATE_DISCOVERY_ARCHITECTURE.md)。
+
+新增独立的 DeepSeek 候选语义验证：`harness-generation candidate-validate --artifacts <目录> --provider deepseek`，通过受限源码查询工具产生 `validated_candidates.json`、证据和对话 trace。它保留宽候选，执行后停在验证 artifact，尚未接入 FT 筛选。配置、预算、resume 语义和手工 smoke 见 [实现报告](docs/CANDIDATE_SEMANTIC_VALIDATION.md)。
+
+候选验证现冻结为 `recall-first-entry-validation-v3`，增加一次独立的 terminal schema repair。后续命令 `harness-generation semantic-slice --artifacts <目录> --provider deepseek` 消费 accepted 验证记录，区分 CORE / SUPPORT / EXCLUDE / UNRESOLVED，并保存独立的 `semantic_slices/<candidate-id>/`。共享类型仅用于调查；该阶段停在 slice artifact。接口、101 项测试和真实 DeepSeek smoke 见 [本轮报告](docs/SEMANTIC_SLICE_IMPLEMENTATION_REPORT.md)。
+
 这条路径已经完成真实 API 验证：语义决策完整返回，目标 FT 被选中，Stage 1–4、Intermediate、Compiler、Linker、Runtime 和 Fuzz smoke 均通过。模型响应、源码摘要、生成 harness 和阶段状态由脚本输出到独立 artifact 目录，便于复核但不会进入提交历史。
 
 ## 已取得成果
@@ -50,5 +56,6 @@
 - `benchmarks/json_parser/project/`：demo 目标源码
 - `benchmarks/json_parser/target_build.json`：demo 构建描述
 - `pyproject.toml`、`.env.example`、`project_catalog.py`：项目元数据与运行配置模板
+- `benchmarks/json_parser/LEAK_REPORT.md`、`docs/CASE_STUDY_MARKDOWN_WASM.md`：两个已确认 bug case study 的报告
 
-详细过程记录、实验日志、历史 artifact、开发测试和其他 benchmark 不属于展示分支。
+运行 demo 产生的 artifact、历史实验记录、开发测试和其他 benchmark 源码不属于展示分支；上述两份 bug 报告作为研究结论保留。

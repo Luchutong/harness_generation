@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 
 from .artifacts import ArtifactStore
+from .entry_candidates import discover_candidates_legacy
 from .ft_selection import build_selection_manifest
 from .generation_cli import _check_catalog_size
 from .records import write_json
@@ -32,21 +33,36 @@ def _extract_command(argv: list[str]) -> int:
     parser.add_argument("--individual", action="store_true",
                         help="Also write triplets/<ft_id>.json files")
     parser.add_argument("--paper-minimal", action="store_true",
-                        help="Emit one FT per unique ISF, without usage-pattern variants")
+                        help="Emit one FT per selected anchor, without usage-pattern variants")
     parser.add_argument("--max-functions-per-ft", type=_positive_integer, default=20,
                         help="Skip FTs exceeding this many functions (default: 20)")
+    parser.add_argument("--candidates", type=Path,
+                        help="Entry catalog; defaults to candidate_discovery/candidates.json")
+    parser.add_argument("--anchor-id", action="append", default=[],
+                        help="Explicit function ID to construct; repeatable, does not validate the entry")
     args = parser.parse_args(argv)
     try:
         artifacts = load_sfg_artifacts(args.artifacts)
+        store = ArtifactStore(args.artifacts)
+        catalog = store.load_candidate_catalog(args.candidates)
+        if catalog is None:
+            catalog = discover_candidates_legacy(artifacts)
+            print("[FT] No entry catalog; using legacy selection with all hypotheses retained")
+        if args.anchor_id:
+            catalog = catalog.select_anchors(args.anchor_id)
         extractor = FunctionTripletExtractor()
         triplets = extractor.extract(
             artifacts, paper_minimal=args.paper_minimal,
             max_functions_per_ft=args.max_functions_per_ft,
+            candidates=catalog,
         )
-        output = ArtifactStore(args.artifacts).write_triplets(
+        output = store.write_triplets(
             triplets, individual=args.individual
         )
-        exclusions = args.artifacts / "triplet_exclusions.json"
+        candidate_output = store.write_candidate_catalog(
+            catalog.with_construction_results(triplets, extractor.exclusions)
+        )
+        exclusions = store.triplet_exclusions
         write_json(exclusions, {
             "schema_version": 1,
             "max_functions_per_ft": args.max_functions_per_ft,
@@ -56,6 +72,7 @@ def _extract_command(argv: list[str]) -> int:
         print(f"Triplet extraction failed: {exc}", file=sys.stderr)
         return 1
     print(f"[FT] Wrote {output}")
+    print(f"[FT] Candidate catalog: {candidate_output}")
     print(f"[FT] Excluded {len(extractor.exclusions)} oversized FT variants; wrote {exclusions}")
     for triplet in triplets:
         print(

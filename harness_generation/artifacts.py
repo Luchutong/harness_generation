@@ -9,6 +9,7 @@ import re
 from typing import Any, Iterable
 
 from .records import write_json
+from .entry_candidates import CandidateCatalog
 from .target_contract import TargetContract
 from .triplet import FunctionTriplet, triplets_document
 
@@ -48,6 +49,41 @@ class ArtifactStore:
     @property
     def sfg(self) -> Path:
         return self.root / "sfg.json"
+
+    @property
+    def candidate_discovery_directory(self) -> Path:
+        return self.root / "candidate_discovery"
+
+    @property
+    def entry_candidates(self) -> Path:
+        """Entry hypotheses; distinct from Phase 1's legacy candidates.json."""
+        return self.candidate_discovery_directory / "candidates.json"
+
+    @property
+    def validated_candidates(self) -> Path:
+        return self.candidate_discovery_directory / "validated_candidates.json"
+
+    @property
+    def candidate_agent_runs(self) -> Path:
+        return self.candidate_discovery_directory / "agent_runs"
+
+    def candidate_agent_run(self, candidate_id: str) -> Path:
+        if not re.fullmatch(r"candidate_[0-9a-f]{24}", candidate_id):
+            raise ValueError("invalid candidate run ID")
+        return self.candidate_agent_runs / candidate_id
+
+    @property
+    def semantic_slices_directory(self) -> Path:
+        return self.root / "semantic_slices"
+
+    def semantic_slice_run(self, candidate_id: str) -> Path:
+        if not re.fullmatch(r"candidate_[0-9a-f]{24}", candidate_id):
+            raise ValueError("invalid semantic slice ID")
+        return self.semantic_slices_directory / candidate_id
+
+    @property
+    def triplet_exclusions(self) -> Path:
+        return self.root / "triplet_exclusions.json"
 
     @property
     def triplets(self) -> Path:
@@ -144,6 +180,23 @@ class ArtifactStore:
                     allow_nan=False,
                 )
         return self.triplets
+
+    def write_candidate_catalog(self, catalog: CandidateCatalog) -> Path:
+        if not isinstance(catalog, CandidateCatalog):
+            raise TypeError("catalog must be a CandidateCatalog")
+        self.candidate_discovery_directory.mkdir(parents=True, exist_ok=True)
+        write_json(self.entry_candidates, catalog.to_dict(), sort_keys=True, allow_nan=False)
+        return self.entry_candidates
+
+    def load_candidate_catalog(self, path: Path | None = None) -> CandidateCatalog | None:
+        """Absence enables the legacy fallback; malformed files never do."""
+        selected = self.entry_candidates if path is None else Path(path)
+        if not selected.exists() and path is None:
+            return None
+        try:
+            return CandidateCatalog.from_dict(json.loads(selected.read_text(encoding="utf-8")))
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+            raise ValueError(f"cannot load entry candidate catalog {selected}: {error}") from error
 
     def write_target_contract(self, contract: TargetContract) -> Path:
         """Persist the additive target contract at the project artifact root."""

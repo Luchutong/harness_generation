@@ -1,4 +1,4 @@
-"""Deterministic SynapseFlow Function Triplet extraction."""
+"""Deterministic FT construction from explicitly requested entry anchors."""
 
 from __future__ import annotations
 
@@ -13,6 +13,10 @@ from sfg_builder.models import SFGEdge
 from sfg_builder.parser import _make_parser, _text, _walk
 
 from .sfg_adapter import SFGArtifacts, SFGGraphView, is_null_node
+from .entry_candidates import (CandidateCatalog, EntryCandidate,
+                               discover_candidates_legacy)
+from .ft_relations import (LegacyStructuralClosure, StructuralRelationPolicy,
+                           reachable_without_crossing as _reachable_without_crossing)
 from .triplet import (FunctionTriplet, TripletBypassSemantic, TripletEdge,
                       TripletFunction, TripletOwnershipRelation,
                       stable_triplet_id)
@@ -37,49 +41,99 @@ class FunctionTripletExtractionError(ValueError):
 
 
 class _OversizedTriplet(Exception):
-    def __init__(self, function_count: int):
+    def __init__(self, function_count: int, frontier: Mapping[str, Any]):
         self.function_count = function_count
+        self.frontier = dict(frontier)
 
 
 class FunctionTripletExtractor:
-    """Extract one FT per unique ISF anchor from an adapted multi-edge SFG."""
+    """Construct FTs from explicit entry hypotheses; never qualify ISFs here."""
 
-    def __init__(self) -> None:
+    def __init__(self, structural_policy: StructuralRelationPolicy | None = None) -> None:
         self.exclusions: list[dict[str, Any]] = []
+        self.structural_policy = structural_policy or LegacyStructuralClosure()
 
     def extract(
         self, artifacts: SFGArtifacts, *, paper_minimal: bool = False,
         max_functions_per_ft: int | None = None,
+        candidates: CandidateCatalog | None = None,
     ) -> tuple[FunctionTriplet, ...]:
+        """Compatibility wrapper: selection belongs to the candidate policy.
+
+        CLI callers supply the persisted catalog. Older Python callers without
+        one use the separately implemented legacy discovery strategy.
+        """
+        if max_functions_per_ft is not None and max_functions_per_ft < 1:
+            raise ValueError("max_functions_per_ft must be positive")
+        catalog = candidates if candidates is not None else discover_candidates_legacy(artifacts)
+        if candidates is not None:
+            catalog.validate_against(artifacts)
+        triplets = []
+        exclusions = []
+        self.exclusions = []
+        for candidate in catalog.selected:
+            triplets.extend(self.extract_for_anchor(
+                artifacts, candidate, paper_minimal=paper_minimal,
+                max_functions_per_ft=max_functions_per_ft,
+            ))
+            exclusions.extend(self.exclusions)
+        self.exclusions = exclusions
+        return tuple(sorted(triplets, key=lambda triplet: triplet.id))
+
+    def extract_for_anchor(
+        self, artifacts: SFGArtifacts, anchor: EntryCandidate | str, *,
+        paper_minimal: bool = False, max_functions_per_ft: int | None = None,
+    ) -> tuple[FunctionTriplet, ...]:
+        """Construct this anchor's usage variants without a byte/name gate.
+
+        A scoped ISF role satisfies the existing FT wire contract; it is not a
+        semantic validation result. That distinction is recorded in metadata.
+        Exclusions describe this call only. Future validation/slicing can call
+        this interface with a chosen function ID without changing discovery.
+        """
         if max_functions_per_ft is not None and max_functions_per_ft < 1:
             raise ValueError("max_functions_per_ft must be positive")
         self.exclusions = []
+        anchor_id = anchor.function_id if isinstance(anchor, EntryCandidate) else anchor
+        if not isinstance(anchor_id, str) or anchor_id not in artifacts.functions_by_id:
+            raise FunctionTripletExtractionError(f"unknown explicit anchor: {anchor_id}")
+        record = artifacts.functions_by_id[anchor_id]
+        if isinstance(anchor, EntryCandidate):
+            if (anchor.function, anchor.signature, anchor.file, anchor.line) != (
+                    record.get("name"), record.get("signature", ""),
+                    record.get("file"), record.get("start_line")):
+                raise FunctionTripletExtractionError("explicit candidate identity does not match functions.json")
         roles_by_function = _annotation_roles(artifacts.annotations)
+        annotated_isf = "ISF" in roles_by_function.get(anchor_id, ())
+        # Remaining annotated ISFs are masked only to preserve construction
+        # boundaries. They do not determine whether this anchor is accepted.
+        roles_by_function[anchor_id] = _canonical_roles((*roles_by_function.get(anchor_id, ()), "ISF"))
         isf_ids = tuple(sorted(
             function_id for function_id, roles in roles_by_function.items()
             if "ISF" in roles
         ))
         triplets = []
-        for anchor_id in isf_ids:
-            # SynapseFlow Algorithm 1 emits one FT per unique ISF. Usage-pattern
-            # variants are a repository extension, disabled for the paper
-            # reproduction path through this switch.
-            patterns = (() if paper_minimal else
-                        _usage_patterns_for_anchor(artifacts, anchor_id))
-            for pattern in patterns or (None,):
-                try:
-                    triplets.append(self._extract_one(
-                        artifacts, anchor_id, isf_ids, roles_by_function,
-                        usage_pattern=pattern,
-                        max_functions_per_ft=max_functions_per_ft,
-                    ))
-                except _OversizedTriplet as exc:
-                    self.exclusions.append({
-                        "anchor_function_id": anchor_id,
-                        "usage_pattern_id": pattern.get("id") if pattern else None,
-                        "reason": "too_many_functions",
-                        "function_count": exc.function_count,
-                    })
+        patterns = (() if paper_minimal else _usage_patterns_for_anchor(artifacts, anchor_id))
+        for pattern in patterns or (None,):
+            try:
+                triplet = self._extract_one(
+                    artifacts, anchor_id, isf_ids, roles_by_function,
+                    usage_pattern=pattern, max_functions_per_ft=max_functions_per_ft,
+                )
+                triplets.append(replace(triplet, metadata={
+                    **dict(triplet.metadata),
+                    "anchor_candidate": {"function_id": anchor_id, "status": "unresolved",
+                                         "existing_isf_annotation": annotated_isf,
+                                         "qualification": "explicit_construction_request"},
+                }))
+            except _OversizedTriplet as exc:
+                self.exclusions.append({
+                    "anchor_function_id": anchor_id, "function": record["name"],
+                    "usage_pattern_id": pattern.get("id") if pattern else None,
+                    "reason": "too_many_functions", "function_count": exc.function_count,
+                    "max_functions_per_ft": max_functions_per_ft,
+                    "candidate_retained": True, "frontier": exc.frontier,
+                })
         return tuple(sorted(triplets, key=lambda triplet: triplet.id))
 
     def _extract_one(self, artifacts: SFGArtifacts, anchor_id: str,
@@ -102,38 +156,19 @@ class FunctionTripletExtractor:
         input_structs = {edge.source for edge in anchor_edges}
         output_structs = {edge.target for edge in anchor_edges}
 
-        if (
+        owned_return_producer = (
             _is_null_source_producer(anchor_edges)
             and _has_owned_return_lifecycle(artifacts, anchor_id)
-        ):
-            in_nodes = set(input_structs)
-            out_nodes = set(output_structs)
-            selected_nodes = in_nodes | out_nodes
-            selected_edges = anchor_edges
-        else:
-            in_nodes = set(input_structs)
-            for node in sorted(input_structs):
-                in_nodes.update(_reachable_without_crossing(
-                    new_graph, node, incoming=True, boundaries=opaque_boundary_nodes
-                ))
-            out_nodes = set(output_structs)
-            for node in sorted(output_structs):
-                out_nodes.update(_reachable_without_crossing(
-                    new_graph, node, incoming=False, boundaries=opaque_boundary_nodes
-                ))
-            selected_nodes = in_nodes | out_nodes
-            selected_edges = tuple(
-                edge for edge in new_graph.edges
-                if edge.source in selected_nodes and edge.target in selected_nodes
-                and (
-                    edge.function_id == anchor_id
-                    or not ({edge.source, edge.target} & opaque_boundary_nodes)
-                )
-            ) + tuple(
-                edge for edge in masked_edges
-                if edge.source in selected_nodes and edge.target in selected_nodes
-                and not ({edge.source, edge.target} & opaque_boundary_nodes)
-            )
+        )
+        structural = self.structural_policy.select(
+            new_graph, anchor_id=anchor_id, anchor_edges=anchor_edges,
+            masked_edges=masked_edges, boundaries=opaque_boundary_nodes,
+            owned_return_producer=owned_return_producer,
+        )
+        in_nodes = set(structural.input_nodes)
+        out_nodes = set(structural.output_nodes)
+        selected_nodes = set(structural.selected_nodes)
+        selected_edges = structural.edges
 
         selected_roles: dict[str, set[str]] = {
             anchor_id: set(roles_by_function[anchor_id])
@@ -154,9 +189,17 @@ class FunctionTripletExtractor:
         selected_edges = _merge_sfg_edges(selected_edges, closure_edges)
         selected_nodes.update(closure_structures)
 
+        relation_evidence = _relation_evidence(
+            artifacts, anchor_id, selected_roles, structural.edges,
+            lifecycle_closure, usage_pattern, self.structural_policy.name,
+        )
+
         if (max_functions_per_ft is not None
                 and len(selected_roles) > max_functions_per_ft):
-            raise _OversizedTriplet(len(selected_roles))
+            raise _OversizedTriplet(len(selected_roles), {
+                "function_ids": sorted(selected_roles), "structure_nodes": sorted(selected_nodes),
+                "relation_evidence": relation_evidence,
+            })
 
         references = {
             function_id: _function_reference(
@@ -191,6 +234,7 @@ class FunctionTripletExtractor:
         )
         metadata = {
             "algorithm": ALGORITHM_VERSION,
+            "relation_evidence": relation_evidence,
             "bypass_semantics_version": BYPASS_SEMANTICS_VERSION,
             "bypass_semantics_count": len(bypass_semantics),
             "lifecycle_closure": list(lifecycle_closure),
@@ -230,6 +274,58 @@ class FunctionTripletExtractor:
             bypass_semantics=bypass_semantics,
             ownership_relations=ownership_relations,
         )
+
+
+def _relation_evidence(
+    artifacts: SFGArtifacts,
+    anchor_id: str,
+    selected_roles: Mapping[str, Any],
+    structural_edges: tuple[SFGEdge, ...],
+    lifecycle_closure: tuple[Mapping[str, Any], ...],
+    usage_pattern: Mapping[str, Any] | None,
+    policy_name: str,
+) -> dict[str, Any]:
+    """Separate evidence-backed lifecycles from mere type reachability.
+
+    Strong is relative to type sharing, not a new semantic validation claim.
+    Keep IDs rather than source bodies so oversized frontiers remain auditable
+    without duplicating the entire project or model output in each diagnostic.
+    """
+    selected = set(selected_roles)
+    strong = []
+    strong_ids = set()
+    for relation in artifacts.ownership:
+        producer = relation.get("producer_function_id")
+        if producer not in selected:
+            continue
+        identifiers = {producer, relation.get("cleanup_function_id")}
+        strong_ids.update(identifiers & selected)
+        strong.append({"kind": "ownership", "relation_id": relation.get("id"),
+                       "function_ids": sorted(i for i in identifiers if isinstance(i, str)),
+                       "source": relation.get("source"), "confidence": relation.get("confidence")})
+    for closure in lifecycle_closure:
+        identifiers = {closure.get("producer_function_id"), closure.get("cleanup_function_id"),
+                       *closure.get("consumer_function_ids", [])}
+        strong_ids.update(identifiers & selected)
+        strong.append({"kind": "lifecycle", "resource_type": closure.get("resource_type"),
+                       "function_ids": sorted(i for i in identifiers if isinstance(i, str))})
+    if usage_pattern is not None:
+        identifiers = {usage_pattern.get("producer_function_id"), usage_pattern.get("cleanup_function_id"),
+                       *usage_pattern.get("consumer_function_ids", [])}
+        strong_ids.update(identifiers & selected)
+        strong.append({"kind": "explicit_usage_pattern", "pattern_id": usage_pattern.get("id"),
+                       "function_ids": sorted(i for i in identifiers if isinstance(i, str))})
+    weak_ids = {edge.function_id for edge in structural_edges} & selected
+    return {
+        "structural_policy": policy_name,
+        "shared_type_is_semantic_evidence": False,
+        "strong": strong,
+        "strong_function_ids": sorted(strong_ids),
+        "weak_structural_function_ids": sorted(weak_ids),
+        "weak_only_function_ids": sorted(weak_ids - strong_ids - {anchor_id}),
+        "weak_structural_edge_count": len(structural_edges),
+        "unclassified_function_ids": sorted(selected - strong_ids - weak_ids - {anchor_id}),
+    }
 
 
 def _delegating_alternatives(
@@ -359,10 +455,12 @@ def _authority_summary(
 def extract_function_triplets(
     artifacts: SFGArtifacts, *, paper_minimal: bool = False,
     max_functions_per_ft: int | None = None,
+    candidates: CandidateCatalog | None = None,
 ) -> tuple[FunctionTriplet, ...]:
     return FunctionTripletExtractor().extract(
         artifacts, paper_minimal=paper_minimal,
         max_functions_per_ft=max_functions_per_ft,
+        candidates=candidates,
     )
 
 
@@ -789,35 +887,6 @@ def _usage_strings(record: Mapping[str, Any], field: str) -> tuple[str, ...]:
             f"usage pattern {field} must be an array of non-empty strings"
         )
     return tuple(values)
-
-
-def _reachable_without_crossing(
-    graph: SFGGraphView,
-    start: str,
-    *,
-    incoming: bool,
-    boundaries: frozenset[str],
-) -> tuple[str, ...]:
-    if start in boundaries or is_null_node(start):
-        return ()
-    visited = {start}
-    pending = [start]
-    while pending:
-        current = pending.pop()
-        if is_null_node(current):
-            continue
-        edges = graph.incoming(current) if incoming else graph.outgoing(current)
-        neighbors = sorted({
-            edge.source if incoming else edge.target for edge in edges
-        }, reverse=True)
-        for neighbor in neighbors:
-            if neighbor in visited:
-                continue
-            visited.add(neighbor)
-            if neighbor not in boundaries and not is_null_node(neighbor):
-                pending.append(neighbor)
-    visited.remove(start)
-    return tuple(sorted(visited))
 
 
 def _opaque_lifecycle_closure(

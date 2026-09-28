@@ -76,6 +76,10 @@ if not decisions or any(decision.get("status") != "ok" for decision in decisions
     raise SystemExit("SFG semantic analysis was incomplete; see annotations.json")
 PY
 
+"$PYTHON_BIN" -m harness_generation candidates \
+  --artifacts "$OUTPUT_DIR" \
+  --policy legacy
+
 "$PYTHON_BIN" -m harness_generation triplets \
   --artifacts "$OUTPUT_DIR" \
   --individual \
