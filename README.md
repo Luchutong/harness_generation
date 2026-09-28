@@ -15,6 +15,10 @@ Candidate Discovery 与 FT Construction 现在可以独立执行：`harness-gene
 
 候选验证现冻结为 `recall-first-entry-validation-v3`，增加一次独立的 terminal schema repair。后续命令 `harness-generation semantic-slice --artifacts <目录> --provider deepseek` 消费 accepted 验证记录，区分 CORE / SUPPORT / EXCLUDE / UNRESOLVED，并保存独立的 `semantic_slices/<candidate-id>/`。共享类型仅用于调查；该阶段停在 slice artifact。接口、101 项测试和真实 DeepSeek smoke 见 [本轮报告](docs/SEMANTIC_SLICE_IMPLEMENTATION_REPORT.md)。
 
+新增无 LLM 的确定性投影阶段：`harness-generation minimal-ft --artifacts <目录> [--candidate <function-id-or-candidate-id>] [--resume]` 消费已有 Semantic Slice，原样投影 CORE 集合，保存 SUPPORT 候选、已有关系和未知依赖。结果位于 `minimal_fts/<ft-id>/`，允许 1 至 N 个 CORE；该阶段停在 Minimal FT。schema、身份、恢复规则、146 项测试及四组已有真实 Slice 的无模型 smoke 见 [Minimal FT 实现报告](docs/MINIMAL_FT_IMPLEMENTATION_REPORT.md)。
+
+下一阶段 `harness-generation harness-context --artifacts <目录> --provider deepseek --model deepseek-flash --thinking disabled [--resume]` 围绕 frozen FT 生成确定性 requirements，通过有界只读工具调查 input/lifecycle/ownership 等契约，保存独立 API Closure，并由 deterministic Completeness Gate 决定是否冻结 Context。hard missing 阻止生成；本阶段止于 Context。187 项测试、预算与恢复规则、真实 smoke 结果及 HTTP 402 复测限制见 [Harness Context 实现报告](docs/HARNESS_CONTEXT_IMPLEMENTATION_REPORT.md)。
+
 这条路径已经完成真实 API 验证：语义决策完整返回，目标 FT 被选中，Stage 1–4、Intermediate、Compiler、Linker、Runtime 和 Fuzz smoke 均通过。模型响应、源码摘要、生成 harness 和阶段状态由脚本输出到独立 artifact 目录，便于复核但不会进入提交历史。
 
 ## 已取得成果

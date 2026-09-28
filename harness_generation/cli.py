@@ -40,6 +40,12 @@ def main(
     if arguments[:1] == ["semantic-slice"]:
         from .semantic_slicing.cli import main as semantic_slice_main
         return semantic_slice_main(arguments[1:])
+    if arguments[:1] == ["minimal-ft"]:
+        from .minimal_ft.cli import main as minimal_ft_main
+        return minimal_ft_main(arguments[1:])
+    if arguments[:1] == ["harness-context"]:
+        from .harness_context.cli import main as harness_context_main
+        return harness_context_main(arguments[1:])
     if arguments[:1] in (["generate"], ["generate-all"], ["run"]):
         from .generation_cli import main as generation_main
         return generation_main(

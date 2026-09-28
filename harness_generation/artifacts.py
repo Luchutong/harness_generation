@@ -82,6 +82,21 @@ class ArtifactStore:
         return self.semantic_slices_directory / candidate_id
 
     @property
+    def minimal_fts_directory(self) -> Path:
+        return self.root / "minimal_fts"
+
+    @property
+    def minimal_ft_catalog(self) -> Path:
+        return self.minimal_fts_directory / "catalog.json"
+
+    def minimal_ft_run(self, ft_id: str) -> Path:
+        if not isinstance(ft_id, str) or not re.fullmatch(r"ft_[A-Za-z0-9_]{1,48}_[0-9a-f]{24}", ft_id):
+            raise ValueError("invalid minimal FT ID")
+        path = self.minimal_fts_directory / ft_id
+        _require_owned_path(path, self.root)
+        return path
+
+    @property
     def triplet_exclusions(self) -> Path:
         return self.root / "triplet_exclusions.json"
 
