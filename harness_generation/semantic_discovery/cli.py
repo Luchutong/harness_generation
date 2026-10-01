@@ -9,6 +9,7 @@ from ..artifacts import ArtifactStore
 from ..sfg_adapter import load_sfg_artifacts
 from .agent import CandidateValidationAgent
 from .deepseek_client import DeepSeekAgentModel, DeepSeekConfig
+from .provider_config import agent_configuration, native_agent_model, load_environment_file
 from .models import AgentModelError, ValidationBudget, candidate_id
 from .persistence import (load_compatible_run, run_configuration, save_run,
                           write_validated_catalog)
@@ -33,9 +34,10 @@ def main(argv: list[str] | None = None, *, model=None) -> int:
     parser = argparse.ArgumentParser(prog="harness-generation candidate-validate",
                                      description="Bounded recall-first semantic candidate validation")
     parser.add_argument("--artifacts", type=Path, required=True)
-    parser.add_argument("--provider", choices=("deepseek",), default="deepseek")
+    parser.add_argument("--provider", choices=("deepseek", "openai-compatible"), default="deepseek")
+    parser.add_argument("--env-file", type=Path)
     parser.add_argument("--model")
-    parser.add_argument("--thinking", choices=("disabled", "enabled"), default="disabled")
+    parser.add_argument("--thinking", choices=("disabled", "enabled"))
     parser.add_argument("--candidate", action="append", default=[],
                         help="Explicit function ID or stable candidate ID; repeatable, permits revalidation")
     parser.add_argument("--max-candidates", type=_nonnegative)
@@ -48,6 +50,8 @@ def main(argv: list[str] | None = None, *, model=None) -> int:
     try:
         if model is not None and args.model:
             raise ValueError("cannot combine injected agent model and --model")
+        if args.env_file:
+            load_environment_file(args.env_file)
         budget = ValidationBudget(**{name: getattr(args, name) for name in ValidationBudget().to_dict()})
         store = ArtifactStore(args.artifacts)
         catalog = store.load_candidate_catalog()
@@ -56,7 +60,7 @@ def main(argv: list[str] | None = None, *, model=None) -> int:
         artifacts = load_sfg_artifacts(args.artifacts)
         catalog.validate_against(artifacts)
         index = RepositoryIndex(artifacts, catalog, functions_path=store.functions)
-        config = DeepSeekConfig.from_environment(model=args.model, thinking=args.thinking)
+        config = agent_configuration(args.provider, model=args.model, thinking=args.thinking)
         # A configuration-only model permits checking reusable runs without a key.
         descriptor = model or _ModelDescriptor(config)
         configuration = run_configuration(catalog, budget, descriptor, max_terminal_repairs=args.max_terminal_repairs)
@@ -93,7 +97,7 @@ def main(argv: list[str] | None = None, *, model=None) -> int:
             todo.append(candidate)
             deferred[candidate.function_id] = "pending_validation"
         if todo and model is None:
-            model = DeepSeekAgentModel(config)
+            model = native_agent_model(config)
         if todo:
             agent = CandidateValidationAgent(model, budget, max_terminal_repairs=args.max_terminal_repairs)
             for candidate in todo:
@@ -117,6 +121,7 @@ class _ModelDescriptor:
 
     def __init__(self, config):
         self.config, self.model = config, config.model
+        self.provider = config.to_dict()["provider"]
 
 
 if __name__ == "__main__":

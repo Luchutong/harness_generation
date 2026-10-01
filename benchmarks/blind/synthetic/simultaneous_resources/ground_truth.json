@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "annotation_kind": "independent_manual_contract",
+  "id": "simultaneous_resources",
+  "core_apis": [
+    "tw_fill",
+    "tw_compare"
+  ],
+  "required_support": [
+    "tw_make",
+    "tw_drop"
+  ],
+  "resources": [
+    {
+      "id": "left",
+      "origin": {
+        "api": "tw_make",
+        "kind": "return",
+        "parameter": null
+      },
+      "consumers": [
+        {
+          "api": "tw_compare",
+          "parameter": "left"
+        }
+      ],
+      "cleanup": "tw_drop",
+      "ownership": "owned",
+      "scope": "per_input"
+    },
+    {
+      "id": "right",
+      "origin": {
+        "api": "tw_make",
+        "kind": "return",
+        "parameter": null
+      },
+      "consumers": [
+        {
+          "api": "tw_compare",
+          "parameter": "right"
+        }
+      ],
+      "cleanup": "tw_drop",
+      "ownership": "owned",
+      "scope": "per_input"
+    }
+  ],
+  "input_binding": [
+    {
+      "api": "tw_fill",
+      "parameter": "data",
+      "source": "fuzz_data",
+      "size_parameter": "size",
+      "via_api": null
+    },
+    {
+      "api": "tw_compare",
+      "parameter": "left",
+      "source": "context",
+      "size_parameter": null,
+      "via_api": "tw_fill"
+    },
+    {
+      "api": "tw_compare",
+      "parameter": "right",
+      "source": "context",
+      "size_parameter": null,
+      "via_api": "tw_fill"
+    }
+  ],
+  "ownership": [
+    {
+      "api": "tw_make",
+      "parameter": null,
+      "return_value": true,
+      "ownership": "owned",
+      "release_api": "tw_drop"
+    },
+    {
+      "api": "tw_compare",
+      "parameter": "left",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    },
+    {
+      "api": "tw_make",
+      "parameter": null,
+      "return_value": true,
+      "ownership": "owned",
+      "release_api": "tw_drop"
+    },
+    {
+      "api": "tw_compare",
+      "parameter": "right",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    }
+  ],
+  "callback": [],
+  "ordering": [
+    {
+      "before": "tw_make",
+      "after": "tw_fill"
+    },
+    {
+      "before": "tw_fill",
+      "after": "tw_compare"
+    },
+    {
+      "before": "tw_compare",
+      "after": "tw_drop"
+    }
+  ],
+  "invocation_counts": {
+    "tw_make": 2,
+    "tw_fill": 2,
+    "tw_drop": 2
+  },
+  "mandatory_constraints": {
+    "distinct_resources": [
+      [
+        "left",
+        "right"
+      ]
+    ]
+  },
+  "adjudication": "strict necessary-contract checks; unknown is unverified, never automatically correct"
+}

@@ -103,6 +103,14 @@ def build_frontier(store, artifacts, catalog, candidate, validation):
         if shared:
             include(f["id"], "functions.json/structs", weak={"kind": "same_struct_type",
                                                            "types": sorted(shared)})
+    producer = known[anchor]
+    if producer.get("return_pointer_depth", 0):
+        for function in artifacts.functions:
+            if any(p.get("is_pointer") and p.get("base_type") == producer.get("return_base_type")
+                   for p in function.get("parameters", [])):
+                include(function["id"], "functions.json/producer-return", weak={
+                    "kind": "producer_return_consumer_candidate", "producer_function_id": anchor,
+                    "resource_type": producer.get("return_base_type"), "ownership_established": False})
 
     diagnostics = candidate.metadata.get("construction", {}).get("diagnostics", [])
     extra_relations = []

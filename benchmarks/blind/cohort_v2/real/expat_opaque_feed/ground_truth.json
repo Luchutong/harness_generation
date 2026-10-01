@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "annotation_kind": "independent_manual_contract",
+  "id": "expat_opaque_feed",
+  "core_apis": [
+    "XML_Parse"
+  ],
+  "required_support": [
+    "XML_ParserCreate",
+    "XML_ParserFree"
+  ],
+  "resources": [
+    {
+      "id": "parser",
+      "origin": {
+        "api": "XML_ParserCreate",
+        "kind": "return",
+        "parameter": null,
+        "alternatives": [
+          "XML_ParserCreateNS",
+          "XML_ParserCreate_MM"
+        ]
+      },
+      "consumers": [
+        {
+          "api": "XML_Parse",
+          "parameter": "parser"
+        },
+        {
+          "api": "XML_ParserFree",
+          "parameter": "parser"
+        }
+      ],
+      "cleanup": "XML_ParserFree",
+      "ownership": "owned",
+      "scope": "per_input"
+    }
+  ],
+  "input_binding": [
+    {
+      "api": "XML_Parse",
+      "parameter": "s",
+      "source": "fuzz_data",
+      "size_parameter": "len",
+      "via_api": null
+    }
+  ],
+  "ownership": [
+    {
+      "api": "XML_ParserCreate",
+      "api_alternatives": [
+        "XML_ParserCreateNS",
+        "XML_ParserCreate_MM"
+      ],
+      "parameter": null,
+      "return_value": true,
+      "ownership": "owned",
+      "release_api": "XML_ParserFree"
+    },
+    {
+      "api": "XML_Parse",
+      "parameter": "parser",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    }
+  ],
+  "callback": [],
+  "ordering": [
+    {
+      "before": "XML_ParserCreate",
+      "after": "XML_Parse"
+    },
+    {
+      "before": "XML_Parse",
+      "after": "XML_ParserFree"
+    }
+  ],
+  "invocation_counts": {},
+  "mandatory_constraints": {
+    "creator_only": true,
+    "length_int_bounded": true,
+    "final_flag_valid_boolean": true
+  },
+  "adjudication": "pinned public API/source contracts; valid factory alternatives predeclared; runtime does not replace independent semantics"
+}

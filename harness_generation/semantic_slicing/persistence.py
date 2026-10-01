@@ -61,10 +61,15 @@ def load_accepted_candidates(store, catalog, index):
 def run_configuration(catalog, frontier, budget, model, max_discovered_functions):
     from .agent import SYSTEM_PROMPT
     from .models import SLICE_SCHEMA, ROLE_REASONS
+    from .core_proofs import VERSION as CORE_PROOF_VERSION
+    from .proposals import VERSION as PROPOSAL_VERSION
+    from .support_effects import VERSION as EFFECT_VERSION
     config = model.config.to_dict() if hasattr(model, "config") else {
         "provider": model.provider, "model": model.model}
     return {"source_fingerprint": catalog.source_fingerprint, "discovery_fingerprint": digest(catalog.to_dict()),
             "policy_version": SLICE_POLICY_VERSION, "frontier_fingerprint": frontier.fingerprint,
+            "core_inclusion_proof_version": CORE_PROOF_VERSION,
+            "role_proposal_version": PROPOSAL_VERSION, "support_effect_version": EFFECT_VERSION,
             "task_fingerprint": digest({"prompt": SYSTEM_PROMPT, "schema": SLICE_SCHEMA, "reasons": ROLE_REASONS}),
             "validation_fingerprint": digest(frontier.validation), "budget": budget.to_dict(),
             "max_discovered_functions": max_discovered_functions, "model": config}

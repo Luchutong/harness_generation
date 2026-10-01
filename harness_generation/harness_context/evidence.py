@@ -45,12 +45,9 @@ def callback_abis(declaration):
 
 
 def declared_callback_abis(function, parameter_name, snapshot):
-    parameter = next(p for p in function["parameters"] if p["name"] == parameter_name)
-    signatures = set(callback_abis(parameter.get("declaration", "")))
-    for struct in snapshot.artifacts.structs:
-        if parameter["base_type"] in {struct["name"], *struct.get("aliases", [])}:
-            signatures.update(callback_abis(struct["declaration"]))
-    return signatures
+    from .callbacks import callback_declarations, callback_matches
+    candidates = callback_matches({"parameter": parameter_name}, callback_declarations(function, snapshot))
+    return set().union(*(callback_abis(c["signature"]) for c in candidates)) if candidates else set()
 
 
 def record_functions(record, snapshot):
@@ -102,6 +99,12 @@ def validate_fact(fact, requirement, snapshot, records, allowed_ids, visible_ids
     if not body_evidence(eids, fid, records, snapshot):
         raise ValueError("semantic_fact_requires_untruncated_subject_source")
     parameters = {p["name"] for p in snapshot.functions[fid].get("parameters", [])}
+    if fact["predicate"] == "callback":
+        from .callbacks import callback_declarations
+        for entry in callback_declarations(snapshot.functions[fid], snapshot):
+            if entry["field"]:
+                path = entry.get("field_path", entry["field"])
+                parameters.update({entry["field"], entry["parameter"] + "." + path, entry["parameter"] + "->" + path})
     def inspect(value):
         if isinstance(value, list):
             for item in value:
@@ -126,20 +129,26 @@ def validate_fact(fact, requirement, snapshot, records, allowed_ids, visible_ids
                 if len(submitted) != 1 or not submitted <= declared:
                     raise ValueError("callback_abi_not_supported_by_declaration")
     if fact["predicate"] == "ownership":
+        from .proposals import ownership_subject
         for entry in fact["value"]["entries"]:
+            subject = ownership_subject(entry, fid, snapshot)
             if entry["ownership"] in {"borrowed", "static"} and entry["release_api"] is not None:
                 raise ValueError("borrowed_or_static_resource_cannot_have_release_api")
             if entry["return_value"] and (entry["parameter"] is not None or not snapshot.functions[fid].get("return_pointer_depth", 0)):
                 raise ValueError("invalid_return_ownership_subject: scalar returns are not pointer resources")
             if not entry["return_value"]:
                 parameter = next((p for p in snapshot.functions[fid].get("parameters", []) if p["name"] == entry["parameter"]), None)
-                if parameter is None or not (parameter.get("is_pointer") or parameter.get("is_opaque_handle") or entry["field"] is not None):
+                if parameter is None or not (parameter.get("is_pointer") or parameter.get("is_opaque_handle")
+                        or parameter.get("is_struct_like") and subject['subject_kind'] == "ResourceObject" or entry["field"] is not None):
                     raise ValueError(f"invalid_ownership_subject: {entry['parameter']} is not a pointer/handle/struct field")
             if entry["field"] is not None:
                 parameter = next((p for p in snapshot.functions[fid].get("parameters", []) if p["name"] == entry["parameter"]), None)
                 if parameter is None or not any(entry["field"] in declared_fields(struct["declaration"])
                     for struct in snapshot.artifacts.structs if parameter["base_type"] in {struct["name"], *struct.get("aliases", [])}):
                     raise ValueError("unknown_ownership_field")
+    if fact["predicate"] == "return_semantics" and not snapshot.functions[fid].get("return_pointer_depth"):
+        if fact["value"]["owned"] is not None or fact["value"]["nullable"] is not None:
+            raise ValueError("scalar_return_cannot_have_pointer_semantics")
     if fact["predicate"] == "lifecycle":
         for resource in fact["value"]["resources"]:
             function = snapshot.functions[fid]
@@ -154,6 +163,8 @@ def validate_fact(fact, requirement, snapshot, records, allowed_ids, visible_ids
                 type_name = parameter.get("base_type")
             if resource["type"] != type_name:
                 raise ValueError("resource_type_mismatch")
+    from .value_roles import validate_value_roles
+    validate_value_roles(fact, snapshot, records, allowed_ids)
 
 
 def parse_resolution(text, tools):
@@ -182,17 +193,42 @@ def parse_resolution(text, tools):
             raise ValueError("required_core_contract_cannot_be_not_applicable")
     for fact in result["facts"]:
         validate_fact(fact, requirement, tools.snapshot, tools.evidence, tools.scope_ids, tools.visible_ids)
+        if fact["predicate"] == "ownership":
+            from .proposals import ownership_subject
+            for entry in fact["value"]["entries"]:
+                subject = ownership_subject(entry, fact["function_id"], tools.snapshot)
+                entry.update({k: subject[k] for k in ("subject_id", "subject_kind")})
+    from .argument_graph import issued_resource_ids
+    identity_catalog = issued_resource_ids(tools.snapshot, tools.evidence, tools.scope_ids)
+    def check_identities(value):
+        if isinstance(value,list):
+            for item in value:
+                check_identities(item)
+        elif isinstance(value,dict):
+            if value.get('resource_id') is not None and value['resource_id'] not in identity_catalog:
+                raise ValueError('unissued_resource_identity')
+            for item in value.values():
+                check_identities(item)
+    check_identities(result['facts'])
+    from .terminal import derive_selections
+    from .proposals import registry
+    # The expanded compatibility format and persisted artifacts obey the same
+    # issued API/parent/role boundary as the native wire format.
+    selections = derive_selections(result['facts'], requirement, registry(tools, [requirement]))
     seen = set()
     for proposal in result["discovered_api_dependencies"]:
         fid, parent = proposal["function_id"], proposal["required_by"]
+        from .proposals import match_dependency
+        candidate = match_dependency(proposal, requirement, tools)
         if parent not in {requirement["subject_function_id"], *requirement["required_by"]}:
             raise ValueError("dependency_without_requirement_parent")
         if fid == parent and proposal["necessity"] in {"required", "optional"}:
             raise ValueError("self_dependency_is_not_a_support_api")
         if fid is not None:
-            if fid not in tools.scope_ids or fid in tools.excluded or fid in seen:
+            key = (fid, parent, proposal['reason'])
+            if fid not in tools.scope_ids or fid in tools.excluded or key in seen:
                 raise ValueError("dependency_identity_not_discovered_or_excluded")
-            seen.add(fid)
+            seen.add(key)
             if not body_evidence(proposal["evidence_ids"], fid, tools.evidence, tools.snapshot):
                 raise ValueError("dependency_requires_api_source_evidence")
             if fid not in tools.initial_ids and fid not in tools.state.discoveries:
@@ -209,6 +245,13 @@ def parse_resolution(text, tools):
                 and parent in decision["required_by"] for decision in decisions)
             if not justified:
                 raise ValueError("dependency_role_not_supported_by_facts")
+        if candidate:
+            proposal["candidate_id"] = candidate["candidate_id"]
+            derived = next((s for s in selections if all(s[k] == proposal[k] for k in ('function_id','required_by','reason'))), None)
+            bindings = derived['subject_bindings'] if derived else candidate['subject_bindings']
+            if 'subject_bindings' in proposal and proposal['subject_bindings'] != bindings:
+                raise ValueError('dependency_subject_effect_changed')
+            proposal['subject_bindings'] = bindings
     # Framework-owned identifiers; terminal content cannot assign them.
     for fact in result["facts"]:
         fact["requirement_id"] = requirement["requirement_id"]
@@ -239,7 +282,7 @@ CONTRACT_FIELDS = {"input_binding": ("input_contract", "bindings"), "argument_co
     "return_semantics": ("return_contract", "functions")}
 
 
-def build_context(ft, requirements, facts):
+def build_context(ft, requirements, facts, snapshot=None, records=None):
     from .models import POLICY_VERSION
     context = {"schema_version": 1, "artifact_kind": "harness_context", "policy_version": POLICY_VERSION,
         "ft_id": ft["ft_id"], "minimal_ft_digest": digest(ft),
@@ -257,6 +300,40 @@ def build_context(ft, requirements, facts):
                             "evidence_ids": fact["evidence_ids"]} for value in values)
         context[section] = {field: sorted(entries, key=canonical)}
     context["dependencies"] = []
+    if snapshot is not None:
+        from .resource_identity import resolve_resources
+        from .callbacks import enrich_callbacks
+        from .input_contracts import project_inputs
+        from .ordering import ordering_graph
+        from .construction import project_construction, covered_requirements
+        enrich_callbacks(context, snapshot)
+        project_inputs(context, snapshot, records or {})
+        from .input_pairs import project_pairs
+        project_pairs(context)
+        from .value_flow import complete_bodies
+        allowed = ({r["function_id"] for r in ft["core_functions"] + ft["support_candidates"]}
+                   | set(complete_bodies(snapshot, records or {}))) - set(ft["excluded_functions"])
+        context["construction_contract"] = project_construction(context, snapshot, records or {}, allowed)
+        context["resource_identity"] = resolve_resources(context, snapshot, records or {})
+        from .argument_graph import build_argument_graph
+        context["argument_graph"] = build_argument_graph(context, ft, requirements, snapshot, records or {})
+        from .parameter_semantics import project_parameter_relations
+        project_parameter_relations(context, snapshot, records or {})
+        graph_nodes = {n["node_id"]: n for n in context["argument_graph"]["nodes"]}
+        context["resource_identity"]["argument_bindings"] = [{"function_id": graph_nodes[p["target_parameter"]]["function_id"],
+            "parameter_id": p["target_parameter"], "parameter": graph_nodes[p["target_parameter"]]["name"],
+            "resource_id": p["resource_id"], "proof_digest": digest(p), "evidence_ids": p["evidence_ids"]}
+            for p in context["argument_graph"]["dependency_graph"]["resolved_parameters"] if p.get("resource_id")]
+        from .reconciliation import GraphContractReconciler, project_canonical_construction
+        context["canonical_construction"] = GraphContractReconciler().reconcile(
+            context, context["argument_graph"], requirements, snapshot)
+        graph_satisfied = project_canonical_construction(context, context["canonical_construction"], requirements, snapshot)
+        from .invocations import project_invocations
+        project_invocations(context)
+        context["ordering_graph"] = ordering_graph(context, snapshot, records or {})
+        from .input_flow import project_input_flow
+        project_input_flow(context, snapshot)
+        context["framework_satisfied_requirements"] = sorted(covered_requirements(context, requirements, snapshot) + graph_satisfied,key=canonical)
     return context
 
 
@@ -265,20 +342,28 @@ class HarnessContextValidator:
         errors, requirements_by_id = [], {row["requirement_id"]: row for row in requirements}
         seen = set()
         try:
+            submitted_arguments={}
             for fact in context["facts"]:
                 req = requirements_by_id.get(fact["requirement_id"])
                 if req is None or fact["fact_id"] in seen:
                     raise ValueError("invalid_or_duplicate_fact_identity")
                 seen.add(fact["fact_id"])
                 validate_fact(fact, req, snapshot, records, allowed_ids)
-            expected = build_context(ft, requirements, context["facts"])
+                if fact['predicate']=='argument_construction':
+                    for argument in fact['value']['arguments']:
+                        key=fact['function_id'],argument['parameter']
+                        if submitted_arguments.setdefault(key,argument)!=argument:
+                            raise ValueError('conflicting_argument_contract')
+            expected = build_context(ft, requirements, context["facts"], snapshot, records)
             expected["frozen"] = context["frozen"]
             expected["dependencies"] = context["dependencies"]
             if context != expected:
                 raise ValueError("context_changed_canonical_projection")
+            if any(r["reason"]=="semantic_recipe_conflict" for r in context["canonical_construction"]["parameters"]):
+                raise ValueError("conflicting_argument_contract")
             owners = {}
             for fact in context["ownership_contract"]["entries"]:
-                key = fact["function_id"], fact["parameter"], fact["return_value"], fact["field"]
+                key = fact["function_id"], fact["parameter"], fact["return_value"], fact["field"], fact.get("subject_kind")
                 shape = {k: v for k, v in fact.items() if k not in {"fact_id", "evidence_ids"}}
                 previous = owners.setdefault(key, shape)
                 if previous != shape:
@@ -295,15 +380,9 @@ class HarnessContextValidator:
                     shape = {k: v for k, v in row.items() if k not in {"fact_id", "evidence_ids"}}
                     if contracts.setdefault(key, shape) != shape:
                         raise ValueError(f"conflicting_{section}")
-            resources = {}
-            for resource in context["lifecycle_contract"]["resources"]:
-                # One resource may be bound as a creator's return and a CORE
-                # parameter. Its lifecycle must agree across those bindings.
-                shape = {k: v for k, v in resource.items() if k not in {
-                    "fact_id", "evidence_ids", "function_id", "subject_parameter", "return_value"}}
-                previous = resources.setdefault(resource["resource_id"], shape)
-                if previous != shape:
-                    raise ValueError("conflicting_resource_identity")
+            diagnostics = context["resource_contract"]["diagnostics"]
+            if diagnostics:
+                raise ValueError(diagnostics[0]["code"])
         except (ValueError, TypeError, KeyError) as error:
             errors.append({"code": str(error)[:160]})
         return errors

@@ -133,6 +133,7 @@ class SFGArtifacts:
     source_schema_versions: Mapping[str, int] = field(default_factory=dict)
     ownership: tuple[Mapping[str, Any], ...] = ()
     usage_patterns: tuple[Mapping[str, Any], ...] = ()
+    callback_typedefs: tuple[Mapping[str, Any], ...] = ()
     functions_by_id: Mapping[str, Mapping[str, Any]] = field(init=False, repr=False)
     annotations_by_id: Mapping[str, Mapping[str, Any]] = field(init=False, repr=False)
     flows_by_id: Mapping[str, Mapping[str, Any]] = field(init=False, repr=False)
@@ -164,6 +165,12 @@ class SFGArtifacts:
         object.__setattr__(self, "functions", functions)
         object.__setattr__(self, "files", tuple(sorted(set(self.files))))
         object.__setattr__(self, "structs", structs)
+        callbacks = _sorted_records(tuple(self.callback_typedefs), "name")
+        for declaration in callbacks:
+            _required_string(declaration, "declaration", "callback typedef")
+            if _required_string(declaration, "file", "callback typedef") not in self.files:
+                raise SFGLoadError("callback typedef must belong to an indexed source file")
+        object.__setattr__(self, "callback_typedefs", callbacks)
         object.__setattr__(self, "function_warnings", tuple(self.function_warnings))
         object.__setattr__(self, "annotations", annotations)
         object.__setattr__(self, "flows", flows)
@@ -206,6 +213,7 @@ class SFGLoader:
             project=project,
             files=tuple(files),
             structs=tuple(_record_array(documents["functions"], "structs", "functions.json")),
+            callback_typedefs=tuple(documents["functions"].get("callback_typedefs", [])),
             function_warnings=tuple(function_warnings),
             functions=tuple(_record_array(documents["functions"], "functions", "functions.json")),
             annotations=tuple(_record_array(

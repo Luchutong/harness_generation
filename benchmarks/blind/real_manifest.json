@@ -1,0 +1,193 @@
+{
+  "schema_version": 1,
+  "set": "blind_real",
+  "cases": [
+    {
+      "id": "inih_string",
+      "repo": "https://github.com/benhoyt/inih.git",
+      "project": "inih",
+      "target_api": "ini_parse_string",
+      "language": "C",
+      "build_system": "Meson; standalone ini.c supported",
+      "rationale": "NUL string entry with synchronous handler; not chosen by observed framework success",
+      "commit_sha": "2bbdec4a366c8c39746ee0982e7ca0febbb044b6",
+      "set": "blind_real",
+      "source_dir": "real/inih_string/source",
+      "anchor": "ini_parse_string",
+      "sources": [
+        "ini.c"
+      ],
+      "headers": [
+        "ini.h"
+      ],
+      "include_paths": [],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": [
+        "-lm"
+      ],
+      "analysis_scope": "original library implementation/header slice; examples/tests excluded uniformly",
+      "source_hashes": {
+        "ini.c": "ede2df5a39d091dc494c2718d3900a26adcabc74cd63dc5016ef1145ef0a2f0c",
+        "ini.h": "2e46eba137b5f9ac816e12786846791296f89fb4bd5d4cba69191b706d64654e",
+        "LICENSE.txt": "9ae3b39e83e9158e44b67733baa3bb2d84e80efdcfb14a5820210a42c7abdf7f"
+      }
+    },
+    {
+      "id": "inih_stream",
+      "repo": "https://github.com/benhoyt/inih.git",
+      "project": "inih",
+      "target_api": "ini_parse_stream",
+      "language": "C",
+      "build_system": "Meson; standalone ini.c supported",
+      "rationale": "Custom fgets-style input reader and userdata; pull transport outside byte-pointer parser arguments",
+      "commit_sha": "2bbdec4a366c8c39746ee0982e7ca0febbb044b6",
+      "set": "blind_real",
+      "source_dir": "real/inih_stream/source",
+      "anchor": "ini_parse_stream",
+      "sources": [
+        "ini.c"
+      ],
+      "headers": [
+        "ini.h"
+      ],
+      "include_paths": [],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": [
+        "-lm"
+      ],
+      "analysis_scope": "original library implementation/header slice; examples/tests excluded uniformly",
+      "source_hashes": {
+        "ini.c": "ede2df5a39d091dc494c2718d3900a26adcabc74cd63dc5016ef1145ef0a2f0c",
+        "ini.h": "2e46eba137b5f9ac816e12786846791296f89fb4bd5d4cba69191b706d64654e",
+        "LICENSE.txt": "9ae3b39e83e9158e44b67733baa3bb2d84e80efdcfb14a5820210a42c7abdf7f"
+      }
+    },
+    {
+      "id": "yajl_opaque",
+      "repo": "https://github.com/lloyd/yajl.git",
+      "project": "yajl",
+      "target_api": "yajl_parse",
+      "language": "C",
+      "build_system": "CMake",
+      "rationale": "Opaque allocated handle plus SAX callbacks and incremental bytes",
+      "commit_sha": "5e3a7856e643b4d6410ddc3f84bc2f38174f2872",
+      "set": "blind_real",
+      "source_dir": "real/yajl_opaque/source",
+      "anchor": "yajl_parse",
+      "sources": [
+        "yajl.c",
+        "yajl_alloc.c",
+        "yajl_buf.c",
+        "yajl_encode.c",
+        "yajl_gen.c",
+        "yajl_lex.c",
+        "yajl_parser.c",
+        "yajl_tree.c",
+        "yajl_version.c"
+      ],
+      "headers": [
+        "api/yajl_parse.h"
+      ],
+      "include_paths": [
+        "."
+      ],
+      "compiler_flags": [
+        "-std=c11",
+        "-DYAJL_BUILD"
+      ],
+      "link_flags": [
+        "-lm"
+      ],
+      "analysis_scope": "original library implementation/header slice; examples/tests excluded uniformly",
+      "source_hashes": {
+        "src/yajl.c": "f4411103e17e3a2e46728963cc8b48fe393cf316da09bbd7f4eb466933ad6fb6",
+        "src/yajl_alloc.c": "a5d7cf1bd007c30006dd669c7fadb5dc0bbfa5aed8276420cb8b89551b1afca4",
+        "src/yajl_alloc.h": "8bd7062fe43eb3826e66938511eb11afe397caf15698ab970abc45bc06812b2a",
+        "src/yajl_buf.c": "3efcfe13dd4722d1360d0bb0dbd17b255c1d230996de3fe2eaf6fbff8b2519e7",
+        "src/yajl_buf.h": "2e119527c8e439b41b37f281a88d95899dcb8d69c6ce6201e43a1b532adfd239",
+        "src/yajl_bytestack.h": "99cb7c2d6190be8388e69d7f5e54cfb367e9cee41beb81f24239a38c9eca6e96",
+        "src/yajl_encode.c": "3c2b33a89f7e99b8eb2defe8950034a5c7b240baeed0ad5e553a1720865925e9",
+        "src/yajl_encode.h": "0b5170e53c5493b89637a7ab3997089f178d625a1a6036603d6a75d467cdc193",
+        "src/yajl_gen.c": "06583119e2544f337fcaa3052f20e965eb09b446adc12e63c428354afef73aa7",
+        "src/yajl_lex.c": "3432970d25a9cbd0f1cb8209831a1675648cb6a6168ad8a316050a6ef6db6dde",
+        "src/yajl_lex.h": "949b99e73cba54f9867c63ee79b60025edc7da03e3f424ba20f5f3c83f1e56ef",
+        "src/yajl_parser.c": "83f9c4dadbd4d6f57176e6182b0d9ec79f31eb6c864d90bd15bdd1a476c40435",
+        "src/yajl_parser.h": "91552e569ffe5b72bbbc36897afbe9ddbfed62b2b61cb12a8eb8d6a448d9fcdc",
+        "src/yajl_tree.c": "531acd18163cdc8e0989193d5a4cd415b278fa7087d39e24d8551b9fd9365998",
+        "src/yajl_version.c": "15a1907882532e2e25a41f1796311599aafdab55f0e3549f899c9b01dd3e6b18",
+        "src/api/yajl_common.h": "f0889c6220c14e02485e3bea184cb44da9cf8019b1f2d08d2df14495ebe78545",
+        "src/api/yajl_gen.h": "bd36cb6a3699b5afe017a46e9c6244d75403b6601fce00e15e9cb3cdeb22eb15",
+        "src/api/yajl_parse.h": "8875b2ea571b5e3cb1e82cf141d8b8c31aa411acba643e5e9da8da74d8714009",
+        "src/api/yajl_tree.h": "b0a24eed95d5737d330ba71aba894c5f626f7a9586b5ac8d2635479595f9fc78"
+      }
+    },
+    {
+      "id": "http_parser_feed",
+      "repo": "https://github.com/nodejs/http-parser.git",
+      "project": "http-parser",
+      "target_api": "http_parser_execute",
+      "language": "C",
+      "build_system": "Make; standalone http_parser.c supported",
+      "rationale": "Stateful incremental feed with parser settings and callback return protocol",
+      "commit_sha": "ec8b5ee63f0e51191ea43bb0c6eac7bfbff3141d",
+      "set": "blind_real",
+      "source_dir": "real/http_parser_feed/source",
+      "anchor": "http_parser_execute",
+      "sources": [
+        "http_parser.c"
+      ],
+      "headers": [
+        "http_parser.h"
+      ],
+      "include_paths": [],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": [
+        "-lm"
+      ],
+      "analysis_scope": "original library implementation/header slice; examples/tests excluded uniformly",
+      "source_hashes": {
+        "http_parser.c": "35115393aa0e716b7bc80c1dfb8836b9921161eb47c5052f7a5fc8c282cb63a4",
+        "http_parser.h": "68d5fc4bbf8148393b27aba99333a298d2c7d9d10d4e058d236afd1ff7880b1d",
+        "LICENSE-MIT": "79e6ba8b687cb54786207342b9b6fcee0ac10218453ed9009b84d949b2233cc0"
+      }
+    },
+    {
+      "id": "cjson_owned",
+      "repo": "https://github.com/DaveGamble/cJSON.git",
+      "project": "cJSON",
+      "target_api": "cJSON_ParseWithLength",
+      "language": "C",
+      "build_system": "CMake; standalone cJSON.c supported",
+      "rationale": "Owned parse tree, recursive release and explicit input length",
+      "commit_sha": "6d9f2443ab071f86e5d9b43025a40929ec41c46c",
+      "set": "blind_real",
+      "source_dir": "real/cjson_owned/source",
+      "anchor": "cJSON_ParseWithLength",
+      "sources": [
+        "cJSON.c"
+      ],
+      "headers": [
+        "cJSON.h"
+      ],
+      "include_paths": [],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": [
+        "-lm"
+      ],
+      "analysis_scope": "original library implementation/header slice; examples/tests excluded uniformly",
+      "source_hashes": {
+        "cJSON.c": "607e756460fa0de37d20a7a9181f2de29c97bfb7ce5a0e6c2f548243836cd852",
+        "cJSON.h": "25b0145150d500498e4d209cec69c18c42cf818bffcc54690be3b895a2a16dee",
+        "LICENSE": "a36dda207c36db5818729c54e7ad4e8b0c6fba847491ba64f372c1a2037b6d5c"
+      }
+    }
+  ]
+}

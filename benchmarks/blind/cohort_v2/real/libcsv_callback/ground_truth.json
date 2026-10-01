@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "annotation_kind": "independent_manual_contract",
+  "id": "libcsv_callback",
+  "core_apis": [
+    "csv_parse"
+  ],
+  "required_support": [
+    "csv_init",
+    "csv_free"
+  ],
+  "resources": [],
+  "input_binding": [
+    {
+      "api": "csv_parse",
+      "parameter": "s",
+      "source": "fuzz_data",
+      "size_parameter": "len",
+      "via_api": null
+    }
+  ],
+  "ownership": [
+    {
+      "api": "csv_parse",
+      "parameter": "s",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    },
+    {
+      "api": "csv_parse",
+      "parameter": "p",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    }
+  ],
+  "callback": [
+    {
+      "api": "csv_parse",
+      "parameter": "cb1",
+      "kind": "notification",
+      "return_policy": "void"
+    },
+    {
+      "api": "csv_parse",
+      "parameter": "cb2",
+      "kind": "notification",
+      "return_policy": "void"
+    }
+  ],
+  "ordering": [
+    {
+      "before": "csv_init",
+      "after": "csv_parse"
+    },
+    {
+      "before": "csv_parse",
+      "after": "csv_free"
+    }
+  ],
+  "invocation_counts": {},
+  "mandatory_constraints": {
+    "parser_init_required": true
+  },
+  "adjudication": "pinned public API/source contracts; valid factory alternatives predeclared; runtime does not replace independent semantics"
+}

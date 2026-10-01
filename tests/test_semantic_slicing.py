@@ -160,9 +160,10 @@ def test_direct_parser_does_not_force_expansion(tmp_path):
 def test_wrapper_discovers_real_delegate_through_call_evidence(tmp_path):
     sample = fixture(tmp_path, DIRECT, anchor="wrapper")
     ids = sample[-1]
-    result, _, tools = run(sample, [queries(tool("find_callees", "callee", function=ids["wrapper"])),
+    result, _, tools = run(sample, [queries(tool("find_callees", "callee", function=ids["wrapper"]),
+        tool("get_function", "body_wrapper", function=ids["wrapper"])),
         queries(tool("get_function", "body_parse", function=ids["parse"])),
-        terminal({ids["wrapper"]: ("core", "accepted_anchor"), ids["parse"]: ("core", "wrapper_delegation")})])
+        terminal({ids["wrapper"]: ("core", "accepted_anchor"), ids["parse"]: ("core", "core_processing")})])
     assert result.result["core_functions"] == sorted([ids["wrapper"], ids["parse"]])
     assert tools.discovered == {ids["parse"]}
     assert result.metadata["discovery_evidence"][ids["parse"]] in tools.evidence

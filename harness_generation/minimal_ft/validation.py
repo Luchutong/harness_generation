@@ -1,4 +1,4 @@
-"""Identity, integrity and projection invariants; no source interpretation."""
+"""Identity/projection invariants and proof replay from frozen source metadata."""
 from __future__ import annotations
 
 from dataclasses import replace
@@ -74,7 +74,7 @@ def validate_slice(source, snapshot):
         return errors + [issue("invalid_classification", "classification")]
     classified, classified_roles = set(), {role: set() for role in GROUPS}
     for row in rows:
-        if not isinstance(row, dict) or set(row) != {"function_id", "function", "role", "reason_codes", "evidence_ids", "open_questions"}:
+        if not isinstance(row, dict) or set(row) != {"function_id", "function", "role", "reason_codes", "evidence_ids", "open_questions", "core_inclusion_proof"}:
             errors.append(issue("invalid_classification_fields", "classification"))
             continue
         fid, role = row["function_id"], row["role"]
@@ -101,6 +101,10 @@ def validate_slice(source, snapshot):
             errors.append(issue("anchor_reason_on_other_function", "classification.reason_codes", fid))
         if role != "unresolved" and not row["evidence_ids"]:
             errors.append(issue("decisive_role_without_evidence", "classification.evidence_ids", fid))
+        from ..semantic_slicing.core_proofs import inclusion_proofs
+        expected = inclusion_proofs(anchor, fid, snapshot.functions, source.records, row["evidence_ids"]) if role == "core" and anchor in snapshot.functions else []
+        if row["core_inclusion_proof"] != expected or role == "core" and not expected:
+            errors.append(issue("core_inclusion_proof_invalid", "classification.core_inclusion_proof", fid))
         if any(eid not in source.records for eid in row["evidence_ids"]):
             errors.append(issue("unissued_slice_evidence", "classification.evidence_ids", fid))
         if role == "unresolved" and not row["open_questions"]:

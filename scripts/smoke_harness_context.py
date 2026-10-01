@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Real DeepSeek context smoke; no mock provider fallback and no generation."""
+"""Real native-tool context smoke; no mock provider fallback and no generation."""
 import argparse
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 import sys
 
@@ -17,17 +18,20 @@ from harness_generation.minimal_ft.cli import main as minimal_cli
 from harness_generation.minimal_ft.models import ProjectSnapshot
 from harness_generation.records import write_json
 from harness_generation.semantic_discovery.models import candidate_id, digest
+from harness_generation.semantic_discovery.provider_config import load_environment_file, agent_configuration
 from harness_generation.semantic_discovery.tools import RepositoryTools, RepositoryIndex
 from harness_generation.semantic_slicing.models import SLICE_POLICY_VERSION
 from harness_generation.sfg_adapter import load_sfg_artifacts
 from sfg_builder.parser import CProjectParser, write_functions_json
 
-OWNED = """typedef unsigned long size_t;
+OWNED = """#include <stdlib.h>
+typedef unsigned long size_t;
 typedef struct Node { int value; } Node;
 Node *parse(const unsigned char *data, size_t size) { Node *node = malloc(sizeof(Node)); if (node) node->value = size ? data[0] : 0; return node; }
 void node_release(Node *node) { free(node); }
 """
-EXTERNAL = """typedef unsigned long size_t;
+EXTERNAL = """#include <stdlib.h>
+typedef unsigned long size_t;
 typedef struct Context { int ready; int calls; } Context;
 static int initialized = 0;
 Context *context_create(void) { Context *ctx = calloc(1, sizeof(Context)); if (ctx) { ctx->ready = 1; initialized = 1; } return ctx; }
@@ -36,8 +40,11 @@ int parse(Context *ctx, const unsigned char *data, size_t size) { if (!initializ
 """
 
 
-def load_environment(path):
+def load_environment(path, provider):
     if path.exists():
+        if provider == "openai-compatible":
+            load_environment_file(path)
+            return
         # Reuse the existing explicit LLM_* -> DeepSeek credential mapping;
         # values never enter logs, artifacts or configuration fingerprints.
         from evaluate_candidate_validation_real import credential_environment
@@ -91,15 +98,30 @@ def input_hashes(root):
     result = {}
     for path in root.rglob("*.json"):
         relative = path.relative_to(root)
-        if relative.parts[0] == "harness_contexts":
+        if relative.parts[0] in {"harness_contexts", "context_generations"}:
             continue
         result[str(relative)] = hashlib.sha256(path.read_bytes()).hexdigest()
     return result
 
 
+def isolate_input(root, output):
+    """Copy upstream artifacts and preserve their source-root interpretation."""
+    directory = output / "input_snapshots" / root.name
+    if not directory.exists():
+        original = json.loads((root / "functions.json").read_text(encoding="utf-8"))
+        project = Path(original["project"])
+        if not project.is_absolute():
+            project = (root / project).resolve()
+        shutil.copytree(root, directory, ignore=shutil.ignore_patterns("harness_contexts", "context_generations"))
+        original["project"] = str(project)
+        write_json(directory / "functions.json", original, sort_keys=True)
+    return directory
+
+
 def evaluate(case, root, args):
     before = input_hashes(root)
-    command = ["--artifacts", str(root), "--model", args.model, "--thinking", "disabled",
+    command = ["--artifacts", str(root), "--provider", args.provider, "--model", args.model, "--thinking", args.thinking,
+               "--requirement-mode", args.requirement_mode,
                "--max-total-model-calls", str(args.max_total_model_calls)]
     print(f"[REAL CONTEXT] starting {case}", flush=True)
     build_exit = context_cli(command + (["--resume"] if args.resume else []))
@@ -114,7 +136,8 @@ def evaluate(case, root, args):
         attempt_metadata = json.loads((path.parent / "metadata.json").read_text(encoding="utf-8"))
         if attempt_metadata.get("execution_index") == metadata.get("execution_index"):
             traces.append(json.loads(path.read_text(encoding="utf-8")))
-    actual_responses = [event for trace in traces for event in trace["events"] if event["kind"] == "model_response"]
+    responses = [event for trace in traces for event in trace["events"] if event["kind"] == "model_response"]
+    actual_responses = list({event["metadata"]["response_id"]: event for event in responses}.values())
     usage = {key: sum(event.get("metadata", {}).get("usage", {}).get(key, 0) for event in actual_responses)
              for key in ("prompt_tokens", "completion_tokens", "total_tokens")}
     row = {"case": case, "input_artifacts": str(root), "context_artifacts": str(directory), "build_exit": build_exit,
@@ -131,8 +154,9 @@ def evaluate(case, root, args):
         row["resume_exit"] = context_cli(command + ["--resume"])
         row["resume_unchanged"] = all(saved[p] == (p.read_bytes(), p.stat().st_mtime_ns) for p in saved)
     row["audit_passed"] = (row["upstream_unchanged"] and bool(actual_responses) and usage["total_tokens"] > 0
-        and metadata["configuration"]["model"]["provider"] == "deepseek"
-        and completeness["status"] in {"complete", "incomplete"})
+        and metadata["configuration"]["model"]["provider"] == args.provider
+        and completeness["status"] in {"complete", "incomplete", "invalid"}
+        and context["frozen"] == completeness["generation_allowed"] == (completeness["status"] == "complete"))
     print(f"[REAL CONTEXT] {case}: {row['status']} hard_missing={len(row['hard_missing'])} "
           f"responses={len(actual_responses)} audit={row['audit_passed']}", flush=True)
     return row
@@ -143,24 +167,31 @@ def main():
     parser.add_argument("--slices", type=Path, default=ROOT / "artifacts/semantic_slice_real_20260928_03")
     parser.add_argument("--output", type=Path, default=ROOT / "artifacts/harness_context_real_20260928_01")
     parser.add_argument("--env-file", type=Path, default=ROOT / ".env")
-    parser.add_argument("--model", default="deepseek-flash")
+    parser.add_argument("--provider", choices=("deepseek", "openai-compatible"), default="deepseek")
+    parser.add_argument("--model")
+    parser.add_argument("--thinking", choices=("disabled", "enabled"))
+    parser.add_argument("--requirement-mode", choices=("single", "grouped"), default="grouped")
     parser.add_argument("--max-total-model-calls", type=int, default=24)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--case", action="append", default=[])
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     try:
-        load_environment(args.env_file)
+        load_environment(args.env_file, args.provider)
+        config = agent_configuration(args.provider, model=args.model, thinking=args.thinking)
+        args.model, args.thinking = config.model, config.thinking
     except (OSError, ValueError):
         write_json(args.output / "summary.json", {"real_smoke": "skipped", "reason": "credential_configuration_unavailable", "mock_fallback": False})
-        print("Real DeepSeek smoke skipped: credential configuration unavailable. No mock fallback.")
+        print("Real model smoke skipped: credential configuration unavailable. No mock fallback.")
         return 2
-    if not os.environ.get("DEEPSEEK_API_KEY", "").strip():
-        write_json(args.output / "summary.json", {"real_smoke": "skipped", "reason": "missing_deepseek_api_key", "mock_fallback": False})
-        print("Real DeepSeek smoke skipped: missing API key. No mock fallback.")
+    key_name = "LLM_API_KEY" if args.provider == "openai-compatible" else "DEEPSEEK_API_KEY"
+    if not os.environ.get(key_name, "").strip():
+        write_json(args.output / "summary.json", {"real_smoke": "skipped", "reason": "missing_api_key", "mock_fallback": False})
+        print("Real model smoke skipped: missing API key. No mock fallback.")
         return 2
     cases = [("direct_parser", args.slices / "direct_phase1"), ("context_lifecycle", args.slices / "hub_phase1"),
              ("json_parser", args.slices / "json_phase1"), ("wrapper_fixture", args.slices / "fixture_phase1")]
+    cases = [(name, isolate_input(root, args.output)) for name, root in cases if not args.case or name in args.case]
     if not args.case or "owned_return_cleanup" in args.case:
         cases.append(("owned_return_cleanup", prepare_fixture(args.output, "owned", OWNED)))
     if not args.case or "ft_external_required_support" in args.case:
@@ -172,9 +203,11 @@ def main():
     rows = []
     for case, root in cases:
         rows.append(evaluate(case, root, args))
-        write_json(args.output / "summary.json", {"schema_version": 1, "provider": "deepseek", "mock_fallback": False,
+        write_json(args.output / "summary.json", {"schema_version": 1, "provider": args.provider, "mock_fallback": False,
             "cases": rows, "audit_passed": all(row["audit_passed"] for row in rows),
-            "complete_cases": sum(row["status"] == "complete" for row in rows), "incomplete_cases": sum(row["status"] == "incomplete" for row in rows)},
+            "complete_cases": sum(row["status"] == "complete" for row in rows),
+            "incomplete_cases": sum(row["status"] == "incomplete" for row in rows),
+            "invalid_cases": sum(row["status"] == "invalid" for row in rows)},
             sort_keys=True, allow_nan=False)
     return 0 if all(row["audit_passed"] for row in rows) else 1
 

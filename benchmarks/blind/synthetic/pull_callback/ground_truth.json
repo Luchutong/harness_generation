@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "annotation_kind": "independent_manual_contract",
+  "id": "pull_callback",
+  "core_apis": [
+    "pl_parse"
+  ],
+  "required_support": [
+    "pl_open",
+    "pl_close"
+  ],
+  "resources": [
+    {
+      "id": "parser",
+      "origin": {
+        "api": "pl_open",
+        "kind": "return",
+        "parameter": null
+      },
+      "consumers": [
+        {
+          "api": "pl_parse",
+          "parameter": "p"
+        }
+      ],
+      "cleanup": "pl_close",
+      "ownership": "owned",
+      "scope": "per_input"
+    }
+  ],
+  "input_binding": [
+    {
+      "api": "pl_parse",
+      "parameter": "p",
+      "source": "callback",
+      "size_parameter": null,
+      "via_api": "pl_open"
+    }
+  ],
+  "ownership": [
+    {
+      "api": "pl_open",
+      "parameter": null,
+      "return_value": true,
+      "ownership": "owned",
+      "release_api": "pl_close"
+    },
+    {
+      "api": "pl_parse",
+      "parameter": "p",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    }
+  ],
+  "callback": [
+    {
+      "api": "pl_open",
+      "parameter": "read",
+      "kind": "input_reader",
+      "return_policy": "bounded_bytes_then_eof",
+      "fuzz_input_required": true
+    }
+  ],
+  "ordering": [
+    {
+      "before": "pl_open",
+      "after": "pl_parse"
+    },
+    {
+      "before": "pl_parse",
+      "after": "pl_close"
+    }
+  ],
+  "invocation_counts": {},
+  "mandatory_constraints": {
+    "callback_userdata_lifetime": "through_parse",
+    "input_reader_cannot_be_zero_stub": true
+  },
+  "adjudication": "strict necessary-contract checks; unknown is unverified, never automatically correct"
+}

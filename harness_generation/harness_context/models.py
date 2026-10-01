@@ -4,9 +4,9 @@ from dataclasses import asdict, dataclass, field
 from ..semantic_discovery.models import canonical, digest, DecisionSchemaError
 
 POLICY_VERSION = "ft-guided-harness-context-v1"
-REQUIREMENT_VERSION = "harness-requirements-v1"
-PROMPT_VERSION = "ft-requirement-agent-v1"
-TOOL_VERSION = "ft-scoped-repository-v1"
+REQUIREMENT_VERSION = "harness-requirements-v6"
+PROMPT_VERSION = "subject-effect-context-agent-v11"
+TOOL_VERSION = "ft-scoped-repository-v3"
 SCHEMA_VERSION = 1
 KINDS = ("input_binding", "argument_construction", "lifecycle", "return_semantics", "ownership",
          "buffer_length", "call_order", "callback", "state", "support_decision")
@@ -50,6 +50,7 @@ class MiningState:
     evidence: dict = field(default_factory=dict)
     source_chars: int = 0
     budget_stop: str | None = None
+    evidence_cache_hits: int = 0
 
 
 def obj(properties):
@@ -107,21 +108,39 @@ VALUE_SCHEMAS = {
     "support_decision": obj({"decision": enum("required", "optional", "rejected", "unresolved"),
         "reason": enum(*SUPPORT_REASONS), "required_by": arr(STRING)}),
 }
-DEPENDENCY_SCHEMA = obj({"function_id": NULL_STRING, "symbol": NULL_STRING,
+DEPENDENCY_SCHEMA = obj({"function_id": {**NULL_STRING, "description": "Exact project function ID from tool evidence, never a requirement ID or a bare symbol."}, "symbol": NULL_STRING,
     "necessity": enum("required", "optional", "rejected", "unresolved"), "reason": enum(*SUPPORT_REASONS),
-    "required_by": STRING, "evidence_ids": EIDS})
+    "required_by": {**STRING, "description": "Exact FUNCTION ID needing this API; never req_* or a requirement ID."}, "evidence_ids": EIDS})
 
 
-def resolution_schema(kind):
-    return obj({"requirement_id": STRING, "status": enum("resolved", "unresolved", "not_applicable"),
-        "facts": arr(obj({"function_id": STRING, "predicate": enum(kind),
-                          "value": VALUE_SCHEMAS[kind], "evidence_ids": EIDS})),
-        "discovered_api_dependencies": arr(DEPENDENCY_SCHEMA, 0 if kind in {
+def resolution_schema(kind, *, requirement=None):
+    from copy import deepcopy
+    dependency = deepcopy(DEPENDENCY_SCHEMA)
+    value_schema = deepcopy(VALUE_SCHEMAS[kind])
+    if requirement:
+        dependency["properties"]["required_by"]["enum"] = sorted({requirement["subject_function_id"], *requirement["required_by"]})
+        if kind == "support_decision":
+            value_schema["properties"]["required_by"]["items"] = enum(*dependency["properties"]["required_by"]["enum"])
+    return obj({"requirement_id": enum(requirement["requirement_id"]) if requirement else STRING,
+        "status": enum("resolved", "unresolved", "not_applicable"),
+        "facts": arr(obj({"function_id": enum(requirement["subject_function_id"]) if requirement else STRING, "predicate": enum(kind),
+                          "value": value_schema, "evidence_ids": EIDS})),
+        "discovered_api_dependencies": arr(dependency, 0 if kind in {
             "input_binding", "buffer_length", "return_semantics", "call_order"} else 32), "open_questions": arr(STRING)})
 
 
 def validate_shape(value, schema, path="$", *, repairable=True):
     """Small strict validator for the JSON schema subset exported by this module."""
+    if "anyOf" in schema:
+        for choice in schema["anyOf"]:
+            try:
+                validate_shape(value, choice, path, repairable=False)
+                return
+            except ValueError:
+                pass
+        if repairable:
+            raise DecisionSchemaError(path, value, ["one signed subject/candidate alternative"])
+        raise ValueError(f"invalid_schema:{path}")
     types = schema.get("type")
     types = [types] if isinstance(types, str) else types
     actual = ("null" if value is None else "boolean" if type(value) is bool else "integer" if type(value) is int
@@ -137,9 +156,9 @@ def validate_shape(value, schema, path="$", *, repairable=True):
         fail(schema["enum"])
     if actual == "object":
         properties = schema["properties"]
-        if set(value) != set(schema["required"]) or set(value) - set(properties):
+        if not set(schema["required"]) <= set(value) or set(value) - set(properties):
             fail(schema["required"])
-        for key in properties:
+        for key in value:
             validate_shape(value[key], properties[key], f"{path}.{key}", repairable=repairable)
     elif actual == "array":
         if len(value) > schema.get("maxItems", 32):
@@ -156,6 +175,17 @@ def fact_id(fact):
 
 def resource_id(fid, parameter=None):
     return "resource_" + digest({"function_id": fid, "parameter": parameter})[:24]
+
+
+# Expanded canonical facts remain readable by the baseline/offline callers.
+# Native terminal schemas replace free subjects/dependencies with signed IDs.
+VALUE_SCHEMAS["ownership"]["properties"]["entries"]["items"]["properties"].update({
+    "subject_kind": enum("PointerParameter", "PointerReturn", "OutParameterPointee", "ResourceObject"),
+    "subject_id": STRING})
+DEPENDENCY_SCHEMA["properties"]["candidate_id"] = STRING
+DEPENDENCY_SCHEMA['properties']['subject_bindings'] = arr(obj({'parameter': NULL_STRING,
+    'subject_kind': NULL_STRING, 'type': STRING, 'pointer_depth': {'type': 'integer'},
+    'api_parameter': NULL_STRING, 'effect': STRING, 'fields': arr(STRING)}))
 
 
 @dataclass

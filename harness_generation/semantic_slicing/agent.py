@@ -21,6 +21,20 @@ uncertainty. Never force exclusion merely to make the slice smaller; unfamiliar 
 Strong ownership/lifecycle/explicit usage relations are useful semantic evidence, but lifecycle membership
 usually establishes SUPPORT, not CORE. Weak structural links are exploration hints ONLY. Same struct,
 context, pointer/return/field type, SFG reachability or old FT membership cannot suffice for CORE.
+A caller that constructs and internally executes the entire proposed chain is usage evidence, not
+automatically an additional CORE dependency. Do not require both that wrapper and its internal chain
+unless their independent data/state dependence on the anchor is established by source.
+CORE now requires a recomputable inclusion proof. Inspect complete anchor and non-anchor bodies.
+Accepted anchor, processing result actually observed by anchor, input-dependent field transition,
+input-dependent returned-object consumption and an explicitly bound processing callback can qualify.
+A caller that merely prepares arguments and invokes the target cannot qualify through calls, scalar
+argument preparation, shared types or wrapper_delegation. Use support only for a specific necessary
+setup API; otherwise use exclude/unrelated_behavior with complete source or unresolved.
+An input parser can itself allocate and return an object while remaining CORE. Do not put
+SUPPORT-only resource_creation/resource_cleanup reasons on its CORE row; use accepted_anchor,
+input_consumption or core_processing. A compatible pointer-consuming cleanup with real cleanup
+body/caller/usage evidence can be SUPPORT candidate before final ownership is known. Preserve
+multiple cleanup candidates and borrowed/nullable uncertainties; Context establishes final ownership.
 For every non-anchor CORE inspect that function's source (get_function or read_source_range), and explain
 its actual input/state/processing relation using the enumerated reasons. A syntactic call or same spelling
 alone does not prove a resolved dependency. Inspect the COMPLETE function body before EXCLUDE.
@@ -68,13 +82,14 @@ class SemanticSliceAgent:
             raise ValueError("source budget cannot hold the accepted-anchor frontier record") from error
         if not seed["evidence_ids"] or seed["evidence"][0].get("truncated"):
             raise ValueError("record budget cannot hold the accepted-anchor frontier record")
+        from .proposals import choices, terminal_schema
+        seed['slice_role_choices'] = choices(tools)
         seed_event = {"round": 0, "kind": "tool_call", "tool_call_id": "framework_frontier_seed",
                       "tool": "get_semantic_frontier", "arguments": args,
                       "result_evidence_ids": seed["evidence_ids"], "query_truncated": seed["query_truncated"],
                       "framework_bootstrap": True}
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT + "\nSubmission schema:\n" + canonical(SLICE_SCHEMA)
-             + "\nReason codes by role:\n" + canonical(ROLE_REASONS)},
+            {"role": "system", "content": SYSTEM_PROMPT + "\nSelect choice_id from slice_role_choices. The framework supplies exact roles, reasons and proof evidence. Read source to obtain new choices. Pure usage wrappers can be EXCLUDE while remaining source evidence; no wrapper_delegation support choice is issued. Never invent choices."},
             {"role": "user", "content": canonical({"task": "semantic_slice", "candidate_id": cid,
                 "anchor_function_id": candidate.function_id, "data_class": "untrusted_candidate_identity",
                 "budget_limits": self.budget.to_dict(), "max_discovered_functions": tools.max_discovered_functions})},
@@ -90,8 +105,9 @@ class SemanticSliceAgent:
             except (ValueError, TypeError) as error:
                 validation_errors.append({"error": "invalid_semantic_slice", "detail": str(error)[:512]})
                 raise
-        outcome = BoundedAgentLoop(self.model, self.budget, SLICE_TOOL_SCHEMA,
-            validate_terminal).run(messages, tools,
+        outcome = BoundedAgentLoop(self.model, self.budget, terminal_schema(tools),
+            validate_terminal, reserve_terminal_round=True,
+            terminal_schema_factory=lambda: terminal_schema(tools)).run(messages, tools,
                 initial_tool_calls=1, initial_events=[seed_event])
         # Never preserve partially invalid model classifications. A fallback
         # retains only the previously accepted anchor, with fresh frontier proof.

@@ -1,6 +1,7 @@
 """Requirement-scoped read-only adapters around existing RepositoryTools."""
 import json
 import re
+from copy import deepcopy
 
 from ..semantic_discovery.models import canonical, ValidationBudget
 from ..semantic_discovery.tools import RepositoryTools, _schema, _STRING, ToolBudgetExceeded
@@ -8,6 +9,7 @@ from ..semantic_slicing.frontier import function_types, type_tokens
 from .models import TOOL_VERSION
 
 EXTRA_SCHEMAS = (
+    _schema("find_resource_flows", "Bounded complete direct caller bodies for conservative return/out/alias/field value flow. Nonlinear or ambiguous flows remain unresolved.", {"function": _STRING}, ["function"]),
     _schema("get_function_signature", "Get an authorized exact function signature and linkage metadata.", {"function": _STRING}, ["function"]),
     _schema("get_struct_fields", "Get a relevant indexed struct declaration and fields, including callback ABI.", {"type": _STRING}, ["type"]),
     *(_schema(name, "Bounded structural signature candidates for a relevant type. These are NOT lifecycle/ownership proof; inspect their bodies.",
@@ -36,6 +38,7 @@ class HarnessContextTools(RepositoryTools):
         self.excluded = set(ft["excluded_functions"])
         self.requirement = None
         self.visible_ids, self.known_symbols, self.scope_ids = set(), set(), set()
+        self.query_cache = {}
 
     @property
     def source_chars(self):
@@ -89,10 +92,8 @@ class HarnessContextTools(RepositoryTools):
         # Previous confirmed facts expose only evidence about this subject, not
         # the repository or unrelated requirement histories.
         prior = [self.evidence[eid] for eid in sorted(self.visible_ids - set(output["evidence_ids"]))]
-        cost = sum(len(canonical(record)) for record in prior)
-        if self.source_chars + cost > self.state.budget.max_source_chars:
-            raise ToolBudgetExceeded("max_source_chars")
-        self.source_chars += cost
+        # Source budget counts newly issued evidence; re-exposing confirmed
+        # records does not issue or charge duplicate repository content.
         output["evidence"].extend(prior)
         output["evidence_ids"].extend(record["evidence_id"] for record in prior)
         return output
@@ -126,7 +127,12 @@ class HarnessContextTools(RepositoryTools):
             if not any(f["file"] == file and f["start_line"] <= start <= end <= f["end_line"]
                        for fid, f in self.snapshot.functions.items() if fid in self.scope_ids):
                 return {"error": "outside_requirement_scope", "evidence_ids": []}
-        if name not in {s["function"]["name"] for s in EXTRA_SCHEMAS}:
+        cache_key = canonical([name, arguments])
+        if cache_key in self.query_cache:
+            output = deepcopy(self.query_cache[cache_key])
+            self.visible_ids.update(output["evidence_ids"])
+            self.state.evidence_cache_hits += 1
+        elif name not in {s["function"]["name"] for s in EXTRA_SCHEMAS}:
             visible_before = set(self.visible_ids)
             try:
                 output = super().execute(name, arguments)
@@ -153,6 +159,8 @@ class HarnessContextTools(RepositoryTools):
             output = {"data_class": "untrusted_repository_evidence", "evidence": issued,
                       "evidence_ids": [r["evidence_id"] for r in issued], "query_truncated": total > len(issued),
                       "total_matches": total}
+        if not output.get("error"):
+            self.query_cache[cache_key] = deepcopy(output)
         identities, blocked = [], []
         parent = arguments.get("function", self.requirement["subject_function_id"])
         if parent not in self.initial_ids and parent not in self.state.discoveries:
@@ -186,6 +194,8 @@ class HarnessContextTools(RepositoryTools):
                                    "evidence_id": record["evidence_id"], "depth": self.depth(fid)})
         output["project_functions"] = identities[:self.state.budget.max_references_per_query * 2]
         output["blocked_discoveries"] = blocked[:self.state.budget.max_references_per_query]
+        from .proposals import registry_update
+        output.update(registry_update(self))
         return output
 
     def _get_function_signature(self, args):
@@ -207,12 +217,45 @@ class HarnessContextTools(RepositoryTools):
             record["storage"] = function.get("storage", [])
             record["return_base_type"] = function.get("return_base_type")
             record["return_pointer_depth"] = function.get("return_pointer_depth", 0)
+            from .argument_graph import parameter_id
+            from .models import resource_id
+            record["framework_parameters"] = [{"parameter_id":parameter_id(function["id"],i),
+                "parameter_index":i,"name":p["name"],
+                "resource_id":resource_id(function["id"],p["name"]) if p.get("is_pointer") or p.get("is_opaque_handle") else None}
+                for i,p in enumerate(function["parameters"])]
+            record["framework_return_resource_id"] = resource_id(function["id"]) if function.get("return_pointer_depth") else None
             record["callable_status"] = "internal_static" if "static" in function.get("storage", []) else (
                 "external_definition" if function.get("defined") else "external_declaration_link_unverified")
+            from .callbacks import callback_declarations
+            declarations = callback_declarations(function, self.snapshot)
+            if declarations:
+                record["callback_declarations"] = declarations
         return records, total
 
     def _get_struct_fields(self, args):
         return super()._get_type_definition(args)
+
+    def _get_type_definition(self, args):
+        records, total = super()._get_type_definition(args)
+        for declaration in self.snapshot.artifacts.callback_typedefs:
+            if declaration["name"] == args["type"]:
+                records.append({"source": declaration["file"], "line_start": declaration.get("start_line", 1), "line_end": declaration.get("end_line", 1),
+                    "content": declaration["declaration"], "type": declaration["name"], "origin": "phase1_callback_typedef"})
+                total += 1
+        return records, total
+
+    def _find_resource_flows(self, args):
+        self.index.build_syntax_index()
+        fid = args["function"]
+        target = self.snapshot.functions[fid]
+        callers = sorted({c["caller_id"] for c in self.index.calls if c["direct"] and c["callee"] == target["name"]})
+        records = []
+        for caller in callers[:self.state.budget.max_references_per_query]:
+            function = self.snapshot.functions[caller]
+            records.append({"caller_id": caller, "function_id": caller, "source": function["file"],
+                "line_start": function["start_line"], "line_end": function["end_line"], "content": function["body"],
+                "defined": True, "provenance": "bounded_direct_caller_body"})
+        return records, len(callers)
 
     def _find_type_usages(self, args):
         types = type_tokens(args["type"])
@@ -225,8 +268,30 @@ class HarnessContextTools(RepositoryTools):
                 "defined": function.get("defined", False), "structural_hint_only": True})
         return records, len(matches)
 
-    _find_initializers = _find_type_usages
-    _find_cleanup_candidates = _find_type_usages
+    def _lifecycle_candidates(self, args, creation):
+        types = type_tokens(args["type"])
+        matches = [f for f in self.snapshot.artifacts.functions
+                   if types & function_types(f) and f["id"] not in self.excluded]
+        def rank(function):
+            consumes = any(p.get("is_pointer") and types & type_tokens(p.get("base_type", ""))
+                           for p in function.get("parameters", []))
+            produces = bool(function.get("return_pointer_depth")) and bool(types & type_tokens(function.get("return_base_type", "")))
+            output = any(p.get("pointer_depth", 0) > 1 and types & type_tokens(p.get("base_type", ""))
+                         for p in function.get("parameters", []))
+            hint = produces or output if creation else consumes and function.get("return_type", "").strip() == "void"
+            return (not function.get("defined"), "static" in function.get("storage", []), not hint,
+                    len(function.get("parameters", [])), function["id"])
+        matches.sort(key=rank)
+        records = [{"source": f["file"], "line_start": f["start_line"], "line_end": f["end_line"],
+            "function_id": f["id"], "function": f["name"], "content": f["signature"], "defined": f.get("defined", False),
+            "structural_hint_only": True} for f in matches[:self.state.budget.max_references_per_query]]
+        return records, len(matches)
+
+    def _find_initializers(self, args):
+        return self._lifecycle_candidates(args, True)
+
+    def _find_cleanup_candidates(self, args):
+        return self._lifecycle_candidates(args, False)
     _find_assignments = RepositoryTools._find_symbol_references
     _find_return_usages = RepositoryTools._find_callers
 

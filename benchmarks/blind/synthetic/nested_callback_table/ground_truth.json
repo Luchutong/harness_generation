@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "annotation_kind": "independent_manual_contract",
+  "id": "nested_callback_table",
+  "core_apis": [
+    "deep_parse"
+  ],
+  "required_support": [],
+  "resources": [],
+  "input_binding": [
+    {
+      "api": "deep_parse",
+      "parameter": "bytes",
+      "source": "fuzz_data",
+      "size_parameter": "size",
+      "via_api": null
+    }
+  ],
+  "ownership": [],
+  "callback": [
+    {
+      "api": "deep_parse",
+      "parameter": "io.reader.read",
+      "kind": "notification",
+      "return_policy": "zero_allowed"
+    },
+    {
+      "api": "deep_parse",
+      "parameter": "io.reader.seek",
+      "kind": "seek",
+      "return_policy": "nonnegative"
+    }
+  ],
+  "ordering": [],
+  "invocation_counts": {},
+  "mandatory_constraints": {
+    "public_storage": [
+      {
+        "api": "deep_parse",
+        "parameter": "io",
+        "type": "DeepIO",
+        "initialization": "all_callback_fields"
+      }
+    ]
+  },
+  "adjudication": "strict necessary-contract checks; unknown is unverified, never automatically correct"
+}

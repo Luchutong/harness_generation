@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "annotation_kind": "independent_manual_contract",
+  "id": "inih_stream",
+  "core_apis": [
+    "ini_parse_stream"
+  ],
+  "required_support": [],
+  "resources": [],
+  "input_binding": [
+    {
+      "api": "ini_parse_stream",
+      "parameter": "stream",
+      "size_parameter": null,
+      "source": "callback",
+      "via_api": null
+    }
+  ],
+  "ownership": [
+    {
+      "api": "ini_parse_stream",
+      "parameter": "stream",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    },
+    {
+      "api": "ini_parse_stream",
+      "parameter": "user",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    }
+  ],
+  "callback": [
+    {
+      "api": "ini_parse_stream",
+      "parameter": "reader",
+      "kind": "input_reader",
+      "return_policy": "line_or_null_at_eof",
+      "fuzz_input_required": true
+    },
+    {
+      "api": "ini_parse_stream",
+      "parameter": "handler",
+      "kind": "notification",
+      "return_policy": "positive_to_continue"
+    }
+  ],
+  "ordering": [],
+  "invocation_counts": {},
+  "mandatory_constraints": {
+    "input_reader_cannot_be_zero_stub": true,
+    "zero_handler_return_aborts_parse_validly": true
+  },
+  "adjudication": "public documented API contracts + pinned source; necessary-contract checks, not exhaustive correctness"
+}

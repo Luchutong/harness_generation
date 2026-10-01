@@ -13,6 +13,21 @@ def build_api_closure(ft, requirements, resolutions, snapshot, state):
     core = {r["function_id"] for r in ft["core_functions"]}
     initial = core | {r["function_id"] for r in ft["support_candidates"]}
     grouped, unresolved = {}, []
+    from .construction import local_chains
+    allowed = (initial | set(state.discoveries)) - set(ft["excluded_functions"])
+    for chain in local_chains(snapshot, state.evidence, allowed):
+        for consumer in chain["consumers"]:
+            parent = consumer["function_id"]
+            if parent not in core:
+                continue
+            req = next((r for r in requirements if r["subject_function_id"] == parent and r["kind"] == "lifecycle"), None)
+            if req is None:
+                continue
+            for fid, reason in ((chain["creator_api"], "creation"), (chain["cleanup_api"], "cleanup")):
+                if fid not in core:
+                    grouped.setdefault(fid, []).append((req["requirement_id"], {"function_id": fid, "required_by": parent,
+                        "necessity": "required", "reason": reason, "evidence_ids": chain["evidence_ids"],
+                        "construction_id": chain["construction_id"]}))
     for rid, result in sorted(resolutions.items()):
         for proposal in result["discovered_api_dependencies"]:
             fid = proposal["function_id"]
@@ -35,6 +50,8 @@ def build_api_closure(ft, requirements, resolutions, snapshot, state):
         discovery = state.discoveries.get(fid, {})
         record = {"function_id": fid, "required_by": sorted({entry["required_by"] for _, entry in chosen}),
             "requirement_ids": sorted({rid for rid, _ in chosen}), "reasons": sorted({entry["reason"] for _, entry in chosen}),
+            "subject_bindings": sorted({canonical({'required_by': entry['required_by'], **b}): {'required_by': entry['required_by'], **b}
+                for _, entry in chosen for b in entry.get('subject_bindings', [])}.values(), key=canonical),
             "evidence_ids": sorted({eid for _, entry in chosen for eid in entry["evidence_ids"]}),
             "discovery_evidence_ids": sorted(discovery.get("evidence_ids", [])) if fid not in initial else [],
             "depth": discovery.get("depth", 1), "callable_status": callable_status(snapshot.functions[fid])}

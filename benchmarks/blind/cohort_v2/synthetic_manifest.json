@@ -1,0 +1,246 @@
+{
+  "schema_version": 1,
+  "set": "blind_synthetic",
+  "cases": [
+    {
+      "id": "configured_decoder",
+      "set": "blind_synthetic",
+      "semantic_dimension": "creator args + output status + private configuration",
+      "source_dir": "synthetic/configured_decoder/source",
+      "anchor": "bx_decode",
+      "sources": [
+        "api.c"
+      ],
+      "headers": [
+        "api.h"
+      ],
+      "include_paths": [
+        "."
+      ],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "output_handle",
+      "set": "blind_synthetic",
+      "semantic_dimension": "out-parameter + failure-cleared output + capacity",
+      "source_dir": "synthetic/output_handle/source",
+      "anchor": "oh_ingest",
+      "sources": [
+        "api.c"
+      ],
+      "headers": [
+        "api.h"
+      ],
+      "include_paths": [
+        "."
+      ],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "helper_allocated",
+      "set": "blind_synthetic",
+      "semantic_dimension": "helper malloc + helper initialization + copied feed",
+      "source_dir": "synthetic/helper_allocated/source",
+      "anchor": "ha_finish",
+      "sources": [
+        "api.c"
+      ],
+      "headers": [
+        "api.h"
+      ],
+      "include_paths": [
+        "."
+      ],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "saved_allocator",
+      "set": "blind_synthetic",
+      "semantic_dimension": "custom allocator copied into resource + callback release",
+      "source_dir": "synthetic/saved_allocator/source",
+      "anchor": "sa_parse",
+      "sources": [
+        "api.c"
+      ],
+      "headers": [
+        "api.h"
+      ],
+      "include_paths": [
+        "."
+      ],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "aliased_refcount",
+      "set": "blind_synthetic",
+      "semantic_dimension": "owned returned reference aliases input object + double unref",
+      "source_dir": "synthetic/aliased_refcount/source",
+      "anchor": "ar_decode",
+      "sources": [
+        "api.c"
+      ],
+      "headers": [
+        "api.h"
+      ],
+      "include_paths": [
+        "."
+      ],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "private_session",
+      "set": "blind_synthetic",
+      "semantic_dimension": "opaque layout + creator name argument + internal state",
+      "source_dir": "synthetic/private_session/source",
+      "anchor": "ps_decode",
+      "sources": [
+        "api.c"
+      ],
+      "headers": [
+        "api.h"
+      ],
+      "include_paths": [
+        "."
+      ],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "registration_object",
+      "set": "blind_synthetic",
+      "semantic_dimension": "setter takes registration object + private parser state",
+      "source_dir": "synthetic/registration_object/source",
+      "anchor": "ro_parse",
+      "sources": [
+        "api.c"
+      ],
+      "headers": [
+        "api.h"
+      ],
+      "include_paths": [
+        "."
+      ],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "three_level_callbacks",
+      "set": "blind_synthetic",
+      "semantic_dimension": "three nested layout levels + void notification callback",
+      "source_dir": "synthetic/three_level_callbacks/source",
+      "anchor": "tc_decode",
+      "sources": [
+        "api.c"
+      ],
+      "headers": [
+        "api.h"
+      ],
+      "include_paths": [
+        "."
+      ],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "signed_pull_reader",
+      "set": "blind_synthetic",
+      "semantic_dimension": "signed read result + retained callback context + EOF/error",
+      "source_dir": "synthetic/signed_pull_reader/source",
+      "anchor": "sr_parse",
+      "sources": [
+        "api.c"
+      ],
+      "headers": [
+        "api.h"
+      ],
+      "include_paths": [
+        "."
+      ],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "three_feed_transaction",
+      "set": "blind_synthetic",
+      "semantic_dimension": "three required state transitions + independently chunked input",
+      "source_dir": "synthetic/three_feed_transaction/source",
+      "anchor": "tf_commit",
+      "sources": [
+        "api.c"
+      ],
+      "headers": [
+        "api.h"
+      ],
+      "include_paths": [
+        "."
+      ],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "paired_snapshots",
+      "set": "blind_synthetic",
+      "semantic_dimension": "two same-type instances + different creator arguments + non-alias",
+      "source_dir": "synthetic/paired_snapshots/source",
+      "anchor": "sp_compare",
+      "sources": [
+        "api.c"
+      ],
+      "headers": [
+        "api.h"
+      ],
+      "include_paths": [
+        "."
+      ],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "out_memory_stream",
+      "set": "blind_synthetic",
+      "semantic_dimension": "out-parameter stream + separate memory binding + pull parser",
+      "source_dir": "synthetic/out_memory_stream/source",
+      "anchor": "ms_parse",
+      "sources": [
+        "api.c"
+      ],
+      "headers": [
+        "api.h"
+      ],
+      "include_paths": [
+        "."
+      ],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    }
+  ]
+}

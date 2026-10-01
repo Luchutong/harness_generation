@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "annotation_kind": "independent_manual_contract",
+  "id": "helper_allocated",
+  "core_apis": [
+    "ha_append",
+    "ha_finish"
+  ],
+  "required_support": [
+    "ha_construct",
+    "ha_destruct"
+  ],
+  "resources": [
+    {
+      "id": "state",
+      "origin": {
+        "api": "ha_construct",
+        "kind": "return",
+        "parameter": null
+      },
+      "consumers": [
+        {
+          "api": "ha_append",
+          "parameter": "state"
+        },
+        {
+          "api": "ha_finish",
+          "parameter": "state"
+        },
+        {
+          "api": "ha_destruct",
+          "parameter": "state"
+        }
+      ],
+      "cleanup": "ha_destruct",
+      "ownership": "owned",
+      "scope": "per_input"
+    }
+  ],
+  "input_binding": [
+    {
+      "api": "ha_append",
+      "parameter": "data",
+      "source": "fuzz_data",
+      "size_parameter": "size",
+      "via_api": null
+    }
+  ],
+  "ownership": [
+    {
+      "api": "ha_construct",
+      "parameter": null,
+      "return_value": true,
+      "ownership": "owned",
+      "release_api": "ha_destruct"
+    },
+    {
+      "api": "ha_append",
+      "parameter": "state",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    },
+    {
+      "api": "ha_finish",
+      "parameter": "state",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    }
+  ],
+  "callback": [],
+  "ordering": [
+    {
+      "before": "ha_construct",
+      "after": "ha_append"
+    },
+    {
+      "before": "ha_append",
+      "after": "ha_finish"
+    },
+    {
+      "before": "ha_finish",
+      "after": "ha_destruct"
+    }
+  ],
+  "invocation_counts": {},
+  "mandatory_constraints": {
+    "creator_only": true
+  },
+  "adjudication": "independent source/API contract; metadata missing or alternatives unproved remain unverified; source/ contains no expected annotations"
+}

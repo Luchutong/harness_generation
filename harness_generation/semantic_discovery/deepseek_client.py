@@ -48,35 +48,63 @@ class DeepSeekConfig:
 
 class DeepSeekAgentModel:
     provider = "deepseek"
+    api_key_env_name = "DEEPSEEK_API_KEY"
 
     def __init__(self, config: DeepSeekConfig | None = None, *,
                  environ: Mapping[str, str] | None = None, client=None):
         self.config = config or DeepSeekConfig.from_environment(environ=environ)
         self.model = self.config.model
         env = os.environ if environ is None else environ
+        self._secret_values = tuple(value for name, value in env.items()
+            if any(part in name.upper() for part in ("API_KEY", "TOKEN", "SECRET", "PASSWORD"))
+            and isinstance(value, str) and value)
         if client is not None:  # Explicit transport injection for offline adapter tests.
             self._client = client
             return
-        key = env.get("DEEPSEEK_API_KEY", "").strip()
+        key = env.get(self.api_key_env_name, "").strip()
         if not key:
-            raise ValueError("missing DeepSeek configuration: DEEPSEEK_API_KEY")
+            raise ValueError(f"missing {self.provider} configuration: {self.api_key_env_name}")
         try:
             from openai import OpenAI
         except ImportError:
-            raise ValueError("install the project's openai dependency to use DeepSeek") from None
+            raise ValueError("install the project's openai dependency for native tool calling") from None
         try:
             self._client = OpenAI(api_key=key, base_url=self.config.base_url,
                                   timeout=self.config.timeout, max_retries=0)
         except Exception:
-            raise AgentModelError("DeepSeek client initialization failed") from None
+            label = "DeepSeek" if self.provider == "deepseek" else self.provider
+            raise AgentModelError(f"{label} client initialization failed") from None
 
     def complete(self, messages, tools) -> AgentModelResponse:
+        from .request_diagnostics import (request_observation, provider_error_observation,
+                                          normalize_tool_history, redact)
+        messages, normalized_history = normalize_tool_history(messages)
+        tools = list(tools)
+        client_key = getattr(self._client, "api_key", None)
+        secrets = self._secret_values + ((client_key,) if isinstance(client_key, str) else ())
+        request = request_observation(self.model, messages, tools)
+        request["normalized_tool_history_count"] = len(normalized_history)
+        request["normalized_tool_history"] = redact(normalized_history, secrets)
+        from .models import digest
+        request["request_payload_digest"] = digest({"model": self.model, "messages": messages,
+            "tools": tools, "max_tokens": self.config.max_tokens,
+            "extra_body": {"thinking": {"type": self.config.thinking}}})
         try:
             response = self._client.chat.completions.create(
                 model=self.model, messages=list(messages), tools=list(tools),
                 max_tokens=self.config.max_tokens,
                 extra_body={"thinking": {"type": self.config.thinking}},
             )
+        except Exception as error:
+            label = "DeepSeek" if self.provider == "deepseek" else self.provider
+            failure = AgentModelError(f"{label} request or response failed")
+            failure.diagnostics = provider_error_observation(error, request, secrets)
+            failure.error_category = failure.diagnostics["error_category"]
+            status = getattr(error, "status_code", None)
+            if type(status) is int and 100 <= status <= 599:
+                failure.http_status = status
+            raise failure from None
+        try:
             choice = response.choices[0]
             message = choice.message
             calls = tuple(AgentToolCall(c.id, c.function.name, c.function.arguments)
@@ -87,10 +115,12 @@ class DeepSeekAgentModel:
                       ("prompt_tokens", "completion_tokens", "total_tokens")
                       if usage is not None and type(getattr(usage, name, None)) is int}
             metadata = {"usage": counts, "response_id": response.id,
-                        "finish_reason": choice.finish_reason, "served_model": response.model}
+                        "finish_reason": choice.finish_reason, "served_model": response.model,
+                        "request_diagnostics": {**request, "request_id": response.id, "response_status": 200}}
             return AgentModelResponse(message.content, calls,
                                       getattr(message, "reasoning_content", None), metadata)
-        except Exception:
-            # Never serialize provider exception strings, HTTP headers/bodies, or
-            # SDK request objects: any of these can contain the API credential.
-            raise AgentModelError("DeepSeek request or response failed") from None
+        except Exception as error:
+            failure = AgentModelError("invalid provider response")
+            failure.error_category = "invalid_response"
+            failure.diagnostics = {**request, "error_category": "invalid_response", "response_status": 200}
+            raise failure from None

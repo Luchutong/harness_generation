@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "annotation_kind": "independent_manual_contract",
+  "id": "mpack_stream_tree",
+  "core_apis": [
+    "mpack_tree_parse"
+  ],
+  "required_support": [
+    "mpack_tree_destroy"
+  ],
+  "resources": [],
+  "input_binding": [],
+  "ownership": [
+    {
+      "api": "mpack_tree_parse",
+      "parameter": "tree",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    }
+  ],
+  "callback": [],
+  "ordering": [
+    {
+      "before": "mpack_tree_parse",
+      "after": "mpack_tree_destroy"
+    }
+  ],
+  "invocation_counts": {},
+  "mandatory_constraints": {
+    "initializer_alternatives": {
+      "consumer": "mpack_tree_parse",
+      "apis": [
+        "mpack_tree_init_data",
+        "mpack_tree_init_pool",
+        "mpack_tree_init_stream",
+        "mpack_tree_init"
+      ]
+    },
+    "input_transport_needs_audit": true
+  },
+  "adjudication": "pinned public API/source contracts; valid factory alternatives predeclared; runtime does not replace independent semantics"
+}

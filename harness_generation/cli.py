@@ -46,6 +46,9 @@ def main(
     if arguments[:1] == ["harness-context"]:
         from .harness_context.cli import main as harness_context_main
         return harness_context_main(arguments[1:])
+    if arguments[:1] == ["context-generate"]:
+        from .context_generation.cli import main as context_generate_main
+        return context_generate_main(arguments[1:], llm=llm)
     if arguments[:1] in (["generate"], ["generate-all"], ["run"]):
         from .generation_cli import main as generation_main
         return generation_main(

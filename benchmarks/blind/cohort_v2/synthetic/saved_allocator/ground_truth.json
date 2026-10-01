@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "annotation_kind": "independent_manual_contract",
+  "id": "saved_allocator",
+  "core_apis": [
+    "sa_parse"
+  ],
+  "required_support": [
+    "sa_open",
+    "sa_close"
+  ],
+  "resources": [
+    {
+      "id": "parser",
+      "origin": {
+        "api": "sa_open",
+        "kind": "return",
+        "parameter": null
+      },
+      "consumers": [
+        {
+          "api": "sa_parse",
+          "parameter": "parser"
+        },
+        {
+          "api": "sa_close",
+          "parameter": "parser"
+        }
+      ],
+      "cleanup": "sa_close",
+      "ownership": "owned",
+      "scope": "per_input"
+    }
+  ],
+  "input_binding": [
+    {
+      "api": "sa_parse",
+      "parameter": "data",
+      "source": "fuzz_data",
+      "size_parameter": "length",
+      "via_api": null
+    }
+  ],
+  "ownership": [
+    {
+      "api": "sa_open",
+      "parameter": null,
+      "return_value": true,
+      "ownership": "owned",
+      "release_api": "sa_close"
+    },
+    {
+      "api": "sa_parse",
+      "parameter": "parser",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    }
+  ],
+  "callback": [
+    {
+      "api": "sa_open",
+      "parameter": "allocator.allocate",
+      "kind": "allocator",
+      "return_policy": "non_null_memory"
+    },
+    {
+      "api": "sa_open",
+      "parameter": "allocator.release",
+      "kind": "allocator",
+      "return_policy": "void"
+    }
+  ],
+  "ordering": [
+    {
+      "before": "sa_open",
+      "after": "sa_parse"
+    },
+    {
+      "before": "sa_parse",
+      "after": "sa_close"
+    }
+  ],
+  "invocation_counts": {},
+  "mandatory_constraints": {
+    "creator_only": true,
+    "allocation_release_pair_required": true
+  },
+  "adjudication": "independent source/API contract; metadata missing or alternatives unproved remain unverified; source/ contains no expected annotations"
+}

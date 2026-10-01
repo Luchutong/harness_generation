@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "selected_at": "2026-09-28T17:03:39.930425+00:00",
+  "freeze_manifest": "artifacts/blind_generalization_20260929/freeze/manifest.json",
+  "selected_before_any_native_blind_call": true,
+  "projects": [
+    {
+      "id": "inih_string",
+      "repo": "https://github.com/benhoyt/inih.git",
+      "project": "inih",
+      "target_api": "ini_parse_string",
+      "language": "C",
+      "build_system": "Meson; standalone ini.c supported",
+      "rationale": "NUL string entry with synchronous handler; not chosen by observed framework success",
+      "commit_sha": "2bbdec4a366c8c39746ee0982e7ca0febbb044b6"
+    },
+    {
+      "id": "inih_stream",
+      "repo": "https://github.com/benhoyt/inih.git",
+      "project": "inih",
+      "target_api": "ini_parse_stream",
+      "language": "C",
+      "build_system": "Meson; standalone ini.c supported",
+      "rationale": "Custom fgets-style input reader and userdata; pull transport outside byte-pointer parser arguments",
+      "commit_sha": "2bbdec4a366c8c39746ee0982e7ca0febbb044b6"
+    },
+    {
+      "id": "yajl_opaque",
+      "repo": "https://github.com/lloyd/yajl.git",
+      "project": "yajl",
+      "target_api": "yajl_parse",
+      "language": "C",
+      "build_system": "CMake",
+      "rationale": "Opaque allocated handle plus SAX callbacks and incremental bytes",
+      "commit_sha": "5e3a7856e643b4d6410ddc3f84bc2f38174f2872"
+    },
+    {
+      "id": "http_parser_feed",
+      "repo": "https://github.com/nodejs/http-parser.git",
+      "project": "http-parser",
+      "target_api": "http_parser_execute",
+      "language": "C",
+      "build_system": "Make; standalone http_parser.c supported",
+      "rationale": "Stateful incremental feed with parser settings and callback return protocol",
+      "commit_sha": "ec8b5ee63f0e51191ea43bb0c6eac7bfbff3141d"
+    },
+    {
+      "id": "cjson_owned",
+      "repo": "https://github.com/DaveGamble/cJSON.git",
+      "project": "cJSON",
+      "target_api": "cJSON_ParseWithLength",
+      "language": "C",
+      "build_system": "CMake; standalone cJSON.c supported",
+      "rationale": "Owned parse tree, recursive release and explicit input length",
+      "commit_sha": "6d9f2443ab071f86e5d9b43025a40929ec41c46c"
+    }
+  ]
+}

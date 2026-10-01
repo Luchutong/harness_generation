@@ -21,12 +21,15 @@ from harness_generation.sfg_adapter import load_sfg_artifacts
 from test_semantic_slicing import DIRECT, HUB, fixture, queries, run as slice_run, terminal, tool
 
 
-def prepare(tmp_path, *, source=HUB, anchor="parse", roles=None, relations=False, extras=None):
+def prepare(tmp_path, *, source=HUB, anchor="parse", roles=None, relations=False, extras=None, discover_callers=False):
     sample = fixture(tmp_path, source, anchor, relations=relations)
     store, artifacts, catalog, candidate, _, ids = sample
     roles = roles or {anchor: ("core", "accepted_anchor")}
     mapping = {ids[name]: value for name, value in roles.items()}
     responses = []
+    if discover_callers:
+        responses.append(queries(tool("find_callers", "discover_callers", function=ids[anchor]),
+            tool("find_callees", "discover_callees", function=ids[anchor])))
     if source == DIRECT and anchor == "wrapper" and "parse" in roles:
         responses.append(queries(tool("find_callees", "discover_delegate", function=ids["wrapper"])))
     responses.append(queries(*(tool("get_function", f"body_{name}", function=ids[name]) for name in roles)))
@@ -82,7 +85,7 @@ def test_single_direct_parser_is_a_one_function_ft(tmp_path):
 
 
 def test_multi_stage_core_projects_exactly_and_maps_roles(tmp_path):
-    source = HUB + "\nint process(Context *ctx) { return parse(ctx); }\n"
+    source = HUB + "\nint process(Context *ctx,size_t extent) { ctx->size=extent; return extent?ctx->data[0]:0; }\n"
     roles = {"parse": ("core", "accepted_anchor"), "feed": ("core", "external_input_injection"),
              "process": ("core", "core_processing")}
     sample = prepare(tmp_path, source=source, roles=roles)
@@ -230,7 +233,7 @@ def test_ambiguous_support_kind_retains_candidate_and_unknown(tmp_path):
 
 def test_syntactic_call_keeps_weak_strength_and_exact_evidence_provenance(tmp_path):
     sample = prepare(tmp_path, source=DIRECT, anchor="wrapper", roles={
-        "wrapper": ("core", "accepted_anchor"), "parse": ("core", "wrapper_delegation")})
+        "wrapper": ("core", "accepted_anchor"), "parse": ("core", "core_processing")})
     result = build(sample)
     calls = [r for r in result.minimal_ft["relations"] if r["kind"] == "calls"]
     assert len(calls) == 1

@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "annotation_kind": "independent_manual_contract",
+  "id": "configured_decoder",
+  "core_apis": [
+    "bx_decode"
+  ],
+  "required_support": [
+    "bx_open",
+    "bx_close"
+  ],
+  "resources": [
+    {
+      "id": "decoder",
+      "origin": {
+        "api": "bx_open",
+        "kind": "return",
+        "parameter": null
+      },
+      "consumers": [
+        {
+          "api": "bx_decode",
+          "parameter": "decoder"
+        },
+        {
+          "api": "bx_close",
+          "parameter": "decoder"
+        }
+      ],
+      "cleanup": "bx_close",
+      "ownership": "owned",
+      "scope": "per_input"
+    }
+  ],
+  "input_binding": [
+    {
+      "api": "bx_decode",
+      "parameter": "bytes",
+      "source": "fuzz_data",
+      "size_parameter": "count",
+      "via_api": null
+    }
+  ],
+  "ownership": [
+    {
+      "api": "bx_open",
+      "parameter": null,
+      "return_value": true,
+      "ownership": "owned",
+      "release_api": "bx_close"
+    },
+    {
+      "api": "bx_decode",
+      "parameter": "decoder",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    }
+  ],
+  "callback": [],
+  "ordering": [
+    {
+      "before": "bx_open",
+      "after": "bx_decode"
+    },
+    {
+      "before": "bx_decode",
+      "after": "bx_close"
+    }
+  ],
+  "invocation_counts": {},
+  "mandatory_constraints": {
+    "non_null_arguments": [
+      {
+        "api": "bx_open",
+        "parameter": "config"
+      }
+    ],
+    "creator_only": true
+  },
+  "adjudication": "independent source/API contract; metadata missing or alternatives unproved remain unverified; source/ contains no expected annotations"
+}

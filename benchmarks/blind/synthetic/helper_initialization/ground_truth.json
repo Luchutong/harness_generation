@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "annotation_kind": "independent_manual_contract",
+  "id": "helper_initialization",
+  "core_apis": [
+    "hc_put",
+    "hc_process"
+  ],
+  "required_support": [
+    "hc_create",
+    "hc_release"
+  ],
+  "resources": [
+    {
+      "id": "parser",
+      "origin": {
+        "api": "hc_create",
+        "kind": "return",
+        "parameter": null
+      },
+      "consumers": [
+        {
+          "api": "hc_put",
+          "parameter": "p"
+        },
+        {
+          "api": "hc_process",
+          "parameter": "p"
+        }
+      ],
+      "cleanup": "hc_release",
+      "ownership": "owned",
+      "scope": "per_input"
+    }
+  ],
+  "input_binding": [
+    {
+      "api": "hc_put",
+      "parameter": "data",
+      "source": "fuzz_data",
+      "size_parameter": "size",
+      "via_api": null
+    },
+    {
+      "api": "hc_process",
+      "parameter": "p",
+      "source": "context",
+      "size_parameter": null,
+      "via_api": "hc_put"
+    }
+  ],
+  "ownership": [
+    {
+      "api": "hc_create",
+      "parameter": null,
+      "return_value": true,
+      "ownership": "owned",
+      "release_api": "hc_release"
+    },
+    {
+      "api": "hc_put",
+      "parameter": "p",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    },
+    {
+      "api": "hc_process",
+      "parameter": "p",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    }
+  ],
+  "callback": [],
+  "ordering": [
+    {
+      "before": "hc_create",
+      "after": "hc_put"
+    },
+    {
+      "before": "hc_put",
+      "after": "hc_process"
+    },
+    {
+      "before": "hc_process",
+      "after": "hc_release"
+    }
+  ],
+  "invocation_counts": {},
+  "mandatory_constraints": {},
+  "adjudication": "strict necessary-contract checks; unknown is unverified, never automatically correct"
+}

@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "annotation_kind": "independent_manual_contract",
+  "id": "yajl_opaque",
+  "core_apis": [
+    "yajl_parse"
+  ],
+  "required_support": [
+    "yajl_alloc",
+    "yajl_free"
+  ],
+  "resources": [
+    {
+      "id": "handle",
+      "origin": {
+        "api": "yajl_alloc",
+        "kind": "return",
+        "parameter": null
+      },
+      "consumers": [
+        {
+          "api": "yajl_parse",
+          "parameter": "hand"
+        }
+      ],
+      "cleanup": "yajl_free",
+      "ownership": "owned",
+      "scope": "per_input"
+    }
+  ],
+  "input_binding": [
+    {
+      "api": "yajl_parse",
+      "parameter": "jsonText",
+      "size_parameter": "jsonTextLen",
+      "source": "fuzz_data",
+      "via_api": null
+    }
+  ],
+  "ownership": [
+    {
+      "api": "yajl_alloc",
+      "parameter": null,
+      "return_value": true,
+      "ownership": "owned",
+      "release_api": "yajl_free"
+    },
+    {
+      "api": "yajl_parse",
+      "parameter": "hand",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    },
+    {
+      "api": "yajl_parse",
+      "parameter": "jsonText",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    }
+  ],
+  "callback": [],
+  "ordering": [
+    {
+      "before": "yajl_alloc",
+      "after": "yajl_parse"
+    },
+    {
+      "before": "yajl_parse",
+      "after": "yajl_free"
+    }
+  ],
+  "invocation_counts": {},
+  "mandatory_constraints": {
+    "opaque_requires_creator": true,
+    "null_optional_callbacks_allowed": true
+  },
+  "adjudication": "public documented API contracts + pinned source; necessary-contract checks, not exhaustive correctness"
+}

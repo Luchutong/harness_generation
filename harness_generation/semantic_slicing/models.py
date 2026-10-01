@@ -2,14 +2,15 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 
 from ..semantic_discovery.models import canonical
 from ..semantic_discovery.tools import _schema
 
-SLICE_POLICY_VERSION = "recall-first-semantic-slice-v1"
+SLICE_POLICY_VERSION = "source-choice-semantic-slice-v3"
 ROLE_REASONS = {
     "core": ("accepted_anchor", "external_input_injection", "input_consumption", "target_state_progression",
-             "core_processing", "core_data_dependency", "core_state_dependency", "wrapper_delegation"),
+             "core_processing", "core_data_dependency", "core_state_dependency"),
     "support": ("required_initialization", "resource_creation", "resource_cleanup", "allocator_setup",
                 "callback_registration", "minimal_configuration", "wrapper_delegation"),
     "exclude": ("shared_context_only", "shared_struct_only", "same_type_only", "unrelated_behavior",
@@ -29,6 +30,16 @@ SLICE_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["c
 SLICE_TOOL_SCHEMA = _schema("submit_semantic_slice", "Submit the evidence-backed semantic slice as the ONLY tool call. "
     "Anchor must be CORE. Uninvestigated frontier functions remain unresolved automatically.",
     SLICE_SCHEMA["properties"], SLICE_SCHEMA["required"])
+# Wire schema prevents SUPPORT-only reasons leaking into a producer CORE row.
+# The canonical validator remains strict; no invalid role is reclassified.
+_row_schema = deepcopy(SLICE_SCHEMA["properties"]["classification"]["items"])
+_role_rows = []
+for _role, _reasons in ROLE_REASONS.items():
+    _item = deepcopy(_row_schema)
+    _item["properties"]["role"]["enum"] = [_role]
+    _item["properties"]["reason_codes"]["items"]["enum"] = list(_reasons)
+    _role_rows.append(_item)
+SLICE_TOOL_SCHEMA["function"]["parameters"]["properties"]["classification"]["items"] = {"anyOf": _role_rows}
 
 
 def validate_submission(content, tools):
@@ -40,6 +51,9 @@ def validate_submission(content, tools):
     rows = document["classification"]
     if not isinstance(rows, list) or not 1 <= len(rows) <= 256:
         raise ValueError("invalid classification array")
+    if any(isinstance(row, dict) and 'choice_id' in row for row in rows):
+        from .proposals import expand
+        rows = expand(rows, tools)
     seen = set()
     canonical_rows = []
     anchor = tools.frontier.candidate.function_id
@@ -82,9 +96,13 @@ def validate_submission(content, tools):
                 raise ValueError("SUPPORT requires source or an explicit strong relation")
         elif not row["open_questions"]:
             raise ValueError("UNRESOLVED requires an open question")
+        from .core_proofs import inclusion_proofs
+        proofs = inclusion_proofs(anchor, fid, tools.index.functions, tools.evidence, eids) if role == "core" else []
+        if role == "core" and not proofs:
+            raise ValueError("core_inclusion_unproven: require observed processing, input-dependent field transition/output or bound callback; caller/type/delegation alone is a frontier hint")
         canonical_rows.append({**row, "function": tools.index.functions[fid]["name"],
             "reason_codes": sorted(set(row["reason_codes"])), "evidence_ids": sorted(set(eids)),
-            "open_questions": sorted(set(row["open_questions"]))})
+            "open_questions": sorted(set(row["open_questions"])), "core_inclusion_proof": proofs})
     if not any(row["function_id"] == anchor and row["role"] == "core" for row in canonical_rows):
         raise ValueError("accepted anchor must remain CORE")
     return {"classification": sorted(canonical_rows, key=lambda row: row["function_id"])}

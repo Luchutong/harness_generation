@@ -1,0 +1,201 @@
+{
+  "schema_version": 1,
+  "set": "blind_synthetic",
+  "selected_before_native_calls": true,
+  "cases": [
+    {
+      "id": "creator_arguments",
+      "set": "blind_synthetic",
+      "semantic_dimension": "creator arguments + configuration",
+      "source_dir": "synthetic/creator_arguments/source",
+      "anchor": "dc_decode",
+      "headers": [],
+      "sources": [
+        "api.c"
+      ],
+      "include_paths": [],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "out_initialization",
+      "set": "blind_synthetic",
+      "semantic_dimension": "out-parameter origin + status return",
+      "source_dir": "synthetic/out_initialization/source",
+      "anchor": "op_feed",
+      "headers": [],
+      "sources": [
+        "api.c"
+      ],
+      "include_paths": [],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "helper_initialization",
+      "set": "blind_synthetic",
+      "semantic_dimension": "malloc + memset + defaults helper",
+      "source_dir": "synthetic/helper_initialization/source",
+      "anchor": "hc_process",
+      "headers": [],
+      "sources": [
+        "api.c"
+      ],
+      "include_paths": [],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "custom_allocator",
+      "set": "blind_synthetic",
+      "semantic_dimension": "allocator identity + custom deallocation",
+      "source_dir": "synthetic/custom_allocator/source",
+      "anchor": "al_decode",
+      "headers": [],
+      "sources": [
+        "api.c"
+      ],
+      "include_paths": [],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "reference_counting",
+      "set": "blind_synthetic",
+      "semantic_dimension": "refcount ownership + conditional final release",
+      "source_dir": "synthetic/reference_counting/source",
+      "anchor": "rc_parse",
+      "headers": [],
+      "sources": [
+        "api.c"
+      ],
+      "include_paths": [],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "opaque_context",
+      "set": "blind_synthetic",
+      "semantic_dimension": "incomplete public type + private layout + creator arguments",
+      "source_dir": "synthetic/opaque_context/source",
+      "anchor": "hidden_decode",
+      "headers": [
+        "opaque.h"
+      ],
+      "sources": [
+        "api.c"
+      ],
+      "include_paths": [],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "callback_setter",
+      "set": "blind_synthetic",
+      "semantic_dimension": "setter registration + function pointer argument",
+      "source_dir": "synthetic/callback_setter/source",
+      "anchor": "sc_parse",
+      "headers": [],
+      "sources": [
+        "api.c"
+      ],
+      "include_paths": [],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "nested_callback_table",
+      "set": "blind_synthetic",
+      "semantic_dimension": "two-level field path + multiple callback ABIs",
+      "source_dir": "synthetic/nested_callback_table/source",
+      "anchor": "deep_parse",
+      "headers": [],
+      "sources": [
+        "api.c"
+      ],
+      "include_paths": [],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "pull_callback",
+      "set": "blind_synthetic",
+      "semantic_dimension": "callback supplies input + cursor lifetime",
+      "source_dir": "synthetic/pull_callback/source",
+      "anchor": "pl_parse",
+      "headers": [],
+      "sources": [
+        "api.c"
+      ],
+      "include_paths": [],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "repeated_feeds",
+      "set": "blind_synthetic",
+      "semantic_dimension": "repeated state transition + finish protocol",
+      "source_dir": "synthetic/repeated_feeds/source",
+      "anchor": "mf_finish",
+      "headers": [],
+      "sources": [
+        "api.c"
+      ],
+      "include_paths": [],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "simultaneous_resources",
+      "set": "blind_synthetic",
+      "semantic_dimension": "two same-type instances + independent identity",
+      "source_dir": "synthetic/simultaneous_resources/source",
+      "anchor": "tw_compare",
+      "headers": [],
+      "sources": [
+        "api.c"
+      ],
+      "include_paths": [],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    },
+    {
+      "id": "memory_stream",
+      "set": "blind_synthetic",
+      "semantic_dimension": "in-memory stream object + pull API",
+      "source_dir": "synthetic/memory_stream/source",
+      "anchor": "sv_parse_stream",
+      "headers": [],
+      "sources": [
+        "api.c"
+      ],
+      "include_paths": [],
+      "compiler_flags": [
+        "-std=c11"
+      ],
+      "link_flags": []
+    }
+  ]
+}

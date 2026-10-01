@@ -8,6 +8,7 @@ import sys
 from ..artifacts import ArtifactStore
 from ..semantic_discovery.cli import _ModelDescriptor, _nonnegative, _positive
 from ..semantic_discovery.deepseek_client import DeepSeekAgentModel, DeepSeekConfig
+from ..semantic_discovery.provider_config import agent_configuration, native_agent_model, load_environment_file
 from ..semantic_discovery.models import AgentModelError, ValidationBudget, candidate_id
 from ..semantic_discovery.tools import RepositoryIndex
 from ..sfg_adapter import load_sfg_artifacts
@@ -21,9 +22,10 @@ def main(argv=None, *, model=None):
     parser = argparse.ArgumentParser(prog="harness-generation semantic-slice",
                                      description="Bounded semantic slices of accepted validated anchors")
     parser.add_argument("--artifacts", type=Path, required=True)
-    parser.add_argument("--provider", choices=("deepseek",), default="deepseek")
+    parser.add_argument("--provider", choices=("deepseek", "openai-compatible"), default="deepseek")
+    parser.add_argument("--env-file", type=Path)
     parser.add_argument("--model")
-    parser.add_argument("--thinking", choices=("disabled", "enabled"), default="disabled")
+    parser.add_argument("--thinking", choices=("disabled", "enabled"))
     parser.add_argument("--candidate", action="append", default=[], help="Accepted function ID or candidate ID; repeatable")
     parser.add_argument("--max-candidates", type=_nonnegative)
     parser.add_argument("--max-discovered-functions", type=_nonnegative, default=32)
@@ -35,6 +37,8 @@ def main(argv=None, *, model=None):
     try:
         if model is not None and args.model:
             raise ValueError("cannot combine injected agent model and --model")
+        if args.env_file:
+            load_environment_file(args.env_file)
         budget = ValidationBudget(**{name: getattr(args, name) for name in ValidationBudget().to_dict()})
         store = ArtifactStore(args.artifacts)
         catalog = store.load_candidate_catalog()
@@ -52,7 +56,7 @@ def main(argv=None, *, model=None):
             requested_ids.add(matches[0].function_id)
         if args.candidate:
             accepted = [(c, v) for c, v in accepted if c.function_id in requested_ids]
-        config = DeepSeekConfig.from_environment(model=args.model, thinking=args.thinking)
+        config = agent_configuration(args.provider, model=args.model, thinking=args.thinking)
         descriptor = model or _ModelDescriptor(config)
         for candidate, validation in accepted:
             frontier = build_frontier(store, artifacts, catalog, candidate, validation)
@@ -63,7 +67,7 @@ def main(argv=None, *, model=None):
             if args.max_candidates is not None and processed >= args.max_candidates:
                 continue
             if model is None:
-                model = DeepSeekAgentModel(config)
+                model = native_agent_model(config)
             print(f"[SLICE] {candidate.function_id}", flush=True)
             tools = SemanticSliceTools(artifacts, catalog, frontier, budget, index=index,
                                       max_discovered_functions=args.max_discovered_functions)

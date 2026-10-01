@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "annotation_kind": "independent_manual_contract",
+  "id": "inih_string",
+  "core_apis": [
+    "ini_parse_string"
+  ],
+  "required_support": [],
+  "resources": [],
+  "input_binding": [
+    {
+      "api": "ini_parse_string",
+      "parameter": "string",
+      "size_parameter": null,
+      "source": "fuzz_data",
+      "via_api": null
+    }
+  ],
+  "ownership": [
+    {
+      "api": "ini_parse_string",
+      "parameter": "string",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    },
+    {
+      "api": "ini_parse_string",
+      "parameter": "user",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    }
+  ],
+  "callback": [
+    {
+      "api": "ini_parse_string",
+      "parameter": "handler",
+      "kind": "notification",
+      "return_policy": "positive_to_continue"
+    }
+  ],
+  "ordering": [],
+  "invocation_counts": {},
+  "mandatory_constraints": {
+    "nul_terminated_input": true,
+    "zero_handler_return_aborts_parse_validly": true
+  },
+  "adjudication": "public documented API contracts + pinned source; necessary-contract checks, not exhaustive correctness"
+}

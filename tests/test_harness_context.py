@@ -64,6 +64,8 @@ class ScriptedModel:
         bodies = {r["function_id"]: r for r in records if r.get("tool") == "get_function"}
         queries = []
         dependencies = spec.get("dependencies", []) if spec else []
+        from harness_generation.harness_context.evidence import api_roles
+        fact_apis = set(api_roles({'value':spec['value']})) - {fid} if spec else set()
         if spec and fid not in bodies:
             queries.append(("get_function", {"function": fid}))
         discovery_done = any(r.get("tool") == "find_type_usages" for r in records)
@@ -72,6 +74,9 @@ class ScriptedModel:
         for dep in dependencies:
             if dep["function_id"] not in bodies:
                 queries.append(("get_function", {"function": dep["function_id"]}))
+        for api in sorted(fact_apis - {dep['function_id'] for dep in dependencies}):
+            if api not in bodies:
+                queries.append(('get_function', {'function':api}))
         if queries:
             calls = []
             for name, arguments in queries:
@@ -83,18 +88,32 @@ class ScriptedModel:
         if spec:
             eids = [bodies[fid]["evidence_id"]]
             eids += [bodies[dep["function_id"]]["evidence_id"] for dep in dependencies]
+            eids += [bodies[api]['evidence_id'] for api in sorted(fact_apis)]
             result.update(status=spec.get("status", "resolved"), facts=[{"function_id": fid, "predicate": kind,
                 "value": deepcopy(spec["value"]), "evidence_ids": sorted(set(eids))}], open_questions=[])
             result["discovered_api_dependencies"] = [{**dep, "symbol": None,
                 "required_by": dep.get("required_by", fid), "evidence_ids": [bodies[dep["function_id"]]["evidence_id"]]} for dep in dependencies]
         if self.mutate:
             self.mutate(requirement, result)
+        # Fixture labels predate graph identities. Positive propositions now
+        # reference the same issued IDs that a real model sees in its request.
+        for fact in result["facts"]:
+            for field in ("resources","arguments","entries","constraints"):
+                for row in fact["value"].get(field,[]):
+                    raw=row.get("resource_id")
+                    if raw is None or raw in {"resource_unproved"}:
+                        continue
+                    parameter=row.get("subject_parameter",row.get("parameter"))
+                    if row.get("return_value"):
+                        parameter="return_value"
+                    if parameter in request["resource_ids"] and request["resource_ids"][parameter]:
+                        row["resource_id"]=request["resource_ids"][parameter]
         self.serial += 1
         return AgentModelResponse(tool_calls=(AgentToolCall(f"submit_{self.serial}", "submit_requirement_resolution", canonical(result)),))
 
 
-def setup(tmp_path, source=DIRECT, roles=None, budget=None, extras=None):
-    sample = prepare(tmp_path, source=source, roles=roles, extras=extras)
+def setup(tmp_path, source=DIRECT, roles=None, budget=None, extras=None, discover_callers=False, anchor='parse'):
+    sample = prepare(tmp_path, source=source, roles=roles, extras=extras, discover_callers=discover_callers, anchor=anchor)
     source_input, snapshot, ft_configuration = inputs(sample)
     result = build(sample)
     save_build(sample[0], result, ft_configuration)
@@ -477,7 +496,7 @@ def test_cleanup_cannot_be_repaired_into_initialization(tmp_path):
     req = next(r for r in run.requirements["requirements"] if r["subject_function_id"] == fid and r["kind"] == "lifecycle")
     trace = json.loads((context_directory(prepared[0][0], prepared[1]["ft_id"]) / "agent_runs" / req["requirement_id"] / "trace.json").read_text())
     assert trace["schema_repair_attempted"] is False
-    assert any(e["detail"] == "dependency_role_not_supported_by_facts" for e in trace["validation_errors"])
+    assert any(e["detail"] in {"dependency_role_not_supported_by_facts", "support_activation_candidate_not_signed"} for e in trace["validation_errors"])
 
 
 def test_cached_resolution_revalidates_dependency_roles(tmp_path):
@@ -489,7 +508,7 @@ def test_cached_resolution_revalidates_dependency_roles(tmp_path):
     result = json.loads((directory / "result.json").read_text())
     cleanup = next(p for p in result["discovered_api_dependencies"] if p["reason"] == "cleanup")
     cleanup["reason"] = "initialization"
-    with pytest.raises(ValueError, match="dependency_role_not_supported_by_facts"):
+    with pytest.raises(ValueError, match="support_activation_candidate_not_signed"):
         validate_resolution_record(result, req, prepared[3], prepared[4], prepared[-1].initial_ids, prepared[-1].excluded)
 
 
@@ -515,16 +534,31 @@ def test_conflicting_argument_construction_is_invalid(tmp_path):
 
 
 def test_missing_support_resource_task_targets_existing_construction(tmp_path):
-    prepared = setup(tmp_path, CONTEXT)
+    # No deallocation effect: reject activation before creating support
+    # requirements. An invented resource must never reach the frozen Context.
+    prepared = setup(tmp_path, CONTEXT.replace("free(ctx);", "(void)ctx;"))
     ids = prepared[0][-1]
     specs = context_specs(ids)
     specs[(ids["destroy"], "argument_construction")]["value"]["arguments"][0]["resource_id"] = "resource_unproved"
     run, model = mine(prepared, specs, query_type="Context")
     assert_gate(run, "incomplete")
-    gaps = [row for row in run.completeness["hard_missing"] if row["code"] == "argument_resource_lifecycle_unresolved"]
-    assert gaps and all(row["requirement_id"] and row["kind"] == "argument_construction" for row in gaps)
-    requests = [json.loads(next(m["content"] for m in c["messages"] if m["role"] == "user")) for c in model.calls]
-    assert any(r["missing_tasks"] and r["requirement"]["subject_function_id"] == ids["destroy"] for r in requests)
+    assert ids['destroy'] not in {r['function_id'] for r in run.closure['required_support_apis']}
+    assert any(row['subject_function_id'] == ids['parse'] and row['kind'] in {'lifecycle','ownership'}
+        for row in run.completeness['hard_missing'])
+    assert any("support_activation_candidate_not_signed" in str(task.get("validation_diagnostics",[]))
+        for round in run.metadata["followup_history"] for task in round["tasks"])
+    assert not any("resource_unproved" in str(fact) for fact in run.context["facts"])
+
+
+def test_phantom_input_proposal_is_rejected_before_canonical_projection(tmp_path):
+    prepared = setup(tmp_path)
+    fid = prepared[0][-1]["parse"]
+    specs = direct_specs(fid)
+    specs[(fid, "argument_construction")]["value"]["arguments"][0]["resource_id"] = resource_id(fid, "data")
+    run, _ = mine(prepared, specs)
+    assert_gate(run)
+    assert not any(f["predicate"] == "argument_construction" for f in run.context["facts"])
+    assert all(a["resource_id"] is None for a in run.context["argument_contract"]["arguments"])
 
 
 @pytest.mark.parametrize("change", ["model", "thinking", "budget", "builder", "prompt", "tools", "ft"])

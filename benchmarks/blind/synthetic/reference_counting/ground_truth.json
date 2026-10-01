@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "annotation_kind": "independent_manual_contract",
+  "id": "reference_counting",
+  "core_apis": [
+    "rc_parse"
+  ],
+  "required_support": [
+    "rc_unref"
+  ],
+  "resources": [
+    {
+      "id": "object",
+      "origin": {
+        "api": "rc_parse",
+        "kind": "return",
+        "parameter": null
+      },
+      "consumers": [],
+      "cleanup": "rc_unref",
+      "ownership": "owned",
+      "scope": "per_input"
+    }
+  ],
+  "input_binding": [
+    {
+      "api": "rc_parse",
+      "parameter": "data",
+      "source": "fuzz_data",
+      "size_parameter": "n",
+      "via_api": null
+    }
+  ],
+  "ownership": [
+    {
+      "api": "rc_parse",
+      "parameter": null,
+      "return_value": true,
+      "ownership": "owned",
+      "release_api": "rc_unref"
+    }
+  ],
+  "callback": [],
+  "ordering": [
+    {
+      "before": "rc_parse",
+      "after": "rc_unref"
+    }
+  ],
+  "invocation_counts": {
+    "rc_parse": 1,
+    "rc_unref": 1
+  },
+  "mandatory_constraints": {
+    "release_semantics": "decrement_one_reference; free_only_at_zero"
+  },
+  "adjudication": "strict necessary-contract checks; unknown is unverified, never automatically correct"
+}

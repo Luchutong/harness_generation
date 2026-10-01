@@ -1,5 +1,6 @@
 """Standalone context mining through the completeness gate; no generation."""
 import argparse
+from dataclasses import replace
 from pathlib import Path
 import sys
 
@@ -9,6 +10,7 @@ from ..minimal_ft.models import ProjectSnapshot
 from ..minimal_ft.persistence import _load_json, _owned
 from ..semantic_discovery.cli import _positive, _nonnegative
 from ..semantic_discovery.deepseek_client import DeepSeekAgentModel, DeepSeekConfig
+from ..semantic_discovery.provider_config import agent_configuration, LazyAgentModel, load_environment_file
 from ..semantic_discovery.tools import RepositoryIndex
 from ..sfg_adapter import load_sfg_artifacts
 from .completeness import HarnessContextCompletenessValidator
@@ -33,9 +35,12 @@ class LazyDeepSeekModel:
 def main(argv=None, *, model=None):
     parser = argparse.ArgumentParser(prog="harness-generation harness-context", description="FT-guided bounded Harness Context mining and deterministic completeness")
     parser.add_argument("--artifacts", type=Path, required=True)
-    parser.add_argument("--provider", choices=("deepseek",), default="deepseek")
+    parser.add_argument("--provider", choices=("deepseek", "openai-compatible"), default="deepseek")
+    parser.add_argument("--env-file", type=Path)
     parser.add_argument("--model")
-    parser.add_argument("--thinking", choices=("disabled", "enabled"), default="disabled")
+    parser.add_argument("--thinking", choices=("disabled", "enabled"))
+    parser.add_argument("--requirement-mode", choices=("single", "grouped"),
+                        help="Default: grouped for real providers, single for injected test clients")
     parser.add_argument("--ft", action="append", default=[])
     parser.add_argument("--candidate", action="append", default=[])
     parser.add_argument("--resume", action="store_true")
@@ -47,12 +52,21 @@ def main(argv=None, *, model=None):
     try:
         if model is not None and args.model:
             raise ValueError("cannot combine injected model with --model")
+        if args.env_file:
+            load_environment_file(args.env_file)
         budget = ContextBudget(**{name: getattr(args, name) for name in ContextBudget().to_dict()})
         store = ArtifactStore(args.artifacts)
         snapshot = ProjectSnapshot.from_artifacts(load_sfg_artifacts(store.root))
         catalog = CandidateCatalog((), snapshot.source_fingerprint)
         index = RepositoryIndex(snapshot.artifacts, catalog, functions_path=store.functions)
-        active_model = model or LazyDeepSeekModel(DeepSeekConfig.from_environment(model=args.model, thinking=args.thinking))
+        requirement_mode = args.requirement_mode or ("single" if model is not None else "grouped")
+        if model is None:
+            config = agent_configuration(args.provider, model=args.model, thinking=args.thinking)
+            if requirement_mode == "grouped":
+                config = replace(config, max_tokens=8192)
+            active_model = LazyAgentModel(config)
+        else:
+            active_model = model
         if not store.minimal_fts_directory.is_dir():
             raise ValueError("missing Minimal FT artifacts; run the upstream minimal-ft stage first")
         selected = []
@@ -72,7 +86,7 @@ def main(argv=None, *, model=None):
             raise ValueError("selectors must identify existing Minimal FT artifacts by exact ID")
         for ft_id in selected:
             ft, ft_metadata = load_minimal_ft(store, ft_id, snapshot)
-            configuration = run_configuration(ft, ft_metadata, snapshot, budget, active_model)
+            configuration = run_configuration(ft, ft_metadata, snapshot, budget, active_model, requirement_mode=requirement_mode)
             prior = load_context_documents(store, ft_id, configuration, index) if args.resume else None
             if prior and prior["completeness"]["status"] == "complete":
                 cached_state = MiningState(budget)
@@ -89,7 +103,7 @@ def main(argv=None, *, model=None):
             def progress(requirement, result, reused, current):
                 print(f"[REQUIREMENT] {requirement['subject_function_id']} {requirement['kind']}: "
                       f"{result['status']} {'resumed' if reused else 'investigated'} model_calls={current.model_calls}", flush=True)
-            run = HarnessContextMiningLoop(active_model, state).run(ft, snapshot, tools, store=store,
+            run = HarnessContextMiningLoop(active_model, state, group_requirements=requirement_mode == "grouped").run(ft, snapshot, tools, store=store,
                 configuration=configuration, resume=args.resume, on_requirement=progress)
             processed += 1
             failed += run.completeness["status"] != "complete"

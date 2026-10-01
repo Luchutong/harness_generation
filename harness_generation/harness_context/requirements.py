@@ -9,7 +9,7 @@ QUESTIONS = {
     "input_binding": "Determine how fuzz bytes reach this API, directly or through a finite input path. Identify data/size, NUL, binary zero, mutability and alignment constraints.",
     "argument_construction": "Account for every parameter: input, derived length, constant, stack/zero initialization, creator, output storage or callback. Do not emit C expressions.",
     "buffer_length": "Determine actual buffer/length units, NUL-inclusive/exclusive, capacity and derived lengths from source; parameter names are not proof.",
-    "lifecycle": "Determine creation, mandatory initialization and cleanup, reuse and ownership of context/handle/returned resources. Propose required API dependencies explicitly.",
+    "lifecycle": "Determine creation, mandatory initialization and cleanup, reuse and ownership of context/handle/returned resources. Select source-issued support APIs in the corresponding action fields.",
     "return_semantics": "Determine the success/failure distinction, pointer nullability and ownership, and cleanup required on an error result.",
     "ownership": "Determine owned/borrowed/transferred/static lifetime for pointer parameters, input references, outputs and returned pointers; identify required release APIs.",
     "call_order": "Determine minimal evidenced ordering of CORE and required support, including creation/init before use and cleanup after use; shared types do not prove ordering.",
@@ -35,13 +35,27 @@ def context_parameters(function):
 
 
 def callback_parameters(function, snapshot):
-    types = function_types(function)
-    declarations = [s["declaration"] for s in snapshot.artifacts.structs
-                    if types & {s["name"], *s.get("aliases", [])}]
-    callbacks = [p for p in function.get("parameters", []) if "(*" in p.get("declaration", "").replace(" ", "")]
-    if any(re.search(r"\(\s*\*\s*\w+\s*\)", declaration) for declaration in declarations):
-        callbacks.extend(context_parameters(function))
-    return callbacks
+    from .callbacks import callback_declarations
+    identities = {e["parameter"] for e in callback_declarations(function, snapshot)}
+    typedef_names = {t["name"] for t in snapshot.artifacts.callback_typedefs}
+    identities.update(p["name"] for p in function.get("parameters", []) if p.get("base_type") in typedef_names)
+    # Unparsed syntactic function pointers still create an obligation; unknown
+    # ABI cannot disappear just because declaration resolution failed.
+    identities.update(p["name"] for p in function.get("parameters", []) if "(*" in p.get("declaration", "").replace(" ", ""))
+    for struct in snapshot.artifacts.structs:
+        if typedef_names & set(re.findall(r"[A-Za-z_]\w*", struct["declaration"])):
+            identities.update(p["name"] for p in function.get("parameters", []) if p["base_type"] in {struct["name"], *struct.get("aliases", [])})
+    # A context merely carrying callbacks does not require construction when
+    # this body only releases it through libc free. Never exempt a project
+    # function with that spelling, or a body that accesses/calls anything else.
+    from .value_flow import body_tree
+    from ..semantic_discovery.tools import _walk, _text
+    source, body = body_tree(function)
+    if body and not body.has_error and not any(f["name"] == "free" for f in snapshot.functions.values()):
+        calls = [n for n in _walk(body) if n.type == "call_expression"]
+        if calls and all(_text(n.child_by_field_name("function"), source) == "free" for n in calls) and not any(n.type in {"field_expression", "assignment_expression"} for n in _walk(body)):
+            identities -= {p["name"] for p in context_parameters(function)}
+    return [p for p in function.get("parameters", []) if p["name"] in identities]
 
 
 def requirement(ft_id, fid, kind, *, mandatory=True, depth=0, required_by=(), discriminator="", question=None):
@@ -92,6 +106,24 @@ class HarnessRequirementBuilder:
             rows.append(requirement(ft["ft_id"], fid, "support_decision", mandatory=False,
                 discriminator=digest(gap), required_by=core_ids,
                 question="Investigate this explicit upstream unknown conservatively: " + "; ".join(gap["questions"])))
+        # Multiple upstream questions about one exact support API are one
+        # investigation, retaining every question and parent. Unknown symbols
+        # without an exact API identity remain separate obligations.
+        mergeable = {r["function_id"] for r in ft["support_candidates"]} | {
+            gap["function_id"] for gap in ft["unresolved_dependencies"] if gap["function_id"] is not None}
+        merged, retained = {}, []
+        for row in rows:
+            if row["kind"] != "support_decision" or row["subject_function_id"] not in mergeable:
+                retained.append(row)
+                continue
+            fid = row["subject_function_id"]
+            entry = merged.setdefault(fid, {"parents": set(), "questions": set()})
+            entry["parents"].update(row["required_by"])
+            entry["questions"].add(row["question"])
+        for fid, entry in sorted(merged.items()):
+            retained.append(requirement(ft["ft_id"], fid, "support_decision", mandatory=False, depth=1,
+                required_by=entry["parents"], question="\n".join(sorted(entry["questions"]))))
+        rows = retained
         return {"schema_version": 1, "artifact_kind": "harness_requirements", "policy_version": POLICY_VERSION,
                 "builder_version": REQUIREMENT_VERSION, "ft_id": ft["ft_id"],
                 "minimal_ft_digest": digest(ft), "requirements": sorted(attach_basis(rows, ft), key=lambda r: (not r["mandatory"], r["subject_function_id"], r["kind"], r["requirement_id"]))}

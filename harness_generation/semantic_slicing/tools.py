@@ -112,6 +112,8 @@ class SemanticSliceTools(RepositoryTools):
             output["function_identities_truncated"] = len(identities) > len(limited)
         if len(self.discovered) >= self.max_discovered_functions:
             output["discovery_limit_reached"] = True
+        from .proposals import choices
+        output['slice_role_choices'] = choices(self)
         return output
 
     def _record_functions(self, record):

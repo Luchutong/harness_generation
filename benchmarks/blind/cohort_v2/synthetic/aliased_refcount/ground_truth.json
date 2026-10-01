@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "annotation_kind": "independent_manual_contract",
+  "id": "aliased_refcount",
+  "core_apis": [
+    "ar_decode"
+  ],
+  "required_support": [
+    "ar_new",
+    "ar_unref"
+  ],
+  "resources": [
+    {
+      "id": "original",
+      "origin": {
+        "api": "ar_new",
+        "kind": "return",
+        "parameter": null
+      },
+      "consumers": [
+        {
+          "api": "ar_decode",
+          "parameter": "object"
+        },
+        {
+          "api": "ar_unref",
+          "parameter": "object"
+        }
+      ],
+      "cleanup": "ar_unref",
+      "ownership": "owned",
+      "scope": "per_input"
+    },
+    {
+      "id": "returned_reference",
+      "origin": {
+        "api": "ar_decode",
+        "kind": "return",
+        "parameter": null
+      },
+      "consumers": [
+        {
+          "api": "ar_unref",
+          "parameter": "object"
+        }
+      ],
+      "cleanup": "ar_unref",
+      "ownership": "owned",
+      "scope": "per_input"
+    }
+  ],
+  "input_binding": [
+    {
+      "api": "ar_decode",
+      "parameter": "bytes",
+      "source": "fuzz_data",
+      "size_parameter": "count",
+      "via_api": null
+    }
+  ],
+  "ownership": [
+    {
+      "api": "ar_new",
+      "parameter": null,
+      "return_value": true,
+      "ownership": "owned",
+      "release_api": "ar_unref"
+    },
+    {
+      "api": "ar_decode",
+      "parameter": null,
+      "return_value": true,
+      "ownership": "owned",
+      "release_api": "ar_unref"
+    },
+    {
+      "api": "ar_decode",
+      "parameter": "object",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    }
+  ],
+  "callback": [],
+  "ordering": [
+    {
+      "before": "ar_new",
+      "after": "ar_decode"
+    },
+    {
+      "before": "ar_decode",
+      "after": "ar_unref"
+    }
+  ],
+  "invocation_counts": {
+    "ar_unref": 2
+  },
+  "mandatory_constraints": {
+    "return_aliases_input_but_owns_new_reference": true,
+    "creator_only": true
+  },
+  "adjudication": "independent source/API contract; metadata missing or alternatives unproved remain unverified; source/ contains no expected annotations"
+}

@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "annotation_kind": "independent_manual_contract",
+  "id": "http_parser_feed",
+  "core_apis": [
+    "http_parser_execute"
+  ],
+  "required_support": [
+    "http_parser_init"
+  ],
+  "resources": [],
+  "input_binding": [
+    {
+      "api": "http_parser_execute",
+      "parameter": "data",
+      "size_parameter": "len",
+      "source": "fuzz_data",
+      "via_api": null
+    }
+  ],
+  "ownership": [
+    {
+      "api": "http_parser_execute",
+      "parameter": "parser",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    },
+    {
+      "api": "http_parser_execute",
+      "parameter": "settings",
+      "return_value": false,
+      "ownership": "borrowed",
+      "release_api": null
+    }
+  ],
+  "callback": [],
+  "ordering": [
+    {
+      "before": "http_parser_init",
+      "after": "http_parser_execute"
+    }
+  ],
+  "invocation_counts": {},
+  "mandatory_constraints": {
+    "mandatory_initialization": {
+      "api": "http_parser_execute",
+      "parameter": "parser",
+      "initializer": "http_parser_init"
+    },
+    "callback_settings_storage": "zero_initialize_then_optional_callbacks",
+    "parser_mode": "valid_http_parser_type"
+  },
+  "adjudication": "public documented API contracts + pinned source; necessary-contract checks, not exhaustive correctness"
+}

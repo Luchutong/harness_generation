@@ -6,6 +6,7 @@ import json
 
 from .models import AgentModelResponse, DecisionSchemaError, canonical
 from .tools import ToolBudgetExceeded
+from .request_diagnostics import classify_error, request_observation
 
 
 @dataclass
@@ -30,13 +31,16 @@ class LoopOutcome:
 
 class BoundedAgentLoop:
     def __init__(self, model, budget, terminal_schema, validator, *, max_terminal_repairs=0,
-                 allow_text_terminal=False):
+                 allow_text_terminal=False, reserve_terminal_round=False, stage=None, terminal_schema_factory=None):
         if type(max_terminal_repairs) is not int or max_terminal_repairs not in {0, 1}:
             raise ValueError("max_terminal_repairs must be 0 or 1")
         self.model, self.budget, self.terminal_schema = model, budget, terminal_schema
         self.validator = validator
         self.terminal_name = terminal_schema["function"]["name"]
         self.max_terminal_repairs, self.allow_text_terminal = max_terminal_repairs, allow_text_terminal
+        self.reserve_terminal_round = reserve_terminal_round
+        self.stage = stage or terminal_schema["function"]["name"]
+        self.terminal_schema_factory = terminal_schema_factory
 
     def run(self, messages, tools, *, initial_tool_calls=0, initial_events=()):
         outcome = LoopOutcome(messages=list(messages), tool_calls=initial_tool_calls,
@@ -44,7 +48,15 @@ class BoundedAgentLoop:
         seen_calls = {event["tool_call_id"] for event in initial_events if "tool_call_id" in event}
         for number in range(1, self.budget.max_rounds + 1):
             outcome.rounds = number
-            response = self._complete(outcome, tools.schemas + [self.terminal_schema], "exploration")
+            if self.terminal_schema_factory:
+                refreshed = self.terminal_schema_factory()
+                if refreshed["function"]["name"] != self.terminal_name:
+                    raise ValueError("terminal identity cannot change during investigation")
+                self.terminal_schema = refreshed
+            final_only = self.reserve_terminal_round and number == self.budget.max_rounds
+            if final_only:
+                outcome.messages.append({"role": "user", "content": "Last budgeted round: submit the terminal tool now using issued evidence. Preserve unknown contracts as unresolved. No further repository investigation is available."})
+            response = self._complete(outcome, [self.terminal_schema] if final_only else tools.schemas + [self.terminal_schema], "terminal_budget" if final_only else "exploration")
             if response is None:
                 break
             submissions = [c for c in response.tool_calls if c.name == self.terminal_name]
@@ -53,6 +65,9 @@ class BoundedAgentLoop:
                     outcome.termination = "invalid_output"
                     break
                 self._terminal(response, submissions, tools, outcome, seen_calls)
+                break
+            if final_only:
+                outcome.exhausted, outcome.termination = True, "terminal_round_without_submission"
                 break
             if response.content:
                 try:
@@ -68,6 +83,7 @@ class BoundedAgentLoop:
                     break
                 outcome.tool_calls += 1
                 if not self._valid_call(call, seen_calls, 8192):
+                    outcome.events.append({"kind": "execution_error", "error_category": "tool_call_parse_error"})
                     outcome.termination, stopped = "invalid_output", True
                     break
                 seen_calls.add(call.id)
@@ -75,6 +91,7 @@ class BoundedAgentLoop:
                     arguments = json.loads(call.arguments)
                 except (TypeError, ValueError):
                     arguments = None
+                    outcome.events.append({"kind": "execution_error", "error_category": "tool_call_parse_error"})
                 try:
                     output = tools.execute(call.name, arguments)
                 except ToolBudgetExceeded as error:
@@ -96,17 +113,29 @@ class BoundedAgentLoop:
         outcome.model_calls += 1
         try:
             response = self.model.complete(outcome.messages, json.loads(canonical(schemas)))
-        except Exception:
-            outcome.termination = "provider_error"
+        except Exception as error:
+            category = classify_error(error)
+            outcome.termination = "budget_exhausted" if category == "budget_exhausted" else "provider_error"
+            status = getattr(error, "http_status", None)
+            diagnostic = dict(getattr(error, "diagnostics", {}))
+            model = getattr(self.model, "model", None)
+            if not isinstance(model, str):
+                model = getattr(model, "model", "unspecified")
+            diagnostic = {**request_observation(model, outcome.messages, schemas), **diagnostic,
+                "stage": self.stage, "phase": phase, "attempt_number": outcome.model_calls,
+                "error_category": category}
             outcome.events.append({"round": outcome.rounds, "phase": phase, "kind": "model_error",
-                                   "error": "provider_error"})
+                                   "error": outcome.termination, "error_category": category, "diagnostics": diagnostic,
+                                   **({"repair_error_category": "terminal_repair_error"} if phase == "terminal_repair" else {}),
+                                   **({"http_status": status} if type(status) is int and 100 <= status <= 599 else {})})
             return None
         if not isinstance(response, AgentModelResponse):
             outcome.termination = "invalid_output"
+            outcome.events.append({"kind": "execution_error", "error_category": "invalid_response"})
             return None
         outcome.messages.append(response.assistant_message())
         metadata = {key: response.metadata[key] for key in
-                    ("usage", "response_id", "finish_reason", "served_model") if key in response.metadata}
+                    ("usage", "response_id", "finish_reason", "served_model", "request_diagnostics") if key in response.metadata}
         outcome.events.append({"round": outcome.rounds, "phase": phase, "model_call": outcome.model_calls,
                                "kind": "model_response", "metadata": metadata})
         return response
@@ -120,6 +149,7 @@ class BoundedAgentLoop:
         call = submissions[0] if submissions else None
         if call and (len(response.tool_calls) != 1 or not self._valid_call(call, seen, 64000)):
             outcome.termination = "invalid_output"
+            outcome.events.append({"kind": "execution_error", "error_category": "tool_call_parse_error"})
             return
         if call:
             seen.add(call.id)
@@ -135,6 +165,7 @@ class BoundedAgentLoop:
         except DecisionSchemaError as error:
             schema_error = error.to_dict()
             outcome.initial_schema_errors = [schema_error]
+            outcome.events.append({"kind": "execution_error", "error_category": "terminal_schema_error"})
             outcome.termination = "invalid_output"
         except (ValueError, TypeError):
             outcome.termination = "invalid_output"
@@ -155,7 +186,7 @@ class BoundedAgentLoop:
                     or not self._valid_call(calls[0], seen, 64000)):
                 outcome.termination = "invalid_output"
                 outcome.events.append({"round": outcome.rounds, "kind": "repair_rejected",
-                                       "error": "repair_requires_only_terminal_submission"})
+                                       "error": "repair_requires_only_terminal_submission", "error_category": "terminal_repair_error"})
                 return
             call = calls[0]
             outcome.terminal_submission_attempts += 1
@@ -167,6 +198,7 @@ class BoundedAgentLoop:
                 output = {"decision_status": "validated"}
             except DecisionSchemaError as error:
                 outcome.decision, outcome.termination = None, "invalid_output"
+                outcome.events.append({"kind": "execution_error", "error_category": "terminal_repair_error"})
                 output = error.to_dict()
             except (ValueError, TypeError):
                 outcome.decision, outcome.termination = None, "invalid_output"

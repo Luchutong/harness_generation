@@ -45,6 +45,7 @@ class ParseResult:
     files: tuple[str, ...]
     warnings: tuple[str, ...]
     opaque_handles: tuple[OpaqueHandleInfo, ...] = ()
+    callback_typedefs: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,7 @@ class CProjectParser:
         opaque_handles: list[OpaqueHandleInfo] = []
         type_aliases: dict[str, tuple[str, int, bool]] = {}
         raw_functions: list[_ParsedFunction] = []
+        callback_typedefs = []
         warnings = []
         for path in paths:
             relative = path.relative_to(project).as_posix()
@@ -86,6 +88,15 @@ class CProjectParser:
                 if tree.root_node.has_error or errors:
                     warnings.append(f"{relative}: tree-sitter reported {len(errors) or 1} parse error(s)")
                 structs.extend(_extract_structs(tree.root_node, source, relative))
+                for node in _walk(tree.root_node):
+                    if node.type == "type_definition":
+                        declarator = node.child_by_field_name("declarator")
+                        names = [n for n in _walk(declarator) if n.type == "type_identifier"] if declarator else []
+                        if len(names) == 1 and any(n.type == "function_declarator" for n in _walk(declarator)):
+                            callback_typedefs.append({"name": source[names[0].start_byte:names[0].end_byte].decode(),
+                                "declaration": source[node.start_byte:node.end_byte].decode(), "file": relative,
+                                "start_line": source[:node.start_byte].count(b"\n") + 1,
+                                "end_line": source[:node.end_byte].count(b"\n") + 1})
                 opaque_handles.extend(
                     _extract_opaque_handles(tree.root_node, source, relative)
                 )
@@ -108,6 +119,7 @@ class CProjectParser:
             tuple(path.relative_to(project).as_posix() for path in paths),
             tuple(warnings),
             handles,
+            tuple(callback_typedefs),
         )
 
     def _source_files(self, project: Path) -> Iterable[Path]:
@@ -948,6 +960,7 @@ def write_functions_json(result: ParseResult, path: Path, *, project: Path | Non
         "files": list(result.files),
         "structs": [info.to_dict() for info in result.structs],
         "opaque_handles": [handle.to_dict() for handle in result.opaque_handles],
+        "callback_typedefs": list(result.callback_typedefs),
         "functions": [function.to_dict() for function in result.functions],
         "warnings": list(result.warnings),
     }
