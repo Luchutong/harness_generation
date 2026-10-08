@@ -38,10 +38,15 @@ def main(argv: list[str] | None = None, *, model=None) -> int:
     parser.add_argument("--env-file", type=Path)
     parser.add_argument("--model")
     parser.add_argument("--thinking", choices=("disabled", "enabled"))
+    parser.add_argument("--agent-timeout", type=float, choices=(60.0, 120.0), default=60.0,
+                        help="Per-request transport timeout; no additional calls or SDK retries")
     parser.add_argument("--candidate", action="append", default=[],
                         help="Explicit function ID or stable candidate ID; repeatable, permits revalidation")
     parser.add_argument("--max-candidates", type=_nonnegative)
     parser.add_argument("--max-terminal-repairs", type=int, choices=(0, 1), default=1)
+    for name in ('max_semantic_recoveries', 'max_provider_recoveries', 'max_protocol_recoveries'):
+        parser.add_argument('--' + name.replace('_', '-'), type=int, choices=(0, 1), default=1,
+                            help='At most one recovery inside remaining ordinary rounds; failure events remain recorded')
     for name, default in ValidationBudget().to_dict().items():
         parser.add_argument("--" + name.replace("_", "-"), type=_positive, default=default)
     parser.add_argument("--resume", action="store_true",
@@ -50,6 +55,8 @@ def main(argv: list[str] | None = None, *, model=None) -> int:
     try:
         if model is not None and args.model:
             raise ValueError("cannot combine injected agent model and --model")
+        if model is not None and args.agent_timeout != 60.0:
+            raise ValueError("cannot override transport timeout of an injected agent model")
         if args.env_file:
             load_environment_file(args.env_file)
         budget = ValidationBudget(**{name: getattr(args, name) for name in ValidationBudget().to_dict()})
@@ -60,10 +67,13 @@ def main(argv: list[str] | None = None, *, model=None) -> int:
         artifacts = load_sfg_artifacts(args.artifacts)
         catalog.validate_against(artifacts)
         index = RepositoryIndex(artifacts, catalog, functions_path=store.functions)
-        config = agent_configuration(args.provider, model=args.model, thinking=args.thinking)
+        config = agent_configuration(args.provider, model=args.model, thinking=args.thinking, timeout=args.agent_timeout)
         # A configuration-only model permits checking reusable runs without a key.
         descriptor = model or _ModelDescriptor(config)
-        configuration = run_configuration(catalog, budget, descriptor, max_terminal_repairs=args.max_terminal_repairs)
+        recovery_limits = {name: getattr(args, name) for name in
+            ('max_semantic_recoveries', 'max_provider_recoveries', 'max_protocol_recoveries')}
+        configuration = run_configuration(catalog, budget, descriptor,
+                                          max_terminal_repairs=args.max_terminal_repairs, **recovery_limits)
         results, deferred, todo = {}, {}, []
         explicit_ids = set()
         for requested in args.candidate:
@@ -99,7 +109,8 @@ def main(argv: list[str] | None = None, *, model=None) -> int:
         if todo and model is None:
             model = native_agent_model(config)
         if todo:
-            agent = CandidateValidationAgent(model, budget, max_terminal_repairs=args.max_terminal_repairs)
+            agent = CandidateValidationAgent(model, budget, max_terminal_repairs=args.max_terminal_repairs,
+                                             **recovery_limits)
             for candidate in todo:
                 print(f"[VALIDATE] {candidate.function_id}", flush=True)
                 run = agent.validate(candidate, RepositoryTools(artifacts, catalog, budget, index=index))

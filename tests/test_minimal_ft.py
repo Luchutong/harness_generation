@@ -12,7 +12,7 @@ from harness_generation.artifacts import ArtifactStore
 from harness_generation.minimal_ft import MinimalFTBuilder, MinimalFTValidator, ProjectSnapshot, stable_ft_id
 from harness_generation.minimal_ft.cli import main
 from harness_generation.minimal_ft.models import POLICY_VERSION, canonical_slice
-from harness_generation.minimal_ft.persistence import (build_configuration, iter_legacy_records, load_compatible_build,
+from harness_generation.minimal_ft.persistence import (build_configuration, load_compatible_build,
     load_legacy_inputs, load_slice_input, save_build)
 from harness_generation.records import write_json
 from harness_generation.semantic_discovery.models import canonical, candidate_id, digest
@@ -45,7 +45,7 @@ def prepare(tmp_path, *, source=HUB, anchor="parse", roles=None, relations=False
     return store, candidate_id(candidate.function_id), ids
 
 
-def inputs(sample, *, comparison=True):
+def inputs(sample, *, comparison=False):
     store, cid, _ = sample
     snapshot = ProjectSnapshot.from_artifacts(load_sfg_artifacts(store.root))
     anchor = snapshot.anchor_for_candidate(cid)
@@ -54,7 +54,7 @@ def inputs(sample, *, comparison=True):
     return source, snapshot, build_configuration(source, snapshot, manifest, compare_legacy=comparison)
 
 
-def build(sample, *, comparison=True):
+def build(sample, *, comparison=False):
     source, snapshot, _ = inputs(sample, comparison=comparison)
     return MinimalFTBuilder().build(source, snapshot, compare_legacy=comparison)
 
@@ -162,17 +162,6 @@ def test_stale_slice_digest_invalidates_cached_ft(tmp_path):
     assert "slice_document_digest_mismatch" in codes(build(sample))
 
 
-def test_legacy_disagreement_only_changes_comparison(tmp_path):
-    sample = prepare(tmp_path, source=DIRECT)
-    original = build(sample).minimal_ft
-    ids = sample[-1]
-    write_json(sample[0].triplets, {"schema_version": 1, "triplets": [{"id": "ft_legacy", "isf": {"function_id": ids["parse"]},
-        "functions": [{"function_id": fid} for fid in ids.values()], "metadata": {}}]})
-    changed = build(sample).minimal_ft
-    assert changed["legacy_comparison"] == {"legacy_ft_found": True, "legacy_ft_ids": ["ft_legacy"],
-        "core_overlap": [ids["parse"]], "new_core_only": [], "legacy_only": sorted([ids["wrapper"], ids["unrelated"]]),
-        "oversized_frontier": [], "comparison_status": "available"}
-    assert {k: v for k, v in changed.items() if k != "legacy_comparison"} == {k: v for k, v in original.items() if k != "legacy_comparison"}
 
 
 def test_permutation_determinism_including_slice_digest_and_canonical_json(tmp_path):
@@ -251,36 +240,8 @@ def test_existing_ownership_and_usage_preserve_strong_fact_provenance(tmp_path):
     assert all(r["strength"] == "weak" for r in doc["relations"] if r["kind"] == "structural")
 
 
-@pytest.mark.parametrize("endpoint,question", [(None, "relation_endpoint_missing"),
-    ("api.c:999:absent", "relation_endpoint_unknown"), ("unrelated", "relation_endpoint_outside_slice")])
-def test_bad_relation_endpoints_are_unknown_references_not_new_apis(tmp_path, endpoint, question):
-    sample = prepare(tmp_path, source=DIRECT)
-    ids = sample[-1]
-    target = ids["unrelated"] if endpoint == "unrelated" else endpoint
-    write_json(sample[0].triplets, {"triplets": [{"id": "ft_old", "isf": {"function_id": ids["parse"]},
-        "functions": [{"function_id": ids["parse"]}], "metadata": {"relation_evidence": {"strong": [{
-            "kind": "ownership", "producer_function_id": ids["parse"], "cleanup_function_id": target}]}}}]})
-    doc = build(sample).minimal_ft
-    assert doc["build_status"] == "completed_with_unresolved"
-    assert doc["relations"] == [] and len(doc["core_functions"]) == 1
-    gap = doc["unresolved_dependencies"][0]
-    assert gap["function_id"] is None and gap["questions"] == [question]
-    assert gap["references"][0]["reference"] == target
 
 
-def test_consumer_only_ownership_fact_preserves_missing_endpoints(tmp_path):
-    sample = prepare(tmp_path, source=DIRECT)
-    anchor = sample[-1]["parse"]
-    write_json(sample[0].triplets, {"triplets": [{"id": "ft_old", "isf": {"function_id": anchor},
-        "functions": [{"function_id": anchor}], "ownership_relations": [{
-            "kind": "ownership", "producer_function_id": None, "consumer_function_ids": [anchor],
-            "cleanup_function_id": None}]}]})
-    document = build(sample).minimal_ft
-    assert document["build_status"] == "completed_with_unresolved"
-    assert document["relations"] == []
-    gap = document["unresolved_dependencies"][0]
-    assert gap["function_id"] is None and gap["questions"] == ["relation_endpoint_missing"]
-    assert gap["references"][0]["provenance"]["artifact"] == "triplets.json"
 
 
 def test_builder_validator_rejects_invented_projection_and_lost_unknown(tmp_path):
@@ -420,29 +381,10 @@ def test_resume_fingerprint_checks_all_versioned_inputs(tmp_path, key, value):
     assert load_compatible_build(sample[0], result.minimal_ft["ft_id"], {**config, key: value}, source, snapshot) is None
 
 
-def test_unknown_relation_does_not_override_authoritative_exclude(tmp_path):
-    sample = prepare(tmp_path, roles={"parse": ("core", "accepted_anchor"), "set_logger": ("exclude", "diagnostic_only")})
-    ids = sample[-1]
-    write_json(sample[0].triplets, {"triplets": [{"isf": {"function_id": ids["parse"]}, "functions": [],
-        "metadata": {"relation_evidence": {"strong": [{"kind": "lifecycle", "function_ids": [ids["parse"], ids["set_logger"]]}]}}}]})
-    doc = build(sample).minimal_ft
-    assert ids["set_logger"] in doc["excluded_functions"]
-    assert not any(r["function_id"] == ids["set_logger"] for r in doc["unresolved_dependencies"])
 
 
-@pytest.mark.parametrize("text", ['{"triplets":[{"id":"cut"}', '{"triplets":[{},]}', '{"triplets":[],"triplets":[]}'])
-def test_legacy_stream_rejects_incomplete_and_duplicate_json(tmp_path, text):
-    path = tmp_path / "legacy.json"
-    path.write_text(text)
-    with pytest.raises(ValueError):
-        list(iter_legacy_records(path, "triplets"))
 
 
-def test_legacy_stream_handles_chunk_boundaries_and_multiple_anchors(tmp_path):
-    path = tmp_path / "legacy.json"
-    records = [{"id": "large", "note": "x" * (1024 * 1024 + 23)}, {"id": "next"}]
-    write_json(path, {"schema_version": 1, "triplets": records})
-    assert list(iter_legacy_records(path, "triplets")) == records
 
 
 def test_no_legacy_comparison_and_explicit_candidate_errors(tmp_path):

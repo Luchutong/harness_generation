@@ -221,7 +221,7 @@ def test_stale_context_blocks_before_provider(tmp_path):
 
 def test_plan_only_works_without_provider_and_legacy_files(tmp_path, monkeypatch):
     store, _, _ = ready(tmp_path)
-    for path in (store.triplets, store.root / "protocol_ir.json"):
+    for path in (store.root / "triplets.json", store.root / "protocol_ir.json"):
         path.unlink(missing_ok=True)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
@@ -344,6 +344,7 @@ void usage(const unsigned char *data, size_t size) { Context *ctx=create(); Cont
     specs[(create, "lifecycle")]["value"]["resources"][0]["resource_id"] = rid
     specs[(create, "ownership")]["value"]["entries"][0]["resource_id"] = rid
     specs.update(direct_specs(feed))
+    specs[(feed, "ownership")]["value"]["entries"][0]["lifetime"] = "until_context_cleanup"
     specs[(feed, "argument_construction")]["value"]["arguments"].insert(0, argument("ctx", "derived", resource=rid))
     specs[(feed, "ownership")]["value"]["entries"].append(owner("ctx", resource=rid))
     for fid in (feed, parse):

@@ -13,6 +13,7 @@ from ..semantic_discovery.provider_config import agent_configuration, load_envir
 from ..target_build import TargetBuildConfig
 from .builder import HarnessPlanBuilder
 from .build import build_and_run, BUILD_POLICY_VERSION
+from .code_repair import translate, CODE_REPAIR_POLICY_VERSION
 from .persistence import load_frozen_inputs
 from .stage4 import ContextStage4Generator, PROMPT_VERSION
 from .validation import validate_code, CODE_VALIDATOR_VERSION
@@ -62,6 +63,8 @@ def main(argv=None, *, llm=None):
     parser.add_argument("--target-build", type=Path)
     parser.add_argument("--project-root", type=Path)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--max-code-repairs", type=int, choices=(0, 1), default=0,
+                        help="At most one validator/compiler correction against the same FrozenPlan")
     args = parser.parse_args(argv)
     if args.runtime and not args.build or args.plan_only and args.build:
         parser.error("--runtime requires --build; --plan-only cannot be combined with --build")
@@ -123,6 +126,7 @@ def main(argv=None, *, llm=None):
             build_files += [p for p in index.project_root.rglob("*") if p.is_file() and p.suffix in {".h", ".hh", ".hpp"}]
             configuration = {"plan_id": plan["plan_id"], "plan_digest": digest(plan), "prompt_version": PROMPT_VERSION,
                 "code_validator_version": CODE_VALIDATOR_VERSION,
+                "code_repair_policy_version": CODE_REPAIR_POLICY_VERSION, "max_code_repairs": args.max_code_repairs,
                 "build_policy_version": BUILD_POLICY_VERSION if args.build else None,
                 "existing_harness_digest": _sha(args.harness) if args.harness else None,
                 "model": model_config, "plan_only": args.plan_only, "build": args.build, "runtime": args.runtime,
@@ -143,37 +147,38 @@ def main(argv=None, *, llm=None):
                 directory.mkdir()
             write_json(directory / "harness_plan.json", plan, sort_keys=True, allow_nan=False)
             status, calls, error = "passed", 0, None
+            model_attempts = []
             if not args.plan_only:
                 generator = ContextStage4Generator(active)
-                generator.render(plan).save(directory / "prompt.json")
-                try:
-                    if args.harness:
+                if not args.harness:
+                    status, calls, error, model_attempts = translate(directory, plan, generator,
+                        recipe=recipe, runtime=args.runtime, max_code_repairs=args.max_code_repairs)
+                else:
+                    generator.render(plan).save(directory / "prompt.json")
+                    try:
                         with args.harness.open(encoding="utf-8") as stream:
                             code = stream.read(131073)
                         if not code.strip() or len(code) > 131072:
                             raise ValueError("empty or oversized input harness")
                         validation = validate_code(code, plan)
-                    else:
-                        calls = 1
-                        code, prompt, response, validation = generator.run(plan)
-                        write_json(directory / "response.json", response.to_dict(), sort_keys=True, allow_nan=False)
-                    write_json(directory / "code_validation.json", validation, sort_keys=True)
-                    harness = _owned(directory / ("harness.cpp" if plan["language"] == "c++" else "harness.c"), directory)
-                    temporary = harness.with_suffix(".tmp")
-                    temporary.write_text(code, encoding="utf-8")
-                    temporary.replace(harness)
-                    if validation["status"] != "valid":
-                        status = "invalid_code"
-                    elif args.build:
-                        build, runtime = build_and_run(harness, _owned(directory / "build", directory), plan, recipe, runtime=args.runtime)
-                        if not build["success"]:
-                            status = "compile_failed"
-                        elif args.runtime and runtime["status"] != "passed":
-                            status = "runtime_failed"
-                except (LLMError, OSError, ValueError) as exc:
-                    status, error = "generation_failed", str(exc) if isinstance(exc, LLMError) else type(exc).__name__
+                        write_json(directory / "code_validation.json", validation, sort_keys=True)
+                        harness = _owned(directory / ("harness.cpp" if plan["language"] == "c++" else "harness.c"), directory)
+                        temporary = harness.with_suffix(".tmp")
+                        temporary.write_text(code, encoding="utf-8")
+                        temporary.replace(harness)
+                        if validation["status"] != "valid":
+                            status = "invalid_code"
+                        elif args.build:
+                            build, runtime = build_and_run(harness, _owned(directory / "build", directory), plan, recipe, runtime=args.runtime)
+                            if not build["success"]:
+                                status = "compile_failed"
+                            elif args.runtime and runtime["status"] != "passed":
+                                status = "runtime_failed"
+                    except (OSError, ValueError) as exc:
+                        status, error = "generation_failed", type(exc).__name__
             write_json(directory / "metadata.json", {"schema_version": 1, "ft_id": ft_id, "plan_id": plan["plan_id"],
                 "status": status, "model_calls": calls, "error": error, "configuration": configuration,
+                "model_attempts": model_attempts, "code_repairs": max(0, calls - 1),
                 "code_origin": "existing_harness" if args.harness else "plan_only" if args.plan_only else "model_translation",
                 "configuration_fingerprint": digest(configuration), "file_digests": _files(directory)}, sort_keys=True, allow_nan=False)
             print(f"[CONTEXT-GENERATE] {ft_id}: {status} model_calls={calls} artifacts={directory}", flush=True)

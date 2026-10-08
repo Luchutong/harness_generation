@@ -70,7 +70,15 @@ class HarnessRequirementBuilder:
     def function_requirements(self, ft, snapshot, fid, *, depth=0, required_by=(), core=True):
         function = snapshot.functions[fid]
         params = function.get("parameters", [])
-        kinds = ["input_binding"] if core else []
+        # A required pointer-returning producer can carry fuzz input into a
+        # later CORE consumer. Ask for that boundary explicitly; compatible
+        # types alone do not prove an input path. Cleanup/support consumers do
+        # not acquire a new independent fuzzer input obligation.
+        producer_input = function.get("return_pointer_depth", 0) and any(
+            p.get("is_pointer") and p.get("pointer_depth", 0) == 1
+            and not (p.get("is_struct_like") or p.get("is_opaque_handle"))
+            and p not in callback_parameters(function, snapshot) for p in params)
+        kinds = ["input_binding"] if core or producer_input else []
         if params:
             kinds.append("argument_construction")
         if any(p.get("is_pointer") and not p.get("is_struct_like") for p in params):

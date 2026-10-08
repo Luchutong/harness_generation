@@ -192,14 +192,14 @@ def parse_resolution(text, tools):
         if result["status"] == "not_applicable" and requirement["kind"] in {"input_binding", "argument_construction", "return_semantics"}:
             raise ValueError("required_core_contract_cannot_be_not_applicable")
     for fact in result["facts"]:
-        validate_fact(fact, requirement, tools.snapshot, tools.evidence, tools.scope_ids, tools.visible_ids)
+        validate_fact(fact, requirement, tools.snapshot, tools.evidence, tools.scope_ids - tools.excluded, tools.visible_ids)
         if fact["predicate"] == "ownership":
             from .proposals import ownership_subject
             for entry in fact["value"]["entries"]:
                 subject = ownership_subject(entry, fact["function_id"], tools.snapshot)
                 entry.update({k: subject[k] for k in ("subject_id", "subject_kind")})
     from .argument_graph import issued_resource_ids
-    identity_catalog = issued_resource_ids(tools.snapshot, tools.evidence, tools.scope_ids)
+    identity_catalog = issued_resource_ids(tools.snapshot, tools.evidence, tools.scope_ids - tools.excluded)
     def check_identities(value):
         if isinstance(value,list):
             for item in value:
@@ -314,9 +314,11 @@ def build_context(ft, requirements, facts, snapshot=None, records=None):
         allowed = ({r["function_id"] for r in ft["core_functions"] + ft["support_candidates"]}
                    | set(complete_bodies(snapshot, records or {}))) - set(ft["excluded_functions"])
         context["construction_contract"] = project_construction(context, snapshot, records or {}, allowed)
-        context["resource_identity"] = resolve_resources(context, snapshot, records or {})
+        context["resource_identity"] = resolve_resources(context, snapshot, records or {}, allowed=allowed)
         from .argument_graph import build_argument_graph
         context["argument_graph"] = build_argument_graph(context, ft, requirements, snapshot, records or {})
+        from .resource_identity import project_callback_identities
+        project_callback_identities(context, context["argument_graph"], snapshot)
         from .parameter_semantics import project_parameter_relations
         project_parameter_relations(context, snapshot, records or {})
         graph_nodes = {n["node_id"]: n for n in context["argument_graph"]["nodes"]}
@@ -328,18 +330,25 @@ def build_context(ft, requirements, facts, snapshot=None, records=None):
         context["canonical_construction"] = GraphContractReconciler().reconcile(
             context, context["argument_graph"], requirements, snapshot)
         graph_satisfied = project_canonical_construction(context, context["canonical_construction"], requirements, snapshot)
+        from .input_contracts import project_callback_inputs
+        forwarded_inputs = project_callback_inputs(context, requirements)
+        from .input_contracts import project_internal_inputs
+        internal_inputs = project_internal_inputs(context, requirements)
         from .invocations import project_invocations
-        project_invocations(context)
+        project_invocations(context, snapshot, records or {})
         context["ordering_graph"] = ordering_graph(context, snapshot, records or {})
         from .input_flow import project_input_flow
         project_input_flow(context, snapshot)
-        context["framework_satisfied_requirements"] = sorted(covered_requirements(context, requirements, snapshot) + graph_satisfied,key=canonical)
+        from .callback_resources import project_callback_resource_references
+        project_callback_resource_references(context, snapshot, records or {})
+        context["framework_satisfied_requirements"] = sorted(covered_requirements(context, requirements, snapshot) + graph_satisfied + forwarded_inputs + internal_inputs,key=canonical)
     return context
 
 
 class HarnessContextValidator:
     def validate(self, context, ft, snapshot, requirements, records, allowed_ids):
         errors, requirements_by_id = [], {row["requirement_id"]: row for row in requirements}
+        allowed_ids = allowed_ids - set(ft['excluded_functions'])
         seen = set()
         try:
             submitted_arguments={}

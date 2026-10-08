@@ -1,6 +1,5 @@
 """Authenticate frozen artifacts without depending on legacy triplet catalogs."""
 from copy import deepcopy
-import re
 
 from ..entry_candidates import CandidateCatalog
 from ..harness_context.completeness import HarnessContextCompletenessValidator
@@ -12,6 +11,7 @@ from ..minimal_ft.validation import MinimalFTValidator
 from ..semantic_discovery.models import digest
 from ..semantic_discovery.tools import RepositoryIndex
 from ..sfg_adapter import load_sfg_artifacts
+from ..source_snapshot import authenticated_c_source
 
 
 def load_frozen_inputs(store, ft_id):
@@ -25,16 +25,7 @@ def load_frozen_inputs(store, ft_id):
             data = stream.read(2 * 1024 * 1024 + 1)
         if len(data) > 2 * 1024 * 1024:
             raise ValueError("indexed source exceeds validation limit")
-        text = data.decode("utf-8")
-        normalized = re.sub(r"\s+", "", text)
-        for function in snapshot.artifacts.functions:
-            if function["file"] == filename and function.get("defined") and (
-                    function.get("body", "") not in text or re.sub(r"\s+", "", function["signature"].rstrip(";")) not in normalized):
-                raise ValueError("live source differs from the frozen function snapshot")
-        for struct in (*snapshot.artifacts.structs, *snapshot.artifacts.callback_typedefs):
-            # Phase 1 normalizes declaration whitespace, unlike body text.
-            if struct["file"] == filename and re.sub(r"\s+", "", struct["declaration"]) not in normalized:
-                raise ValueError("live source differs from the frozen type snapshot")
+        authenticated_c_source(snapshot.artifacts, filename, data)
     directory = store.minimal_ft_run(ft_id)
     ft = _load_json(_owned(directory / "minimal_ft.json", store.root))
     metadata = _load_json(_owned(directory / "metadata.json", store.root))
@@ -52,6 +43,9 @@ def load_frozen_inputs(store, ft_id):
     root = context_directory(store, ft_id)
     marker = _load_json(_owned(root / "metadata.json", store.root))
     config = marker["configuration"]
+    from ..harness_context.obligations import VERSION as OBLIGATION_VERSION
+    if config.get("semantic_obligation_graph_version") != OBLIGATION_VERSION:
+        raise ValueError("frozen Context predates the Semantic Obligation Graph policy; rebuild Context before generation")
     if (config["minimal_ft_digest"] != digest(ft) or config["minimal_ft_metadata_digest"] != digest(metadata)
             or config["source_fingerprint"] != snapshot.source_fingerprint
             or config["functions_fingerprint"] != snapshot.functions_fingerprint):

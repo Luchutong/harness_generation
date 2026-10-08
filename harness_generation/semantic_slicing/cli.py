@@ -26,6 +26,8 @@ def main(argv=None, *, model=None):
     parser.add_argument("--env-file", type=Path)
     parser.add_argument("--model")
     parser.add_argument("--thinking", choices=("disabled", "enabled"))
+    parser.add_argument("--agent-timeout", type=float, choices=(60.0, 120.0), default=60.0,
+                        help="Per-request transport timeout; no additional calls or SDK retries")
     parser.add_argument("--candidate", action="append", default=[], help="Accepted function ID or candidate ID; repeatable")
     parser.add_argument("--max-candidates", type=_nonnegative)
     parser.add_argument("--max-discovered-functions", type=_nonnegative, default=32)
@@ -37,6 +39,8 @@ def main(argv=None, *, model=None):
     try:
         if model is not None and args.model:
             raise ValueError("cannot combine injected agent model and --model")
+        if model is not None and args.agent_timeout != 60.0:
+            raise ValueError("cannot override transport timeout of an injected agent model")
         if args.env_file:
             load_environment_file(args.env_file)
         budget = ValidationBudget(**{name: getattr(args, name) for name in ValidationBudget().to_dict()})
@@ -56,7 +60,7 @@ def main(argv=None, *, model=None):
             requested_ids.add(matches[0].function_id)
         if args.candidate:
             accepted = [(c, v) for c, v in accepted if c.function_id in requested_ids]
-        config = agent_configuration(args.provider, model=args.model, thinking=args.thinking)
+        config = agent_configuration(args.provider, model=args.model, thinking=args.thinking, timeout=args.agent_timeout)
         descriptor = model or _ModelDescriptor(config)
         for candidate, validation in accepted:
             frontier = build_frontier(store, artifacts, catalog, candidate, validation)

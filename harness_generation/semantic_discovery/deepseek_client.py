@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import math
 import os
+import time
 from typing import Mapping
 from urllib.parse import urlparse
 
@@ -89,6 +91,10 @@ class DeepSeekAgentModel:
         request["request_payload_digest"] = digest({"model": self.model, "messages": messages,
             "tools": tools, "max_tokens": self.config.max_tokens,
             "extra_body": {"thinking": {"type": self.config.thinking}}})
+        request.update(request_started_utc=datetime.now(timezone.utc).isoformat(),
+                       request_timeout_seconds=self.config.timeout,
+                       request_max_tokens=self.config.max_tokens, sdk_max_retries=0)
+        started = time.monotonic()
         try:
             response = self._client.chat.completions.create(
                 model=self.model, messages=list(messages), tools=list(tools),
@@ -96,6 +102,8 @@ class DeepSeekAgentModel:
                 extra_body={"thinking": {"type": self.config.thinking}},
             )
         except Exception as error:
+            request.update(request_finished_utc=datetime.now(timezone.utc).isoformat(),
+                           request_elapsed_seconds=round(time.monotonic() - started, 6))
             label = "DeepSeek" if self.provider == "deepseek" else self.provider
             failure = AgentModelError(f"{label} request or response failed")
             failure.diagnostics = provider_error_observation(error, request, secrets)
@@ -104,6 +112,8 @@ class DeepSeekAgentModel:
             if type(status) is int and 100 <= status <= 599:
                 failure.http_status = status
             raise failure from None
+        request.update(request_finished_utc=datetime.now(timezone.utc).isoformat(),
+                       request_elapsed_seconds=round(time.monotonic() - started, 6))
         try:
             choice = response.choices[0]
             message = choice.message

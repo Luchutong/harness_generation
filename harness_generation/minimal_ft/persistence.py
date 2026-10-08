@@ -1,11 +1,10 @@
 """Artifact-only input verification, atomic output and compatible cache reuse."""
 from __future__ import annotations
 
-import hashlib
 import json
 
 from ..records import write_json
-from ..semantic_discovery.models import canonical, digest
+from ..semantic_discovery.models import digest
 from .models import POLICY_VERSION, SCHEMA_VERSION, SliceInput, canonical_slice
 from .validation import MinimalFTValidator, issue
 
@@ -33,147 +32,18 @@ def _owned(path, root):
     return path
 
 
-class _JSONStream:
-    """Read one legacy array record at a time, including very large FT catalogs."""
-    def __init__(self, stream):
-        self.stream, self.buffer, self.position, self.ended = stream, "", 0, False
-        self.decoder = json.JSONDecoder(object_pairs_hook=_unique_object, parse_constant=_bad_constant)
+def load_legacy_inputs(store, anchors, *, enabled=False):
+    """Keep the input record shape without consulting legacy FT artifacts.
 
-    def fill(self):
-        chunk = self.stream.read(1024 * 1024)
-        self.buffer = self.buffer[self.position:] + chunk
-        self.position = 0
-        if not chunk:
-            self.ended = True
-
-    def peek(self):
-        while True:
-            while self.position < len(self.buffer) and self.buffer[self.position].isspace():
-                self.position += 1
-            if self.position < len(self.buffer):
-                return self.buffer[self.position]
-            if self.ended:
-                return ""
-            self.fill()
-
-    def expect(self, token):
-        if self.peek() != token:
-            raise ValueError("invalid legacy JSON structure")
-        self.position += 1
-
-    def value(self):
-        self.peek()
-        while True:
-            try:
-                value, end = self.decoder.raw_decode(self.buffer, self.position)
-                # A number at a chunk boundary may be incomplete. Read once
-                # more before accepting it or the following punctuation.
-                if end == len(self.buffer) and not self.ended:
-                    self.fill()
-                    continue
-                self.position = end
-                return value
-            except json.JSONDecodeError:
-                if self.ended:
-                    raise
-                self.fill()
-
-
-def iter_legacy_records(path, array_key):
-    with path.open(encoding="utf-8") as stream:
-        reader = _JSONStream(stream)
-        reader.expect("{")
-        seen = set()
-        while reader.peek() != "}":
-            key = reader.value()
-            if not isinstance(key, str) or key in seen:
-                raise ValueError("invalid legacy JSON key")
-            seen.add(key)
-            reader.expect(":")
-            if key == array_key:
-                reader.expect("[")
-                while reader.peek() != "]":
-                    yield reader.value()
-                    if reader.peek() != "]":
-                        reader.expect(",")
-                        if reader.peek() == "]":
-                            raise ValueError("trailing array comma")
-                reader.expect("]")
-            else:
-                reader.value()
-            if reader.peek() != "}":
-                reader.expect(",")
-                if reader.peek() == "}":
-                    raise ValueError("trailing object comma")
-        reader.expect("}")
-        if reader.peek() or array_key not in seen:
-            raise ValueError("invalid legacy catalog")
-
-
-def load_legacy_inputs(store, anchors, *, enabled=True):
-    result = {anchor: {"found": False, "function_ids": set(), "ft_ids": set(), "oversized_frontier": set(),
-                       "relation_facts": [], "comparison_status": "absent", "diagnostics": []} for anchor in anchors}
-    manifest = {"enabled": enabled}
-    if not enabled:
-        return result, manifest
-    for path, key in ((store.triplets, "triplets"), (store.triplet_exclusions, "excluded")):
-        _owned(path, store.root)
-        if not path.is_file():
-            manifest[path.name] = None
-            continue
-        checksum = hashlib.sha256()
-        with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                checksum.update(chunk)
-        manifest[path.name] = checksum.hexdigest()
-        temporary = {anchor: {"function_ids": set(), "ft_ids": set(), "oversized_frontier": set(),
-                              "facts": [], "found": False} for anchor in anchors}
-        try:
-            for record in iter_legacy_records(path, key):
-                if not isinstance(record, dict):
-                    raise ValueError("legacy records must be objects")
-                anchor = (record.get("isf", {}).get("function_id") if path == store.triplets
-                          and isinstance(record.get("isf"), dict) else record.get("anchor_function_id"))
-                if not isinstance(anchor, str) or anchor not in temporary:
-                    continue
-                target = temporary[anchor]
-                if path == store.triplets:
-                    target["found"] = True
-                    if isinstance(record.get("id"), str):
-                        target["ft_ids"].add(record["id"])
-                    for function in record.get("functions", []):
-                        if isinstance(function, dict) and isinstance(function.get("function_id"), str):
-                            target["function_ids"].add(function["function_id"])
-                    relation_evidence = record.get("metadata", {}).get("relation_evidence", {})
-                    facts = [*relation_evidence.get("strong", []), *record.get("ownership_relations", [])]
-                else:
-                    frontier = record.get("frontier", {})
-                    target["oversized_frontier"].update(fid for fid in frontier.get("function_ids", []) if isinstance(fid, str))
-                    facts = frontier.get("relation_evidence", {}).get("strong", [])
-                for fact in facts:
-                    if isinstance(fact, dict):
-                        target["facts"].append({"fact": fact, "provenance": {"artifact": path.name,
-                            "kind": "legacy_relation_evidence", "record_id": record.get("id"), "fact_digest": digest(fact)}})
-        except (OSError, UnicodeError, ValueError, TypeError, AttributeError):
-            for target in result.values():
-                target["comparison_status"] = "invalid"
-                target["diagnostics"].append({"code": "legacy_artifact_invalid", "artifact": path.name})
-            continue
-        for anchor, target in temporary.items():
-            previous = result[anchor]
-            previous["function_ids"].update(target["function_ids"])
-            previous["ft_ids"].update(target["ft_ids"])
-            previous["oversized_frontier"].update(target["oversized_frontier"])
-            previous["relation_facts"].extend(target["facts"])
-            previous["found"] |= target["found"]
-            if previous["comparison_status"] != "invalid":
-                previous["comparison_status"] = "available"
-    # Public input records contain only canonical JSON values, never sets.
-    for target in result.values():
-        for key in ("function_ids", "ft_ids", "oversized_frontier"):
-            target[key] = sorted(target[key])
-        target["relation_facts"] = sorted(target["relation_facts"], key=canonical)
-    return result, manifest
+    ``store`` and ``enabled`` remain accepted for fixture/data compatibility.
+    HG always supplies empty legacy evidence and a disabled manifest, even when
+    a caller passes ``enabled=True``. No artifact path is inspected or read.
+    """
+    result = {anchor: {"found": False, "function_ids": [], "ft_ids": [],
+                       "oversized_frontier": [], "relation_facts": [],
+                       "comparison_status": "absent", "diagnostics": []}
+              for anchor in anchors}
+    return result, {"enabled": False}
 
 
 def load_slice_input(store, cid, *, legacy=None):
@@ -198,6 +68,12 @@ def load_slice_input(store, cid, *, legacy=None):
     if (not isinstance(meta.get("configuration"), dict)
             or meta.get("configuration_fingerprint") != digest(meta.get("configuration"))):
         errors.append(issue("slice_configuration_digest_mismatch", "metadata.json"))
+    from ..semantic_slicing.persistence import effect_question_policy_versions
+    configuration = meta.get("configuration")
+    for key, expected in effect_question_policy_versions().items():
+        if not isinstance(configuration, dict) or configuration.get(key) != expected:
+            errors.append(issue("slice_effect_question_policy_mismatch", "metadata.configuration." + key,
+                                {"expected": expected, "received": configuration.get(key) if isinstance(configuration, dict) else None}))
     records, events = documents["evidence"].get("records"), documents["trace"].get("events")
     record_ids, issued = [], set()
     if not isinstance(records, list) or not isinstance(events, list):

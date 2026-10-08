@@ -8,7 +8,7 @@ from ..semantic_discovery.tools import _walk, _text
 MEMORY_HELPERS = {"malloc", "calloc", "realloc", "free", "memcpy", "memmove", "memset", "memcmp",
                   "strlen", "strnlen", "strcmp", "strncmp"}
 HEADERS = {"stddef.h", "stdint.h", "stdlib.h", "string.h", "limits.h", "stdbool.h", "stddef", "cstddef", "cstdint", "cstdlib", "cstring"}
-CODE_VALIDATOR_VERSION = "frozen_plan_code_v3"
+CODE_VALIDATOR_VERSION = "frozen_plan_code_v8"
 
 
 def _known_guards(code, language):
@@ -121,8 +121,11 @@ def validate_code(code, plan):
         field_pattern = r'\(\s*\*\s*(\w+)\s*\)'
         callback_fields.update(re.findall(field_pattern, declaration))
     calls, positions = Counter(), {}
+    from .recipe_validation import native_pointer_cast_argument
     for node in _walk(root):
         if node.type != "call_expression":
+            continue
+        if native_pointer_cast_argument(node, source) is not None:
             continue
         callee = node.child_by_field_name("function")
         name = _text(callee, source).removeprefix("std::").removeprefix("::") if callee else ""
@@ -146,11 +149,19 @@ def validate_code(code, plan):
                     errors.append("api_call_arity_mismatch")
         elif name not in MEMORY_HELPERS | helper_names:
             errors.append("call_outside_plan")
-    expected_calls = Counter(row["symbol"] for row in plan["call_sequence"] + plan["cleanup_sequence"])
+    expected_calls = Counter(row["symbol"] for row in plan["call_sequence"] + plan["cleanup_sequence"]
+        if row.get('invocation_kind') not in {'callback', 'internal'})
     if calls != expected_calls:
         errors.append("required_invocation_count_mismatch")
     names = {row["function_id"]: row["symbol"] for row in plan["api_declarations"]}
+    for row in plan['call_sequence']:
+        if row.get('invocation_kind') in {'callback', 'internal'}:
+            positions[row['symbol']] = positions.get(names[row['via_function_id']], [])
+    internal_pairs = {(row['via_function_id'], row['function_id']) for row in plan['call_sequence']
+                      if row.get('invocation_kind') == 'internal'}
     for before, after in plan["ordering_edges"]:
+        if (before, after) in internal_pairs:
+            continue  # Source certificate fixes execution inside the caller.
         if positions.get(names[before]) and positions.get(names[after]) and max(positions[names[before]]) >= min(positions[names[after]]):
             errors.append("required_call_order_violated")
     from .recipe_validation import validate_recipe_bindings

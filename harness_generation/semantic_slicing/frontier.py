@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import cached_property
-import json
 import re
 
 from ..ft_relations import LegacyStructuralClosure
@@ -125,29 +124,6 @@ def build_frontier(store, artifacts, catalog, candidate, validation):
             extra_relations.extend(frontier.get("relation_evidence", {}).get("strong", []))
 
     consume_oversized(diagnostics, "candidate_discovery/construction")
-    # Optional legacy FT records can be enormous. The complete graph/Phase 1
-    # frontier and embedded oversized diagnostics remain available in that case.
-    for path in (store.triplets, store.triplet_exclusions):
-        if not path.exists():
-            provenance["optional_artifacts"][path.name] = "absent"
-            continue
-        if path.stat().st_size > 8 * 1024 * 1024:
-            provenance["optional_artifacts"][path.name] = {"skipped": "exceeds_8MiB",
-                                                        "size": path.stat().st_size}
-            provenance["warnings"].append(f"{path.name}: use Phase 1 and embedded construction frontier")
-            continue
-        document = json.loads(path.read_text(encoding="utf-8"))
-        provenance["optional_artifacts"][path.name] = digest(document)
-        if path == store.triplet_exclusions:
-            consume_oversized(document.get("excluded", []), path.name)
-        else:
-            for triplet in document.get("triplets", []):
-                if triplet.get("isf", {}).get("function_id") != anchor:
-                    continue
-                for function in triplet.get("functions", []):
-                    include(function["function_id"], path.name, weak={"kind": "legacy_ft_membership"})
-                extra_relations.extend(triplet.get("metadata", {}).get("relation_evidence", {}).get("strong", []))
-
     seed = set(rows)
     for kind, records, origin in (("ownership", artifacts.ownership, "ownership.json"),
                                   ("explicit_usage_pattern", artifacts.usage_patterns, "usage_patterns.json")):

@@ -66,6 +66,8 @@ def shared_ready(tmp_path, *, source=SHARED, cleanup_ownership=None, feed_initia
     parse, feed, create, destroy = [ids[n] for n in ("parse", "feed", "create", "destroy")]
     specs = {k: v for k, v in context_specs(ids).items() if k[0] != parse}
     specs.update(direct_specs(feed))
+    # feed stores fuzz bytes until parse/destroy, beyond feed's return.
+    specs[(feed, "ownership")]["value"]["entries"][0]["lifetime"] = "until_context_cleanup"
     for fid in (feed, parse):
         rid = "resource_model_" + ("feed" if fid == feed else "parse")
         specs[(fid, "lifecycle")] = {"value": lifecycle_value(fid, rid, "Context", "ctx", create, destroy),
@@ -109,6 +111,7 @@ def registered_ready(tmp_path):
         "dependencies": [{**dep, "required_by": fid}]}
     specs[(register, "argument_construction")] = {"value": {"arguments": [argument("ctx", "derived"), argument("table", "zero_init"), argument("userdata", "zero_init")]}}
     specs[(register, "ownership")] = {"value": {"entries": [owner("ctx"), owner("table"), owner("userdata")]}}
+    specs[(register, "ownership")]["value"]["entries"][2]["lifetime"] = "until_context_cleanup"
     specs[(register, "buffer_length")] = {"status": "not_applicable", "value": {"applicable": False, "links": []}}
     specs[(register, "callback")] = {"value": {"callbacks": [cb("ctx.read", userdata="userdata"), cb("table.read")]}}
     issued_flow(prepared)
@@ -203,7 +206,11 @@ def test_resource_same_type_reassignment_and_control_flow_never_force_merge(tmp_
     source = SHARED[:SHARED.index("void usage")] + "void usage(const unsigned char *data, size_t size) {" + usage + "}\n"
     prepared, run, _ = shared_ready(tmp_path, source=source)
     assert_gate(run, "incomplete")
-    assert any(g["code"] in {"shared_resource_identity_unresolved", "resource_identity_multiple_origins"} for g in run.completeness["hard_missing"])
+    if 'if(size)' in usage:
+        assert not run.context['construction_contract']['local_chains']
+        assert any(g['kind'] in {'state', 'argument_construction'} for g in run.completeness['hard_missing'])
+    else:
+        assert any(g["code"] in {"shared_resource_identity_unresolved", "resource_identity_multiple_origins"} for g in run.completeness["hard_missing"])
 
 
 def test_nul_without_length_link_is_derived_only_from_issued_string_evidence(tmp_path):
@@ -213,7 +220,8 @@ def test_nul_without_length_link_is_derived_only_from_issued_string_evidence(tmp
     specs[(fid, "buffer_length")] = {"status": "not_applicable", "value": {"applicable": False, "links": []}}
     run, _ = mine(prepared, specs)
     assert_gate(run)
-    assert run.context["buffer_length_contract"]["links"][0]["derived_by"] == "input-representation-v1"
+    from harness_generation.harness_context.input_contracts import VERSION
+    assert run.context["buffer_length_contract"]["links"][0]["derived_by"] == VERSION
     assert run.context["facts"] != []  # raw fact remains not_applicable, projection is replayable
 
 
@@ -400,11 +408,16 @@ def test_soft_unknown_resume_stays_unknown_and_needs_zero_model_calls(tmp_path):
     prepared = setup(tmp_path, CONTEXT, roles={"parse": ("core", "accepted_anchor"), "create": ("support", "resource_creation"),
         "destroy": ("support", "resource_cleanup"), "set_logger": ("support", "minimal_configuration")})
     specs = context_specs(prepared[0][-1])
-    # An unrelated optional SUPPORT remains genuinely unknown.
-    run, _ = mine(prepared, specs, query_type="Context", persist=True)
+    # A closed Gate leaves unrelated optional exploration open; an existing
+    # unresolved investigation remains unknown as well. Neither needs a call.
+    run, model = mine(prepared, specs, query_type="Context", persist=True)
     assert_gate(run)
-    previous = [r for r in run.requirements["requirements"] if r["status"] == "unresolved"]
+    previous = {r["requirement_id"]: r["status"] for r in run.requirements["requirements"]
+                if r["status"] in {"open", "unresolved"}}
     assert previous
+    logger = prepared[0][-1]["set_logger"]
+    assert not any(json.loads(next(m["content"] for m in call["messages"] if m["role"] == "user"))["requirement"]["subject_function_id"] == logger
+                   for call in model.calls)
     # Reuse the same FT and snapshot; only budgets/counters reset.
     from harness_generation.harness_context.models import MiningState
     from harness_generation.harness_context.tools import HarnessContextTools
@@ -414,7 +427,8 @@ def test_soft_unknown_resume_stays_unknown_and_needs_zero_model_calls(tmp_path):
     resumed, model = mine(again, specs, query_type="Context", persist=True, resume=True)
     assert_gate(resumed)
     assert not model.calls and resumed.metadata["metrics"]["model_calls"] == 0
-    assert {r["requirement_id"] for r in resumed.requirements["requirements"] if r["status"] == "unresolved"} == {r["requirement_id"] for r in previous}
+    assert {r["requirement_id"]: r["status"] for r in resumed.requirements["requirements"]
+            if r["status"] in {"open", "unresolved"}} == previous
 
 
 def test_callback_external_context_claim_without_fuzz_binding_remains_blocked(tmp_path):
@@ -474,7 +488,8 @@ def test_external_callback_has_verified_harness_construction_and_unchanged_model
     proof = run.context["construction_contract"]["sources"][0]
     assert proof["kind"] == "public_callback_object" and proof["escape_analysis"]
     assert {a["field"] for a in proof["assignments"]} == {"consume", "userdata"}
-    raw = next(f for f in run.context["facts"] if f["predicate"] == "argument_construction")
+    raw = next(f for f in run.context["facts"] if f["predicate"] == "argument_construction"
+        and any(a['parameter']=='ctx' for a in f['value']['arguments']))
     assert next(a for a in raw["value"]["arguments"] if a["parameter"] == "ctx")["construction"] == "zero_init"
     arg = next(a for a in run.context["argument_contract"]["arguments"] if a["parameter"] == "ctx")
     assert arg["construction"] == "zero_init" and arg["construction_source"] == proof["construction_id"]
@@ -501,8 +516,8 @@ def test_shared_context_source_proof_covers_only_local_lifecycle_and_order(tmp_p
         if r["subject_function_id"] == prepared[0][-1]["parse"] and r["kind"] in {"lifecycle", "call_order"}:
             r.update(status="unresolved", evidence_ids=[])
     context = build_context(prepared[1], rows, facts, prepared[3], prepared[4].evidence)
-    assert {r["predicate"] for r in context["framework_satisfied_requirements"]} == {"lifecycle", "call_order", "argument_construction"}
-    assert {r["predicate"] for r in context["framework_satisfied_requirements"] if r.get('proof_kind')!=RECONCILER_VERSION} == {"lifecycle", "call_order"}
+    assert {r["predicate"] for r in context["framework_satisfied_requirements"]} == {"lifecycle", "call_order", "argument_construction", "state"}
+    assert {r["predicate"] for r in context["framework_satisfied_requirements"] if r.get('proof_kind')!=RECONCILER_VERSION} == {"lifecycle", "call_order", "argument_construction", "state"}
     assert {r["status"] for r in rows if r["kind"] in {"lifecycle", "call_order"} and r["subject_function_id"] == prepared[0][-1]["parse"]} == {"unresolved"}
     proof = context["construction_contract"]["local_chains"][0]
     assert proof["state_transitions"] == [{"before": prepared[0][-1]["feed"], "after": prepared[0][-1]["parse"], "fields": ["data", "size"]}]
@@ -535,15 +550,22 @@ def test_callback_field_recipe_satisfies_unknown_init_but_not_an_explicit_api(tm
         assert run.context["lifecycle_contract"]["resources"][0]["initialization"] == {"mandatory": False, "api": None}
 
 
-def test_exact_cleanup_consumes_owned_parameter_without_rewriting_raw_fact(tmp_path):
-    prepared, run, _ = shared_ready(tmp_path, cleanup_ownership="owned")
-    assert_gate(run)
+@pytest.mark.parametrize('ownership', ['unknown', 'transferred', 'owned'])
+def test_cleanup_projection_preserves_explicit_ownership_claims(tmp_path, ownership):
+    prepared, run, _ = shared_ready(tmp_path, cleanup_ownership=ownership)
+    assert_gate(run, 'incomplete' if ownership == 'owned' else 'complete')
     fid = prepared[0][-1]["destroy"]
     raw = next(f for f in run.context["facts"] if f["function_id"] == fid and f["predicate"] == "ownership")
-    assert raw["value"]["entries"][0]["ownership"] == "owned"
+    assert raw["value"]["entries"][0]["ownership"] == ownership
     projected = next(o for o in run.context["ownership_contract"]["entries"] if o["function_id"] == fid)
-    assert projected["ownership"] == "transferred" and projected["release_api"] is None
-    assert any(s["kind"] == "cleanup_consumption" for s in run.context["construction_contract"]["sources"])
+    if ownership == 'owned':
+        # An explicit owned claim with no release API must be repaired by the
+        # Agent; source projection may fill unknowns but cannot silently erase it.
+        assert projected['ownership'] == 'owned'
+        assert any(g['code'] == 'mandatory_cleanup_unresolved' for g in run.completeness['hard_missing'])
+    else:
+        assert projected["ownership"] == "transferred" and projected["release_api"] is None
+        assert any(s["kind"] == "cleanup_consumption" for s in run.context["construction_contract"]["sources"])
 
 
 def test_nonexact_release_does_not_certify_cleanup_consumption(tmp_path):
@@ -567,8 +589,9 @@ def test_feed_is_a_state_transition_not_a_second_resource_initializer(tmp_path):
     prepared, run, _ = shared_ready(tmp_path, feed_initialization=True)
     assert_gate(run)
     fid = prepared[0][-1]["parse"]
-    raw = next(f for f in run.context["facts"] if f["function_id"] == fid and f["predicate"] == "lifecycle")
-    assert raw["value"]["resources"][0]["initialization"]["api"] == prepared[0][-1]["feed"]
+    assert not any(f['function_id']==fid and f['predicate']=='lifecycle' for f in run.context['facts'])
+    req=next(r for r in run.requirements['requirements'] if r['subject_function_id']==fid and r['kind']=='lifecycle')
+    assert req['requirement_id'] in run.completeness['framework_satisfied_requirements']
     assert all(r["initialization"] == {"mandatory": False, "api": None} for r in run.context["lifecycle_contract"]["resources"])
 
 

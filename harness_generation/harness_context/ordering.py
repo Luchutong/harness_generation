@@ -3,7 +3,7 @@ from ..semantic_discovery.models import canonical
 from .value_flow import body_tree, complete_bodies
 from ..semantic_discovery.tools import _walk, _text
 
-VERSION = "provenance-ordering-v1"
+VERSION = "provenance-ordering-v2"
 
 
 def field_accesses(function, parameter, writes):
@@ -62,8 +62,22 @@ def ordering_graph(context, snapshot, records):
                 add(initializer, fid, "hard", "resource_initialization_before_use", row, rid)
         if row["cleanup"]["mandatory"] and row["cleanup"]["api"] in bodies:
             add(fid, row["cleanup"]["api"], "hard", "resource_use_before_cleanup", row, rid)
+    # Type-erased callback userdata need not have its own lifecycle row. Its
+    # canonical origin still shares the producer and cleanup of that resource.
+    for selected in context.get('canonical_construction', {}).get('parameters', []):
+        recipe = selected.get('recipe') if selected['status'] == 'resolved' else None
+        if not recipe or recipe['kind'] not in {'creator_call', 'out_parameter_call'}:
+            continue
+        fid, rid, producer = selected['function_id'], recipe['resource_id'], recipe['producer_api']
+        if fid not in bodies or producer not in bodies:
+            continue
+        add(producer, fid, 'hard', 'canonical_origin_before_consumer', selected, rid)
+        for resource in resources:
+            cleanup = resource['cleanup']
+            if resource['resource_id'] == rid and cleanup['mandatory'] and cleanup['api'] in bodies:
+                add(fid, cleanup['api'], 'hard', 'canonical_use_before_cleanup', selected, rid)
     for row in context["callback_contract"]["callbacks"]:
-        if row["mandatory"] and row.get("declaration_identity") and row["setup_api"] in bodies and dependence(row["setup_api"], row["function_id"]):
+        if row["mandatory"] and row.get("declaration_identity") and row.get('registration',{}).get('kind') != 'function_binding' and row["setup_api"] in bodies and dependence(row["setup_api"], row["function_id"]):
             add(row["setup_api"], row["function_id"], "hard", "callback_registration_before_use", row)
     for row in context["state_contract"]["preconditions"]:
         api, fid = row["api"], row["function_id"]

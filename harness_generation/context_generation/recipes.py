@@ -70,6 +70,14 @@ def lower_recipes(context, active, snapshot):
             recipe['storage_type']=c_type
             recipe['binding_expression']=('&' if parameter.get('pointer_depth',0) else '')+recipe['storage_variable']
             recipe['initialization']='all_zero' if kind=='stack_zero_init' else 'storage_only'
+        elif kind=='stack_array_storage':
+            if (type(recipe.get('array_elements')) is not int or not 1 <= recipe['array_elements'] <= 4096
+                    or recipe.get('element_type') not in {'char','signed char','unsigned char'}
+                    or parameter.get('pointer_depth') != 1 or parameter.get('base_type') != recipe['element_type']):
+                raise ValueError('array storage needs one bounded byte array')
+            recipe['storage_variable']='hg_array_'+pid[-12:]
+            recipe['storage_type']=recipe['element_type']
+            recipe['binding_expression']=recipe['storage_variable']
         elif kind=='out_parameter_storage':
             if parameter.get('pointer_depth',0)<2 or not rid:
                 raise ValueError('out storage requires exact pointer cell and resource')

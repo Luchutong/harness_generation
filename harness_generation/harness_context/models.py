@@ -3,10 +3,10 @@ from dataclasses import asdict, dataclass, field
 
 from ..semantic_discovery.models import canonical, digest, DecisionSchemaError
 
-POLICY_VERSION = "ft-guided-harness-context-v1"
-REQUIREMENT_VERSION = "harness-requirements-v6"
-PROMPT_VERSION = "subject-effect-context-agent-v11"
-TOOL_VERSION = "ft-scoped-repository-v3"
+POLICY_VERSION = "source-grounded-harness-context-v18"
+REQUIREMENT_VERSION = "harness-requirements-v7"
+PROMPT_VERSION = "source-grounded-context-agent-v30"
+TOOL_VERSION = "ft-scoped-repository-v12"
 SCHEMA_VERSION = 1
 KINDS = ("input_binding", "argument_construction", "lifecycle", "return_semantics", "ownership",
          "buffer_length", "call_order", "callback", "state", "support_decision")
@@ -27,10 +27,15 @@ class ContextBudget:
     max_lines_per_read: int = 80
     max_chars_per_record: int = 12000
     max_terminal_repairs: int = 1
+    repair_reserve_model_calls: int = 4
+    repair_reserve_tool_calls: int = 8
+    max_preparation_tool_calls: int = 8
 
     def __post_init__(self):
         for name, value in asdict(self).items():
-            minimum = 0 if name in {"max_discovered_functions", "max_dependency_depth", "max_terminal_repairs"} else 1
+            minimum = 0 if name in {"max_discovered_functions", "max_dependency_depth", "max_terminal_repairs",
+                                   "repair_reserve_model_calls", "repair_reserve_tool_calls",
+                                   "max_preparation_tool_calls"} else 1
             if type(value) is not int or value < minimum:
                 raise ValueError(f"{name} must be an integer >= {minimum}")
         if self.max_terminal_repairs not in (0, 1):

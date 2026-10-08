@@ -197,6 +197,9 @@ class RepositoryTools:
 
     def _emit(self, tool: str, arguments: dict, record: dict) -> dict:
         record = {"tool": tool, "arguments": arguments, "origin": "phase1_snapshot", **record}
+        source_hash = self.index.artifacts.source_hashes.get(record.get("source"))
+        if source_hash:
+            record.setdefault("source_sha256", source_hash)
         metadata_truncated = False
         # Enforce the entire per-record ceiling, including declarations/fields.
         for key in ("fields", "parameters", "aliases", "static_signals", "signature"):
@@ -301,14 +304,8 @@ class RepositoryTools:
             data = stream.read(2 * 1024 * 1024 + 1)
         if len(data) > 2 * 1024 * 1024:
             raise ValueError("source_file_too_large")
-        source = data.decode("utf-8")
-        for f in self.index.artifacts.functions:
-            if f["file"] == args["file"] and f.get("defined"):
-                if f.get("body", "") not in source:
-                    raise ValueError("source_snapshot_mismatch")
-        for s in self.index.artifacts.structs:
-            if s["file"] == args["file"] and s["declaration"] not in source:
-                raise ValueError("source_snapshot_mismatch")
+        from ..source_snapshot import authenticated_c_source, VERSION
+        source = authenticated_c_source(self.index.artifacts, args["file"], data)
         sha = hashlib.sha256(data).hexdigest()
         self.live_sources[args["file"]] = sha
         lines = source.splitlines(keepends=True)
@@ -317,4 +314,4 @@ class RepositoryTools:
         actual_end = min(end, len(lines))
         return [{"source": args["file"], "line_start": start, "line_end": actual_end,
                  "content": "".join(lines[start - 1:actual_end]),
-                 "origin": "owned_live_source", "source_sha256": sha}], 1
+                 "origin": "owned_live_source", "source_sha256": sha, "source_view": VERSION}], 1

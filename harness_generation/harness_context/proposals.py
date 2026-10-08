@@ -7,7 +7,7 @@ from ..semantic_discovery.models import digest, canonical
 from ..semantic_discovery.tools import _walk, _text
 from .value_flow import complete_bodies
 
-VERSION = "subject-effect-semantic-proposals-v4"
+VERSION = "subject-effect-semantic-proposals-v5"
 OWNERSHIP_KINDS = ("PointerParameter", "PointerReturn", "OutParameterPointee", "ResourceObject")
 
 
@@ -77,6 +77,9 @@ def registry(tools, requirements=()):
     candidates = []
     from .callbacks import callback_declarations
     from .evidence import callback_abis
+    from .proof_grounding import analyze
+    scope_bodies = set(bodies) & set(tools.scope_ids) - set(tools.excluded)
+    summaries = {fid: analyze(snapshot.functions[fid], snapshot, scope_bodies) for fid in sorted(scope_bodies)}
     for parent in parents:
         function = snapshot.functions[parent]
         callbacks = set().union(*(callback_abis(c["signature"]) for c in callback_declarations(function, snapshot)))
@@ -85,7 +88,8 @@ def registry(tools, requirements=()):
                 continue
             api = snapshot.functions[fid]
             from ..semantic_slicing.support_effects import bindings as effect_bindings
-            roles = effect_bindings(function, api, snapshot.functions, set(bodies))
+            summary = summaries[fid]
+            roles = effect_bindings(function, api, snapshot.functions, scope_bodies, release_summary=summary)
             api_callbacks = set().union(*(callback_abis(c['signature']) for c in callback_declarations(api, snapshot)))
             from ..semantic_slicing.core_proofs import processes_parameters
             direct_handler = bool(callbacks & callback_abis(api['signature'])) and processes_parameters(api)
@@ -104,7 +108,8 @@ def registry(tools, requirements=()):
                 candidates.append({"candidate_id": "support_candidate_" + digest(key)[:24],
                     "function_id": fid, "function": api["name"], "required_by": parent,
                     "reason": reason, "subject_bindings": sorted({canonical(s): s for s in subjects}.values(), key=canonical),
-                    "evidence_ids": sorted(bodies[fid]), "source_status": "issued_complete_body",
+                    "evidence_ids": sorted(set(bodies[fid]) | (set().union(*(bodies[f] for f in summary['source_function_ids']))
+                        if reason == 'cleanup' and summary['callback_bindings'] else set())), "source_status": "issued_complete_body",
                     "relation_strength": "source_subject_effect", "necessity_proven": False})
     fid = requirements[0]["subject_function_id"]
     from .value_roles import origin_catalog
@@ -116,6 +121,9 @@ def registry(tools, requirements=()):
         "subject_evidence_ids": sorted(eid for eid in bodies.get(fid, []) if visible[eid]['tool'] in
             {'get_function', 'read_source_range', 'find_function_argument_usages'}),
         "support_candidates": sorted(candidates, key=canonical),
+        "source_callback_bindings": sorted([{**row, 'root_function_id': fid,
+            'evidence_ids': sorted(set().union(*(bodies[f] for f in row['source_function_ids'])))}
+            for fid, summary in summaries.items() for row in summary['callback_bindings']], key=canonical),
         "issued_function_ids": sorted(set(bodies) & set(tools.scope_ids) - set(tools.excluded)),
         "parameter_names": [p["name"] for p in snapshot.functions[fid]["parameters"]],
         "evidence_ids": sorted(visible)}
@@ -137,7 +145,10 @@ def registry_update(tools):
     changes = {k: [v for v in signed[k] if v not in previous[k]] for k in
         ('ownership_subjects', 'support_candidates', 'input_length_choices', 'issued_function_ids', 'evidence_ids', 'subject_evidence_ids')}
     changes = {k: v for k, v in changes.items() if v}
-    return {'signed_proposal_registry_delta': changes} if changes else {}
+    output = {'signed_proposal_registry_delta': changes} if changes else {}
+    if signed['source_callback_bindings'] != previous['source_callback_bindings']:
+        output['source_callback_bindings_current'] = signed['source_callback_bindings']
+    return output
 
 
 def merge_registry(previous, output):
@@ -147,6 +158,8 @@ def merge_registry(previous, output):
     result = {**previous}
     for k, rows in output.get('signed_proposal_registry_delta', {}).items():
         result[k] = [*previous.get(k, []), *[r for r in rows if r not in previous.get(k, [])]]
+    if 'source_callback_bindings_current' in output:
+        result['source_callback_bindings'] = output['source_callback_bindings_current']
     return result
 
 

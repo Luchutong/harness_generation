@@ -9,18 +9,12 @@ import tree_sitter_c
 from ..semantic_discovery.models import digest, canonical
 from ..semantic_discovery.tools import _walk, _text
 
-VERSION = "core-inclusion-proof-v1"
+VERSION = "core-inclusion-proof-v2"
 
 
 def source_evidence(fid, functions, records):
-    function = functions[fid]
-    body = function.get("body")
-    if not body or not function.get("defined"):
-        return []
-    return sorted(eid for eid, r in records.items() if not r.get("truncated")
-        and r.get("tool") != "get_semantic_frontier" and body in r.get("content", "")
-        and (fid in {r.get("function_id"), r.get("caller_id")}
-             or r.get("tool") == "read_source_range" and r.get("source") == function["file"]))
+    from ..source_evidence import complete_bodies
+    return sorted(complete_bodies({fid: functions[fid]}, records).get(fid, []))
 
 
 def tree(function):

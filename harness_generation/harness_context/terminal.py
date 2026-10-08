@@ -5,7 +5,7 @@ import json
 from .models import obj, arr, enum, EIDS, STRING, DEPENDENCY_SCHEMA, VALUE_SCHEMAS
 from .models import validate_shape
 
-VERSION = 9
+VERSION = 10
 
 
 def constrain_origins(schema, catalog):
@@ -176,11 +176,15 @@ def terminal_schema(requirements, signed=None, snapshot=None):
             value["properties"]["required_by"]["items"] = enum(*parents)
         if signed is not None and req['kind'] == 'buffer_length' and any(
                 r['kind'] == 'input_binding' and r['subject_function_id'] == req['subject_function_id'] for r in requirements):
-            properties = value['properties']['links']['items']['properties']
+            full = deepcopy(value['properties']['links']['items'])
+            compact = deepcopy(full)
+            properties = compact['properties']
             for field in ('length_parameter', 'requires_nul_termination', 'binary_zero_allowed'):
                 properties.pop(field)
-                value['properties']['links']['items']['required'].remove(field)
-            value['properties']['links']['description'] = 'Reuse buffer_parameter from this group input binding; extent, NUL and binary-zero constraints are projected from that same binding.'
+                compact['required'].remove(field)
+            value['properties']['links']['items'] = {'anyOf': [compact, full]}
+            value['properties']['links']['description'] = ('For fuzz input, compact links reuse the exact input binding extent/NUL/binary-zero constraints. '
+                'Output/storage capacity links require the full explicit length_parameter, requires_nul_termination and binary_zero_allowed fields; they are not fuzz input.')
         evidence = arr(enum(*signed['evidence_ids'])) if signed is not None else EIDS
         if signed is not None:
             evidence['contains'] = enum(*signed['subject_evidence_ids'])
@@ -255,6 +259,8 @@ def expand_submission(value, requirements, signed=None, snapshot=None):
             from ..semantic_discovery.models import DecisionSchemaError
             for fact in result['facts']:
                 for link in fact['value']['links']:
+                    if all(k in link for k in ('length_parameter', 'requires_nul_termination', 'binary_zero_allowed')):
+                        continue  # Explicit output/length contracts retain their semantics for strict Gate checks.
                     matches = [b for b in input_values[req['subject_function_id']] if b['parameter'] == link['buffer_parameter']]
                     if len(matches) != 1:
                         raise DecisionSchemaError('buffer_length.links', link['buffer_parameter'], ['one selected input binding in the same group'])
@@ -284,6 +290,14 @@ def compact_submission(results, requirements, signed=None):
             if signed is not None and req['kind'] == 'buffer_length' and any(
                     r['kind'] == 'input_binding' and r['subject_function_id'] == req['subject_function_id'] for r in requirements):
                 for link in fact['value']['links']:
+                    inputs = [b for r in requirements if r['kind'] == 'input_binding'
+                        and r['subject_function_id'] == req['subject_function_id']
+                        for f in by_id[r['requirement_id']]['facts'] for b in f['value']['bindings']
+                        if b['parameter'] == link['buffer_parameter']]
+                    if len(inputs) != 1 or any(link.get(k) != inputs[0][v] for k, v in (
+                            ('length_parameter', 'size_parameter'), ('requires_nul_termination', 'nul_terminated'),
+                            ('binary_zero_allowed', 'binary_zero_allowed'))):
+                        continue
                     for field in ('length_parameter', 'requires_nul_termination', 'binary_zero_allowed'):
                         link.pop(field, None)
             if signed is not None and fact["predicate"] == "ownership":

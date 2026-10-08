@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import fnmatch
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -46,6 +47,7 @@ class ParseResult:
     warnings: tuple[str, ...]
     opaque_handles: tuple[OpaqueHandleInfo, ...] = ()
     callback_typedefs: tuple[dict, ...] = ()
+    source_hashes: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -78,10 +80,13 @@ class CProjectParser:
         raw_functions: list[_ParsedFunction] = []
         callback_typedefs = []
         warnings = []
+        source_hashes = {}
         for path in paths:
             relative = path.relative_to(project).as_posix()
             try:
-                source = _c_view(path.read_bytes())
+                raw_source = path.read_bytes()
+                source_hashes[relative] = hashlib.sha256(raw_source).hexdigest()
+                source = _c_view(raw_source)
                 tree = parser.parse(source)
                 errors = [node for node in _walk(tree.root_node)
                           if node.type == "ERROR" or getattr(node, "is_error", False)]
@@ -120,6 +125,7 @@ class CProjectParser:
             tuple(warnings),
             handles,
             tuple(callback_typedefs),
+            source_hashes,
         )
 
     def _source_files(self, project: Path) -> Iterable[Path]:
@@ -345,13 +351,27 @@ def _cplusplus_branch(keyword: str, condition: str) -> bool | None:
         return keyword == "ifdef"
     if not _CPLUSPLUS.search(expression):
         return None
-    stripped = expression
-    while stripped.startswith("(") and stripped.endswith(")"):
-        stripped = stripped[1:-1].strip()
+    def unwrap(value):
+        while value.startswith("(") and value.endswith(")"):
+            depth = 0
+            outer = True
+            for offset, char in enumerate(value):
+                depth += (char == "(") - (char == ")")
+                if depth == 0 and offset != len(value) - 1:
+                    outer = False
+                    break
+            if not outer or depth != 0:
+                break
+            value = value[1:-1].strip()
+        return value
+    stripped = unwrap(expression)
     if _CPLUSPLUS_NEGATED.fullmatch(stripped):
         return False
     if "||" not in stripped:
-        clauses = [part.strip(" ()\t") for part in stripped.split("&&")]
+        # strip(" ()") also removes the closing ')' of defined(...), which
+        # makes ordinary positive predicates unrecognizable. Only balanced
+        # parentheses enclosing the entire clause can be discarded.
+        clauses = [unwrap(part.strip()) for part in stripped.split("&&")]
         if any(_CPLUSPLUS_POSITIVE.fullmatch(part) for part in clauses):
             # A conjunction containing a positive __cplusplus predicate is
             # false in C. Comparisons such as `defined(__cplusplus) == 0`
@@ -963,6 +983,7 @@ def write_functions_json(result: ParseResult, path: Path, *, project: Path | Non
         "callback_typedefs": list(result.callback_typedefs),
         "functions": [function.to_dict() for function in result.functions],
         "warnings": list(result.warnings),
+        "source_hashes": dict(sorted(result.source_hashes.items())),
     }
     if project is not None:
         project_root = Path(project).resolve()

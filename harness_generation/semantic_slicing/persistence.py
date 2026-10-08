@@ -58,18 +58,36 @@ def load_accepted_candidates(store, catalog, index):
     return sorted(accepted, key=lambda pair: pair[0].function_id)
 
 
+def effect_question_policy_versions():
+    """Register both the projection and its independent bounded interpreter."""
+    from .effect_questions import VERSION as QUESTION_VERSION
+    from ..harness_context.proof_grounding import VERSION as INTERPRETER_VERSION
+    return {"effect_question_version": QUESTION_VERSION,
+            "effect_question_source_interpreter_version": INTERPRETER_VERSION}
+
+
 def run_configuration(catalog, frontier, budget, model, max_discovered_functions):
     from .agent import SYSTEM_PROMPT
     from .models import SLICE_SCHEMA, ROLE_REASONS
     from .core_proofs import VERSION as CORE_PROOF_VERSION
     from .proposals import VERSION as PROPOSAL_VERSION
     from .support_effects import VERSION as EFFECT_VERSION
+    from .source_exclusions import VERSION as EXCLUSION_PROOF_VERSION
     config = model.config.to_dict() if hasattr(model, "config") else {
         "provider": model.provider, "model": model.model}
-    return {"source_fingerprint": catalog.source_fingerprint, "discovery_fingerprint": digest(catalog.to_dict()),
+    from ..semantic_discovery.loop import TERMINAL_REPAIR_POLICY_VERSION
+    return {"terminal_repair_policy_version": TERMINAL_REPAIR_POLICY_VERSION,
+            **effect_question_policy_versions(),
+            "terminal_repair_allowed_categories": ["terminal_schema_error", "terminal_json_parse_error", "slice_role_choice_not_issued", "terminal_native_submission_missing"],
+            "extra_terminal_repair_last_round_only": True,
+            "max_terminal_repairs": 1,
+            "source_fingerprint": catalog.source_fingerprint, "discovery_fingerprint": digest(catalog.to_dict()),
             "policy_version": SLICE_POLICY_VERSION, "frontier_fingerprint": frontier.fingerprint,
             "core_inclusion_proof_version": CORE_PROOF_VERSION,
             "role_proposal_version": PROPOSAL_VERSION, "support_effect_version": EFFECT_VERSION,
+            "source_exclusion_proof_version": EXCLUSION_PROOF_VERSION,
+            "max_provider_recoveries": 1,
+            "max_protocol_recoveries": 1,
             "task_fingerprint": digest({"prompt": SYSTEM_PROMPT, "schema": SLICE_SCHEMA, "reasons": ROLE_REASONS}),
             "validation_fingerprint": digest(frontier.validation), "budget": budget.to_dict(),
             "max_discovered_functions": max_discovered_functions, "model": config}
@@ -81,6 +99,11 @@ def save_run(store, run, configuration):
 
 
 def load_compatible_slice(store, frontier, configuration, index, budget):
+    # This also rejects a caller presenting an old, internally consistent
+    # configuration instead of the current versioned configuration.
+    if (not isinstance(configuration, dict) or any(configuration.get(key) != value
+            for key, value in effect_question_policy_versions().items())):
+        return None
     documents = load_run_documents(store.semantic_slice_run(candidate_id(frontier.candidate.function_id)),
                                    configuration, index, canonical_name="slice")
     if documents is None:

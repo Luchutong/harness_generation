@@ -1,265 +1,115 @@
-"""Deterministic hard/soft missing checks. Model confidence is not a gate."""
+"""Generation gate: inspect only canonical semantic obligation closure."""
+from copy import deepcopy
+
 from ..semantic_discovery.models import digest, canonical
-from .api_closure import APIClosureValidator, callable_status
-from .evidence import HarnessContextValidator
 from .models import POLICY_VERSION
+from .obligations import SemanticObligationGraphBuilder, close_obligations, VERSION
 
 
 class HarnessContextCompletenessValidator:
     def validate(self, context, closure, ft, snapshot, requirements, resolutions, state):
-        from .requirements import HarnessRequirementBuilder
-        from .loop import expand_requirements
-        allowed = {r["function_id"] for r in ft["core_functions"] + ft["support_candidates"]} | set(state.discoveries)
-        errors = HarnessContextValidator().validate(context, ft, snapshot, requirements, state.evidence, allowed)
-        errors += APIClosureValidator().validate(closure, ft, snapshot, requirements, resolutions, state)
-        expected = HarnessRequirementBuilder().build(ft, snapshot)["requirements"]
-        expand_requirements(ft, snapshot, expected, closure)
-        descriptors = lambda rows: {row["requirement_id"]: {k: v for k, v in row.items() if k not in {"status", "evidence_ids", "resolution_attempt_failed"}} for row in rows}
-        if descriptors(requirements) != descriptors(expected) or len(requirements) != len(descriptors(requirements)):
-            errors.append({"code": "requirement_universe_changed"})
-        for req in requirements:
-            result = resolutions.get(req["requirement_id"])
-            if req["status"] not in {"open", "unresolved", "resolved", "not_applicable"} or (
-                    req["status"] != "open" and (not result or result["status"] != req["status"])):
-                errors.append({"code": "requirement_status_without_validated_resolution"})
-            if result and req["evidence_ids"] != sorted({eid for fact in result["facts"] for eid in fact["evidence_ids"]}):
-                errors.append({"code": "requirement_evidence_projection_mismatch"})
-        if context["dependencies"] != closure["unresolved_api_dependencies"]:
-            errors.append({"code": "context_dependency_projection_mismatch"})
-        core = set(context["core_apis"])
-        callable_ids = core | {r["function_id"] for r in closure["required_support_apis"]}
-        hard, soft = {}, []
-        reqs = {(r["subject_function_id"], r["kind"]): r for r in requirements}
-        framework_satisfied = {r["requirement_id"] for r in context["framework_satisfied_requirements"]}
-        def missing(fid, kind, code, rid=None, parameter=None):
-            req = reqs.get((fid, kind))
-            if req is None and kind == "lifecycle":
-                # A consumed SUPPORT parameter references its caller's resource.
-                # Fix its existing construction/ownership contract rather than
-                # emitting an unaddressable task or recursively creating it.
-                fallback = "argument_construction" if code.startswith("argument_") else "ownership"
-                req = reqs.get((fid, fallback))
-                if req is not None:
-                    kind = fallback
-            rid = rid or (req["requirement_id"] if req else None)
-            item = {"requirement_id": rid, "subject_function_id": fid, "kind": kind, "code": code,
-                    "question": req["question"] if req else "Resolve this explicit missing contract."}
-            if parameter is not None:
-                item["subject_parameter"] = parameter
-            if code == "argument_input_binding_unresolved":
-                item["question"] = f"Parameter {parameter} is marked input but has no direct fuzz binding or length relation. The fuzzer receives only bytes/size, not an external context. Resolve its construction using exact declaration/body evidence and update the corresponding lifecycle contract. Unknown creator/layout remains unresolved."
-            hard[digest(item)] = item
-        for req in requirements:
-            if req["status"] in {"open", "unresolved"}:
-                if req["mandatory"] and req["requirement_id"] not in framework_satisfied:
-                    missing(req["subject_function_id"], req["kind"], "mandatory_requirement_unresolved", req["requirement_id"])
-                elif not req["mandatory"]:
-                    soft.append({"requirement_id": req["requirement_id"], "kind": req["kind"], "code": "soft_unknown"})
-        for fid in core:
-            if callable_status(snapshot.functions[fid]) != "external_definition":
-                missing(fid, "input_binding", "core_api_accessibility_unresolved")
-        bindings = context["input_contract"]["bindings"]
-        paths = set(context["external_input_flow"]["reachable_functions"])
-        for fid in core - paths:
-            missing(fid, "input_binding", "core_fuzz_input_path_unresolved")
-        for binding in bindings:
-            parameter = next((p for p in snapshot.functions[binding["function_id"]].get("parameters", []) if p["name"] == binding["parameter"]), {})
-            if (binding["source"] == "fuzz_data" and parameter.get("is_pointer")
-                    and (binding["alignment"] == "unknown" or binding["binary_zero_allowed"] is None)):
-                missing(binding["function_id"], "input_binding", "input_constraints_unresolved")
-        arguments = context["argument_contract"]["arguments"]
-        resources = context["lifecycle_contract"]["resources"]
-        resource_keys = {r["resource_id"] for r in resources}
-        for fid in core:
-            for parameter in snapshot.functions[fid].get("parameters", []):
-                if (parameter.get("is_struct_like") or parameter.get("is_opaque_handle")) and not any(
-                        r["function_id"] == fid and r["subject_parameter"] == parameter["name"] for r in resources):
-                    missing(fid, "lifecycle", "context_lifecycle_unresolved")
-        for fid in callable_ids:
-            function = snapshot.functions[fid]
-            canonical_parameters = {r["parameter"]:r for r in context["canonical_construction"]["parameters"] if r["function_id"]==fid}
-            for parameter in function.get("parameters", []):
-                selection=canonical_parameters.get(parameter["name"])
-                if selection is None or selection["status"]!="resolved":
-                    missing(fid,"argument_construction", "construction_contract_conflict" if selection and selection["status"]=="conflict"
-                        else "canonical_construction_unresolved", parameter=parameter["name"])
-            values = {a["parameter"]: a for a in arguments if a["function_id"] == fid}
-            for parameter in function.get("parameters", []):
-                name = parameter["name"]
-                argument = values.get(name)
-                if not argument or argument["construction"] == "unknown":
-                    missing(fid, "argument_construction", "argument_construction_unresolved")
-                    continue
-                if argument["construction"] == "input" and not any(b["function_id"] == fid and (
-                    b["parameter"] == name and b["source"] == "fuzz_data" or b["size_parameter"] == name) for b in bindings):
-                    missing(fid, "argument_construction", "argument_input_binding_unresolved", parameter=name)
-                    if any(r["function_id"] == fid and r["subject_parameter"] == name and r["creation"]["kind"] == "input" for r in resources):
-                        missing(fid, "lifecycle", "input_resource_without_binding", parameter=name)
-                lifetimes = [r for r in resources if r["function_id"] == fid and r["subject_parameter"] == name]
-                if argument["construction"] in {"stack", "zero_init"} and lifetimes and any(r["creation"]["kind"] != "stack" for r in lifetimes):
-                    missing(fid, "lifecycle", "argument_resource_creation_mismatch")
-                callback_stub = argument["construction"] == "callback" and argument["api"] is None and any(
-                    c["function_id"] == fid and c["parameter"] == name and c.get("declaration_identity") for c in context["callback_contract"]["callbacks"])
-                if argument["construction"] in {"creator_api", "callback"} and argument["api"] not in callable_ids and not callback_stub:
-                    missing(fid, "argument_construction", "required_argument_api_unresolved")
-                if argument["resource_id"] is not None and argument["resource_id"] not in resource_keys:
-                    missing(fid, "lifecycle", "argument_resource_lifecycle_unresolved")
-                if parameter.get("is_opaque_handle") and argument["construction"] in {"stack", "zero_init"}:
-                    missing(fid, "argument_construction", "opaque_layout_unresolved")
-        owned = context["ownership_contract"]["entries"]
-        for fid in callable_ids:
-            function = snapshot.functions[fid]
-            entries = [entry for entry in owned if entry["function_id"] == fid]
-            for parameter in [p["name"] for p in function.get("parameters", []) if p.get("is_pointer")]:
-                if not any(e["parameter"] == parameter and not e["return_value"] and e["field"] is None
-                        and e.get('subject_kind', 'PointerParameter') == 'PointerParameter' for e in entries):
-                    missing(fid, "ownership", "parameter_ownership_unresolved")
-            from .proposals import ownership_subjects
-            for subject in ownership_subjects(fid, snapshot):
-                if subject['subject_kind'] == 'OutParameterPointee' and not any(
-                        e.get('subject_kind') == 'OutParameterPointee' and e['parameter'] == subject['parameter'] for e in entries):
-                    missing(fid, 'ownership', 'out_pointee_ownership_unresolved')
-            if function.get("return_pointer_depth", 0) and not any(e["return_value"] for e in entries):
-                missing(fid, "ownership", "return_ownership_unresolved")
-        for entry in owned:
-            if entry["ownership"] == "unknown" or entry["lifetime"] == "unknown":
-                missing(entry["function_id"], "ownership", "ownership_unresolved")
-            if entry["ownership"] == "owned" and entry["release_api"] not in callable_ids:
-                missing(entry["function_id"], "lifecycle", "mandatory_cleanup_unresolved")
-            if entry["return_value"] and entry["ownership"] == "owned" and entry["resource_id"] not in resource_keys:
-                missing(entry["function_id"], "lifecycle", "owned_return_lifecycle_unresolved")
-        for resource in resources:
-            fid = resource["function_id"]
-            if resource["creation"]["kind"] == "unknown" or resource["reuse"] == "unknown":
-                missing(fid, "lifecycle", "resource_creation_unresolved")
-            if resource["creation"]["kind"] == "creator_api" and resource["creation"]["api"] not in callable_ids:
-                missing(fid, "lifecycle", "creator_api_unresolved")
-            for action, code in (("initialization", "required_context_initialization_unresolved"), ("cleanup", "mandatory_cleanup_unresolved")):
-                if resource[action]["mandatory"] and resource[action]["api"] not in callable_ids:
-                    missing(fid, "lifecycle", code)
-        for precondition in context["state_contract"]["preconditions"]:
-            from .callbacks import field_initialization_complete
-            field_setup = precondition["kind"] == "initialized" and precondition["api"] is None and field_initialization_complete(context, precondition, snapshot)
-            if precondition["kind"] == "unknown" or precondition["kind"] != "none" and precondition["api"] not in callable_ids and not field_setup:
-                missing(precondition["function_id"], "state", "state_precondition_unresolved")
-        for gap in closure["unresolved_api_dependencies"]:
-            if gap["mandatory"]:
-                rid = gap.get("requirement_id") or next(iter(gap.get("requirement_ids", [])), None)
-                req = next((r for r in requirements if r["requirement_id"] == rid), None)
-                missing(req["subject_function_id"] if req else ft["anchor_function_id"], req["kind"] if req else "lifecycle",
-                        "required_api_unresolved", rid)
-            else:
-                soft.append({"function_id": gap.get("function_id"), "code": "optional_api_unknown"})
-        links = context["buffer_length_contract"]["links"]
-        for diagnostic in context['input_length_binding']['diagnostics']:
-            missing(diagnostic['function_id'], 'buffer_length', diagnostic['code'], parameter=diagnostic['buffer_parameter'])
-        for fid in core:
-            function = snapshot.functions[fid]
-            pointer_names = {p["name"] for p in function.get("parameters", []) if p.get("is_pointer")}
-            for binding in [b for b in bindings if b["function_id"] == fid and b["source"] == "fuzz_data" and b["parameter"] in pointer_names]:
-                if binding["transform"] == "nul_terminate" and binding["size_parameter"] is None and binding.get("input_kind") != "nul_terminated_string":
-                    missing(fid, "input_binding", "nul_string_semantics_unproven")
-                matching = [link for link in links if link["function_id"] == fid and link["buffer_parameter"] == binding["parameter"]]
-                if not matching or any(link["relation"] == "unknown" or link["binary_zero_allowed"] is None for link in matching):
-                    missing(fid, "buffer_length", "length_relation_unresolved")
-                elif not any(link["length_parameter"] == binding["size_parameter"] and (
-                    link["relation"] == binding["size_relation"] or link["relation"] in {"capacity", "derived"})
-                    and link["requires_nul_termination"] == binding["nul_terminated"] for link in matching):
-                    missing(fid, "buffer_length", "binding_length_contract_mismatch")
-        for callback in context["callback_contract"]["callbacks"]:
-            if callback["mandatory"] and (not callback["signature"] or callback["lifetime"] == "unknown"
-                    or callback["null_allowed"] is None or callback["setup_api"] is not None and callback["setup_api"] not in callable_ids):
-                missing(callback["function_id"], "callback", "mandatory_callback_abi_unresolved")
-            if callback["mandatory"] and not callback.get("declaration_identity"):
-                missing(callback["function_id"], "callback", "callback_declaration_identity_unresolved")
-            if callback["userdata"] and not callback.get("userdata_binding", {}).get("source_verified"):
-                missing(callback["function_id"], "callback", "callback_userdata_relationship_unresolved")
-        for req in requirements:
-            if req["kind"] == "callback" and not any(row["function_id"] == req["subject_function_id"] for row in context["callback_contract"]["callbacks"]):
-                missing(req["subject_function_id"], "callback", "callback_contract_unresolved")
-        returns = context["return_contract"]["functions"]
-        for fid in callable_ids:
-            function = snapshot.functions[fid]
-            if function.get("return_type", "void").strip() == "void":
+        graph = SemanticObligationGraphBuilder().build(context, closure, ft, snapshot, requirements, resolutions, state)
+        return self.validate_graph(graph, requirements)
+
+    def validate_graph(self, graph, requirements):
+        """Internal gate over a freshly recomputed graph, never a model proposal.
+
+        Artifact readers must first rebuild and compare the whole proof graph.
+        Closure is recomputed here as well; saved proof_status is not authority.
+        """
+        actual = close_obligations(graph["nodes"], graph["mandatory_roots"])
+        errors = deepcopy(graph["validation_errors"]) + actual["diagnostics"]
+        by_id = {n["obligation_id"]: n for n in actual["nodes"]}
+        coverage = graph.get("required_coverage", [])
+        if not coverage:
+            errors.append({"code": "semantic_obligation_coverage_missing"})
+        invocations = {n["subject_function_id"]: n for n in by_id.values() if n["predicate"] == "api_invocation_proved"}
+        for row in coverage:
+            nid, fid = row["obligation_id"], row["function_id"]
+            invocation = invocations.get(fid)
+            dependencies = {d["obligation_id"] for d in invocation["dependencies"]} if invocation else set()
+            if nid not in by_id or not invocation or invocation["obligation_id"] not in actual["mandatory_roots"] or (
+                    row["kind"] != "api_invocation" and nid not in dependencies):
+                errors.append({"code": "semantic_obligation_coverage_gap", "coverage": row})
+        if graph.get("version") != VERSION or graph.get("graph_digest") != digest({k: v for k, v in graph.items() if k != "graph_digest"}):
+            errors.append({"code": "semantic_obligation_graph_digest_mismatch"})
+        if any(graph.get(k) != actual[k] for k in actual):
+            errors.append({"code": "semantic_obligation_closure_projection_mismatch"})
+        hard = {}
+        for nid in actual["open_roots"]:
+            node = by_id.get(nid)
+            if not node or node["kind"] == "integrity":
                 continue
-            matching = [row for row in returns if row["function_id"] == fid]
-            if not matching or any(row["success"] == "unknown" or function.get("return_pointer_depth", 0)
-                    and any(row[key] is None for key in ("nullable", "owned", "error_cleanup")) for row in matching):
-                missing(fid, "return_semantics", "return_semantics_unresolved")
-            if matching and any(row["owned"] is True for row in matching) and not any(e["function_id"] == fid and e["return_value"] and e["ownership"] == "owned" for e in owned):
-                missing(fid, "ownership", "owned_return_contract_mismatch")
-        graph = context["ordering_graph"]
-        edges = {(row["before"], row["after"]) for row in graph["edges"] if row["strength"] == "hard"}
-        reach = set(edges)
-        for _ in range(len(callable_ids)):
-            reach |= {(a, c) for a, b in reach for b2, c in reach if b == b2}
-        if any(a == b for a, b in reach):
-            errors.append({"code": "contradictory_call_order_cycle", "cycle_edges": graph["hard_cycles"]})
-        for edge in graph["soft_cycle_edges"]:
-            if edge["strength"] == "soft":
-                soft.append({"code": "soft_order_cycle_ignored", "edge": edge})
-        for item in context["resource_identity"]["unresolved"]:
-            if item["reason"] in {"multiple_runtime_origins", "creator_invocation_multiplicity"} and item["function_id"] in callable_ids:
-                missing(item["function_id"], "lifecycle", "resource_identity_multiple_origins")
-        for binding in bindings:
-            if binding["source"] != "context" or not binding["via_function_id"]:
-                continue
-            consumer = {r["resource_id"] for r in resources if r["function_id"] == binding["function_id"] and r["subject_parameter"] == binding["parameter"]}
-            producer = {r["resource_id"] for r in resources if r["function_id"] == binding["via_function_id"]}
-            if len(consumer) != 1 or not consumer <= producer:
-                missing(binding["function_id"], "lifecycle", "shared_resource_identity_unresolved")
-        for support in closure["required_support_apis"]:
-            for parent in support["required_by"]:
-                for reason in support["reasons"]:
-                    pair = (parent, support["function_id"]) if reason == "cleanup" else (support["function_id"], parent)
-                    if reason in {"creation", "initialization", "cleanup", "callback", "allocator"} and pair not in reach:
-                        missing(parent, "call_order", "required_support_order_unresolved")
-        for precondition in context["state_contract"]["preconditions"]:
-            if precondition["kind"] in {"initialized", "input_fed", "reset"} and precondition["api"] is not None and precondition["api"] != precondition["function_id"]:
-                if (precondition["api"], precondition["function_id"]) not in reach:
-                    missing(precondition["function_id"], "call_order", "state_precondition_order_unresolved")
-        for obligation in context["invocation_contract"]["preconditions"]:
-            if obligation["source"] != "lifecycle_initialization":
-                continue
-            before, after = obligation["api"], obligation["function_id"]
-            if obligation["phase"] == "before_call" and before == after:
-                missing(after, "lifecycle", "self_initialization_obligation_unresolved", parameter=obligation["parameter"])
-            if before is not None and before != after and (before, after) not in reach:
-                missing(after, "call_order", "invocation_initialization_order_unresolved", parameter=obligation["parameter"])
+            diagnostics = node["diagnostics"] + [d for leaf in node["blocking_obligations"]
+                for d in by_id.get(leaf, {}).get("diagnostics", [])]
+            if not diagnostics:
+                diagnostics = [{"requirement_id": node["requirement_id"], "subject_function_id": node["subject_function_id"],
+                    "kind": node["kind"], "code": "semantic_obligation_dependency_unresolved",
+                    "question": "Identify the missing proof on this obligation's dependency frontier; reuse established evidence."}]
+            for diagnostic in diagnostics:
+                row = {**deepcopy(diagnostic), "obligation_id": nid, "proof_status": node["proof_status"],
+                    "blocking_obligations": node["blocking_obligations"]}
+                hard[digest(row)] = row
         hard_rows = sorted(hard.values(), key=canonical)
-        graph = context.get("argument_graph", {})
-        holes = graph.get("dependency_graph", {}).get("unresolved_parameters", [])
-        for item in hard_rows:
-            matching = [hole for hole in holes if hole["function_id"] == item["subject_function_id"]
-                and (item.get("subject_parameter") is None or hole["parameter"] == item["subject_parameter"])]
-            if item["kind"] in {"argument_construction", "lifecycle", "ownership", "state", "input_binding"}:
-                item["graph_holes"] = matching
-                if matching:
-                    item["question"] += " Target graph holes: " + canonical(matching)
-        hard_kinds = {row["kind"] for row in hard_rows}
+        open_nodes = [by_id[n] for n in actual["open_roots"] if n in by_id]
+        kinds = {n["kind"] for n in open_nodes}
+        root_requirements = {n["requirement_id"]: n for n in actual["nodes"] if n["predicate"] == n["kind"] and n["requirement_id"]}
         return {"schema_version": 1, "artifact_kind": "harness_context_completeness", "policy_version": POLICY_VERSION,
-            "ft_id": ft["ft_id"], "status": "invalid" if errors else "incomplete" if hard_rows else "complete",
-            "generation_allowed": not errors and not hard_rows, "hard_missing": hard_rows,
-            "soft_unknowns": sorted(soft, key=canonical), "validation_errors": errors,
-            "framework_satisfied_requirements": sorted(framework_satisfied),
-            "argument_graph_version": graph.get("version"),
-            "graph_failure_taxonomy": sorted({hole["code"] for hole in holes} |
-                {row["code"] for row in graph.get("diagnostics", [])}),
+            "ft_id": graph["ft_id"], "status": "invalid" if errors else "incomplete" if actual["open_roots"] else "complete",
+            "generation_allowed": not errors and not actual["open_roots"], "hard_missing": hard_rows,
+            "soft_unknowns": graph["soft_unknowns"], "validation_errors": sorted(errors, key=canonical),
+            "semantic_obligation_graph": graph, "semantic_obligation_graph_version": VERSION,
+            "semantic_obligation_graph_digest": graph["graph_digest"],
+            "framework_satisfied_requirements": graph["framework_satisfied_requirements"],
+            "argument_graph_version": graph["argument_graph_version"], "graph_failure_taxonomy": graph["graph_failure_taxonomy"],
             "execution_failed_requirements": sorted([{"requirement_id": r["requirement_id"],
-                "resolution_attempt_failed": r["resolution_attempt_failed"]}
-                for r in requirements if r.get("resolution_attempt_failed")], key=canonical),
-            "resolved_requirements": sorted(r["requirement_id"] for r in requirements if r["status"] in {"resolved", "not_applicable"}),
-            "unresolved_requirements": sorted(r["requirement_id"] for r in requirements if r["status"] in {"open", "unresolved"}),
-            "api_closure_complete": not any(row["code"] == "required_api_unresolved" for row in hard_rows) and not errors,
-            "lifecycle_complete": "lifecycle" not in hard_kinds and not errors,
-            "input_binding_complete": not {"input_binding", "buffer_length"} & hard_kinds and not errors,
-            "ownership_complete": "ownership" not in hard_kinds and not errors,
-            "ordering_sufficient": "call_order" not in hard_kinds and not errors,
-            "callback_complete": "callback" not in hard_kinds and not errors}
+                "resolution_attempt_failed": r["resolution_attempt_failed"]} for r in requirements if r.get("resolution_attempt_failed")], key=canonical),
+            "resolved_requirements": sorted(rid for rid, n in root_requirements.items() if n["proof_status"] == "proved"),
+            "unresolved_requirements": sorted(rid for rid, n in root_requirements.items() if n["proof_status"] != "proved"),
+            "api_closure_complete": not {"api_closure", "invocation"} & kinds and not any(row["code"] == "required_api_unresolved" for row in hard_rows) and not errors,
+            "lifecycle_complete": "lifecycle" not in kinds and not errors,
+            "input_binding_complete": not {"input_binding", "buffer_length"} & kinds and not errors,
+            "ownership_complete": "ownership" not in kinds and not errors,
+            "ordering_sufficient": "call_order" not in kinds and not errors,
+            "callback_complete": "callback" not in kinds and not errors}
 
 
 CompletenessValidator = HarnessContextCompletenessValidator
 
 
 def missing_requirement_tasks(report):
-    return [{"task_id": "task_" + digest(row)[:24], **row} for row in report["hard_missing"]]
+    """Coalesce missing leaf proofs by existing requirement, not by error row."""
+    graph = report["semantic_obligation_graph"]
+    nodes = {n["obligation_id"]: n for n in graph["nodes"]}
+    grouped = {}
+    for nid in graph["frontier"]:
+        node = nodes.get(nid)
+        if not node or not node["requirement_id"] or node["kind"] == "integrity":
+            continue
+        rid = node["requirement_id"]
+        task = grouped.setdefault(rid, {"requirement_id": rid, "subject_function_id": node["subject_function_id"],
+            "kind": node["kind"], "code": "semantic_obligation_proof_missing", "question": node["question"],
+            "obligation_ids": [], "missing_proofs": [], "graph_holes": [], "evidence_ids": [], "blocked_roots": []})
+        task["obligation_ids"].append(nid)
+        task["missing_proofs"].append({"obligation_id": nid, "predicate": node["predicate"],
+            "subject_parameter": node["subject_parameter"], "subject_field": node.get("subject_field"),
+            "proof_status": node["proof_status"], "diagnostics": node["diagnostics"]})
+        # A field node can be assigned to the argument requirement when no
+        # state requirement exists; keep the wire predicate/slot independent.
+        if node["requirement_id"]:
+            root = next((n for n in graph["nodes"] if n["requirement_id"] == node["requirement_id"] and n["predicate"] == n["kind"]), None)
+            if root:
+                task["kind"] = root["kind"]
+        task["evidence_ids"] += node["evidence_ids"]
+        task["graph_holes"] += [hole for d in node["diagnostics"] for hole in d.get("graph_holes", [])]
+        task["blocked_roots"] += [root for root in graph["open_roots"] if nid in nodes[root]["blocking_obligations"]]
+    result = []
+    for task in grouped.values():
+        for key in ("obligation_ids", "evidence_ids", "blocked_roots"):
+            task[key] = sorted(set(task[key]))
+        task["graph_holes"] = sorted({canonical(h): h for h in task["graph_holes"]}.values(), key=canonical)
+        task["missing_proofs"].sort(key=canonical)
+        task["question"] = "Prove only these missing semantic obligations with exact issued source; identify evidence still missing. Do not design a harness. " + task["question"]
+        task["task_id"] = "task_" + digest(task)[:24]
+        result.append(task)
+    return sorted(result, key=canonical)

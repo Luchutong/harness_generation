@@ -251,11 +251,24 @@ def test_strict_terminal_invariants_reject_invalid_rows(tmp_path, mutation):
             row["evidence_ids"] = "ev_bad"
         elif mutation == "name_instead_of_id":
             row["function_id"] = "parse"
-    result, _, _ = run(sample, [terminal({fid: ("core", "accepted_anchor")}, mutate=mutate)])
+    # Duplicate rows are shape-repairable under the registered last-round
+    # extra. A second explicit duplicate payload must still be rejected; the
+    # framework never removes a row or selects a role itself.
+    first=terminal({fid: ("core", "accepted_anchor")}, mutate=mutate)
+    responses=[first]
+    if mutation == 'duplicate':
+        def still_duplicate(messages,schemas):
+            call=first(messages,schemas).tool_calls[0]
+            return AgentModelResponse(tool_calls=(AgentToolCall('still_duplicate',call.name,call.arguments),))
+        responses.append(still_duplicate)
+    result, model, _ = run(sample, responses,
+                       ValidationBudget(max_rounds=1))
     assert result.result["run_status"] == "invalid"
     assert result.metadata["canonical_is_fallback"]
     assert result.result["core_functions"] == [fid]
     assert result.result["excluded_functions"] == []
+    assert result.metadata['extra_terminal_repair_attempts'] == int(mutation=='duplicate')
+    assert len(model.calls) == 1+int(mutation=='duplicate')
 
 
 @pytest.mark.parametrize("role,reason", [("core", "core_state_dependency"), ("support", "required_initialization"),
@@ -315,7 +328,9 @@ def test_slice_requires_sole_native_terminal_call(tmp_path, mode):
         if mode == "prose":
             return AgentModelResponse(content=response.tool_calls[0].arguments)
         return queries(*response.tool_calls, tool("get_function", "late_query", function=fid))
-    result, _, _ = run(sample, [invalid])
+    # Plain prose has one bounded protocol recovery. Reject another prose
+    # response rather than exhausting the fake transport on that repair call.
+    result, _, _ = run(sample, [invalid, invalid] if mode == 'prose' else [invalid])
     assert result.result["run_status"] == "invalid" and result.result["budget"]["tool_calls"] == 1
 
 
@@ -323,7 +338,7 @@ def test_cli_processes_accepted_only_and_resume_needs_no_model_call(tmp_path):
     sample = fixture(tmp_path)
     store, _, _, candidate, _, ids = sample
     triplet_text = '{"schema_version":1,"triplets":[]}\n'
-    store.triplets.write_text(triplet_text)
+    (store.root / "triplets.json").write_text(triplet_text)
     discovery_before, validated_before = store.entry_candidates.read_bytes(), store.validated_candidates.read_bytes()
     model = FakeAgentModel([terminal({ids["parse"]: ("core", "accepted_anchor")})])
     args = ["--artifacts", str(store.root)]
@@ -333,7 +348,7 @@ def test_cli_processes_accepted_only_and_resume_needs_no_model_call(tmp_path):
     assert json.loads((directory / "slice.json").read_text())["anchor_function_id"] == candidate.function_id
     resumed = FakeAgentModel([])
     assert main(args + ["--resume"], model=resumed) == 0 and resumed.calls == []
-    assert store.triplets.read_text() == triplet_text
+    assert (store.root / "triplets.json").read_text() == triplet_text
     assert store.entry_candidates.read_bytes() == discovery_before
     assert store.validated_candidates.read_bytes() == validated_before
     assert main(args + ["--candidate", ids["stats"]], model=FakeAgentModel([])) == 1
@@ -445,19 +460,6 @@ def test_cleanup_wrapper_stays_support(tmp_path):
     assert result.result["core_functions"] == [ids["parse"]]
 
 
-def test_oversized_exclusion_artifact_and_legacy_ft_are_consumed_read_only(tmp_path):
-    sample = fixture(tmp_path, DIRECT)
-    store, artifacts, catalog, candidate, validation, ids = sample
-    write_json(store.triplets, {"triplets": [{"isf": {"function_id": candidate.function_id},
-        "functions": [{"function_id": ids["wrapper"]}], "metadata": {"relation_evidence": {"strong": []}}}]})
-    write_json(store.triplet_exclusions, {"excluded": [{"anchor_function_id": candidate.function_id,
-        "frontier": {"function_ids": [ids["unrelated"]], "relation_evidence": {"strong": []}}}]})
-    before = store.triplets.read_bytes(), store.triplet_exclusions.read_bytes()
-    frontier = build_frontier(store, artifacts, catalog, candidate, validation)
-    assert frontier.function_ids == set(ids.values())
-    assert frontier.rows[ids["unrelated"]]["oversized_frontier"]
-    assert frontier.rows[ids["wrapper"]]["weak_relations"] == [{"kind": "legacy_ft_membership"}]
-    assert before == (store.triplets.read_bytes(), store.triplet_exclusions.read_bytes())
 
 
 def test_agent_api_requires_completed_accepted_validation(tmp_path):

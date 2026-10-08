@@ -20,7 +20,8 @@ def main(argv=None):
     parser.add_argument("--artifacts", type=Path, required=True)
     parser.add_argument("--candidate", action="append", default=[], help="Exact project function ID or stable candidate ID; repeatable")
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--no-legacy-comparison", action="store_true", help="Disable optional legacy comparison and relation input")
+    parser.add_argument("--no-legacy-comparison", action="store_true",
+                        help="Compatibility flag; HG never reads legacy FT artifacts")
     args = parser.parse_args(argv)
     processed, resumed, invalid = 0, 0, 0
     try:
@@ -39,12 +40,12 @@ def main(argv=None):
                     raise ValueError("--candidate must identify one existing project Slice")
                 selected.add(cid)
         anchors = {snapshot.anchor_for_candidate(cid) for cid in available} - {None}
-        legacy, manifest = load_legacy_inputs(store, anchors, enabled=not args.no_legacy_comparison)
+        legacy, manifest = load_legacy_inputs(store, anchors, enabled=False)
         records = []
         for cid in available:
             anchor = snapshot.anchor_for_candidate(cid)
             source = load_slice_input(store, cid, legacy=legacy.get(anchor, {}))
-            configuration = build_configuration(source, snapshot, manifest, compare_legacy=not args.no_legacy_comparison)
+            configuration = build_configuration(source, snapshot, manifest, compare_legacy=False)
             doc = source.document
             core = doc.get("core_functions", [])
             if not isinstance(core, list):
@@ -60,7 +61,7 @@ def main(argv=None):
                 document = cached
                 resumed += 1
             else:
-                build = MinimalFTBuilder().build(source, snapshot, compare_legacy=not args.no_legacy_comparison)
+                build = MinimalFTBuilder().build(source, snapshot, compare_legacy=False)
                 save_build(store, build, configuration)
                 document = build.minimal_ft
                 processed += 1

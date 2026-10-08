@@ -35,7 +35,7 @@ def invocation_fixture(tmp_path, *, wrong_cleanup=False, self_init=False):
     specs[parse,'input_binding']={'value':{'bindings':[indirect('ctx',feed)]}}
     specs[parse,'argument_construction']={'value':{'arguments':[argument('ctx','creator_api',ids['create'],rid)]}}
     specs[parse,'ownership']={'value':{'entries':[owner('ctx',resource=rid)]}}
-    specs[parse,'lifecycle']['value']['resources'][0]['initialization']={'mandatory':True,'api':parse if self_init else feed}
+    specs[parse,'lifecycle']['value']['resources'][0]['initialization']={'mandatory':True,'api':feed}
     if wrong_cleanup:
         other=ids['alternative_destroy']
         specs[parse,'lifecycle']['value']['resources'][0]['cleanup']={'mandatory':True,'api':other}
@@ -46,6 +46,8 @@ def invocation_fixture(tmp_path, *, wrong_cleanup=False, self_init=False):
         specs[other,'ownership']={'value':{'entries':[owner('ctx',ownership='transferred')]}}
     specs[parse,'state']={'value':{'preconditions':[{'parameter':'ctx','kind':'initialized','api':feed}]}}
     specs.update(direct_specs(feed))
+    # feed stores this pointer until the shared context is destroyed.
+    specs[feed,'ownership']['value']['entries'][0]['lifetime']='until_context_cleanup'
     specs[feed,'argument_construction']['value']['arguments'].insert(0,argument('ctx','derived',resource=rid))
     specs[feed,'ownership']['value']['entries'].append(owner('ctx',resource=rid))
     specs[feed,'lifecycle']=deepcopy(specs[parse,'lifecycle'])
@@ -55,10 +57,48 @@ def invocation_fixture(tmp_path, *, wrong_cleanup=False, self_init=False):
     specs[feed,'state']={'value':{'preconditions':[{'parameter':'ctx','kind':'initialized','api':ids['create']}]}}
     specs[feed,'call_order']={'value':{'constraints':[]}}
     run,_=mine(prepared,specs,query_type='Context',persist=True)
+    # Replay a fixed call-scoped proposition after the source-first mining run.
+    # The first frontier now skips source-proved lifecycle facts. Replay
+    # the adversarial proposition explicitly instead of relying on a
+    # redundant model investigation to introduce it.
+    from harness_generation.harness_context import HarnessContextCompletenessValidator
+    from harness_generation.harness_context.api_closure import build_api_closure
+    from harness_generation.harness_context.evidence import build_context
+    from harness_generation.harness_context.models import fact_id
+    target=parse
+    row=next(r for r in run.requirements['requirements'] if r['subject_function_id']==target and r['kind']=='lifecycle')
+    projected=next(r for r in run.context['lifecycle_contract']['resources'] if r['function_id']==target)
+    value={'resources':[{k:deepcopy(projected[k]) for k in ('resource_id','type','subject_parameter','return_value','creation','initialization','cleanup','reuse')}]}
+    value['resources'][0]['initialization']={'mandatory':True,'api':feed}
+    if wrong_cleanup:value['resources'][0]['cleanup']={'mandatory':True,'api':ids['alternative_destroy']}
+    if self_init:value['resources'][0]['initialization']={'mandatory':True,'api':parse}
+    facts=[f for f in run.context['facts'] if f['requirement_id']!=row['requirement_id']]
+    eids=sorted({e for e,r in prepared[4].evidence.items() if r.get('function_id')==target and r['tool']=='get_function'})
+    fact=dict(requirement_id=row['requirement_id'],function_id=target,predicate='lifecycle',value=value,evidence_ids=eids)
+    fact['fact_id']=fact_id(fact);facts.append(fact)
+    row.update(status='resolved',evidence_ids=eids)
+    from harness_generation.harness_context.persistence import context_directory
+    resolutions=json.loads((context_directory(prepared[0][0],prepared[1]['ft_id'])/'resolutions.json').read_text())['resolutions']
+    resolutions[row['requirement_id']]=dict(requirement_id=row['requirement_id'],status='resolved',
+        facts=[fact],discovered_api_dependencies=[],open_questions=[])
+    state_req=next(r for r in run.requirements['requirements'] if r['subject_function_id']==target and r['kind']=='state')
+    facts=[f for f in facts if f['requirement_id']!=state_req['requirement_id']]
+    state_fact=dict(requirement_id=state_req['requirement_id'],function_id=target,predicate='state',
+        value=deepcopy(specs[target,'state']['value']),evidence_ids=eids)
+    state_fact['fact_id']=fact_id(state_fact);facts.append(state_fact)
+    state_req.update(status='resolved',evidence_ids=eids)
+    resolutions[state_req['requirement_id']]=dict(requirement_id=state_req['requirement_id'],status='resolved',
+        facts=[state_fact],discovered_api_dependencies=[],open_questions=[])
+    closure=build_api_closure(prepared[1],run.requirements['requirements'],resolutions,prepared[3],prepared[4])
+    context=build_context(prepared[1],run.requirements['requirements'],facts,prepared[3],prepared[4].evidence)
+    context['dependencies']=closure['unresolved_api_dependencies']
+    run.completeness=HarnessContextCompletenessValidator().validate(context,closure,prepared[1],prepared[3],run.requirements['requirements'],resolutions,prepared[4])
+    context["frozen"]=run.completeness["generation_allowed"]
+    run.context=context;run.closure=closure
     return prepared,run
 
 
-def test_call_scoped_initialization_does_not_change_resource_identity_and_replays(tmp_path):
+def test_call_scoped_initialization_does_not_change_resource_identity_and_compiles(tmp_path):
     prepared,run=invocation_fixture(tmp_path)
     assert_gate(run)
     context=run.context;ids=prepared[0][-1]
@@ -82,7 +122,13 @@ extern "C" void destroy(Context *ctx);
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data,size_t size) {
 if(size>1048576)return 0;Context *ctx=create();if(ctx){feed(ctx,data,size);parse(ctx);destroy(ctx);}return 0;}
 '''
-        assert main(['context-generate','--artifacts',str(prepared[0][0].root),'--build','--runtime'],llm=FakeLLM([code]))==0
+        from harness_generation.context_generation.build import build_and_run
+        from harness_generation.context_generation.validation import validate_code
+        from harness_generation.target_build import TargetBuildConfig
+        harness=tmp_path/'harness.cpp';harness.write_text(code)
+        assert validate_code(code,plan)['status']=='valid'
+        build,replay=build_and_run(harness,tmp_path/'compile',plan,TargetBuildConfig.for_simple_project(prepared[5].index.project_root),runtime=True)
+        assert build['status']==replay['status']=='passed'
 
 
 def test_real_lifetime_definition_conflict_still_blocks(tmp_path):

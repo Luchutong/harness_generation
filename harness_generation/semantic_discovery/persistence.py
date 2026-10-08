@@ -11,13 +11,23 @@ from .models import POLICY_VERSION, SCHEMA_VERSION, candidate_id, digest, parse_
 from .tools import RepositoryIndex
 
 
-def run_configuration(catalog, budget, model, *, max_terminal_repairs=1) -> dict:
+def run_configuration(catalog, budget, model, *, max_terminal_repairs=1,
+                      max_semantic_recoveries=0, max_provider_recoveries=0,
+                      max_protocol_recoveries=0) -> dict:
     config = model.config.to_dict() if hasattr(model, "config") else {
         "provider": model.provider, "model": model.model}
-    return {"source_fingerprint": catalog.source_fingerprint,
+    from .loop import TERMINAL_REPAIR_POLICY_VERSION
+    return {"terminal_repair_policy_version": TERMINAL_REPAIR_POLICY_VERSION,
+            "terminal_repair_allowed_categories": ["terminal_schema_error", "terminal_json_parse_error", "candidate_unknown_evidence_reference", "terminal_native_submission_missing"],
+            "extra_terminal_repair_last_round_only": False,
+            "reserve_terminal_round": True,
+            "source_fingerprint": catalog.source_fingerprint,
             "discovery_fingerprint": digest(catalog.to_dict()),
             "policy_version": POLICY_VERSION, "budget": budget.to_dict(), "model": config,
-            "max_terminal_repairs": max_terminal_repairs}
+            "max_terminal_repairs": max_terminal_repairs,
+            "max_semantic_recoveries": max_semantic_recoveries,
+            "max_provider_recoveries": max_provider_recoveries,
+            "max_protocol_recoveries": max_protocol_recoveries}
 
 
 def save_run(store: ArtifactStore, run: ValidationRun, configuration: dict) -> dict:

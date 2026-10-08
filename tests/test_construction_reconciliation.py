@@ -61,7 +61,8 @@ def test_conflicting_semantic_recipe_cannot_override_mechanical_origin(tmp_path)
 def test_proposal_without_mechanical_proof_has_explicit_diagnostic(tmp_path):
     fixture=graph_fixture(tmp_path,'typedef struct P {int n;} P; int parse(P *p) { return p->n; }')
     proposal(fixture,'parse','p','zero_init');contract,_=reconcile(fixture)
-    assert selection(contract,fixture,'parse',0)['reason']=='semantic_only_not_reproduced'
+    assert selection(contract,fixture,'parse',0)['status']=='unknown'
+    assert selection(contract,fixture,'parse',0)['reason']=='semantic_only_requires_source_proof'
     assert contract['diagnostics'][0]['code']=='semantic_recipe_not_reproduced'
 
 

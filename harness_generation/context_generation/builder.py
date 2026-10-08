@@ -3,10 +3,10 @@ from copy import deepcopy
 from pathlib import Path
 import re
 
-from ..semantic_discovery.models import digest
+from ..semantic_discovery.models import canonical, digest
 from ..semantic_slicing.frontier import function_types
 
-PLAN_POLICY = "frozen-context-harness-plan-v8"
+PLAN_POLICY = "source-grounded-harness-plan-v15"
 
 
 class PlanError(ValueError):
@@ -22,6 +22,16 @@ class HarnessPlanBuilder:
         if (completeness.get("generation_allowed") is not True or context.get("frozen") is not True
                 or completeness.get("status") != "complete" or completeness.get("hard_missing") or completeness.get("validation_errors")):
             raise PlanError("generation requires generation_allowed=true and frozen=true with a complete gate")
+        from ..harness_context.obligations import VERSION as OBLIGATION_VERSION, close_obligations
+        obligations = completeness.get("semantic_obligation_graph")
+        if not obligations or obligations.get("version") != OBLIGATION_VERSION:
+            raise PlanError("generation requires a canonical Semantic Obligation Graph; rebuild the Context")
+        closed = close_obligations(obligations["nodes"], obligations["mandatory_roots"])
+        if (closed["open_roots"] or closed["diagnostics"] or obligations["validation_errors"]
+                or obligations.get("graph_digest") != digest({k: v for k, v in obligations.items() if k != "graph_digest"})
+                or any(obligations.get(k) != v for k, v in closed.items())
+                or completeness.get("semantic_obligation_graph_digest") != obligations["graph_digest"]):
+            raise PlanError("semantic obligations are not canonically closed")
         ft_id = minimal_ft["ft_id"]
         core = sorted(row["function_id"] for row in minimal_ft["core_functions"])
         if (context["ft_id"] != ft_id or closure["ft_id"] != ft_id or completeness["ft_id"] != ft_id
@@ -66,14 +76,51 @@ class HarnessPlanBuilder:
             for key, rows in section.items():
                 section[key] = [row for row in rows if row["function_id"] in active]
         resources = contracts["lifecycle_contract"]["resources"]
+        # Invocation scope is a source certificate, not a model reuse label.
+        # Reconstruct it before selecting one effective executable definition.
+        from ..harness_context.invocation_scope import prove_finite_resource_scope
+        for resource in context['resource_contract']['resources']:
+            proof = resource.get('invocation_scope_proof')
+            if proof is None:
+                continue
+            rows = [r for r in context['lifecycle_contract']['resources']
+                if r['resource_id'] == resource['resource_id']]
+            bodies = {fid: set(eids) for fid, eids in proof.get('source_evidence', {}).items()}
+            rebuilt = prove_finite_resource_scope(context, resource['resource_id'], rows, snapshot, bodies)
+            definitions_match = bool(rows) and all(
+                all(resource.get(key) == row[key] for key in ('type', 'creation', 'cleanup'))
+                for row in rows)
+            bindings = sorted([{'function_id': row['function_id'],
+                'parameter': row['subject_parameter'], 'return_value': row['return_value']}
+                for row in rows], key=canonical)
+            if (rebuilt != proof or resource['reuse'] != proof.get('effective_reuse')
+                    or not definitions_match or resource.get('bindings') != bindings
+                    or resource.get('observed_reuse') != proof.get('observed_reuse')):
+                raise PlanError('resource invocation scope proof changed')
         by_resource = {row["resource_id"]: {**deepcopy(row), "bindings": [b for b in row["bindings"] if b["function_id"] in active]}
             for row in context["resource_contract"]["resources"] if any(b["function_id"] in active for b in row["bindings"])}
+        from ..harness_context.callback_resources import prove_callback_resource_reference
+        callback_references = {}
+        for proof in context.get('callback_resource_references', []):
+            key = proof['function_id'], proof['parameter']
+            bindings = [b for b in contracts['input_contract']['bindings']
+                if (b['function_id'], b['parameter']) == key]
+            records = {row['evidence_id']: row for row in proof.get('source_records', [])}
+            if (key in callback_references or len(bindings) != 1
+                    or len(records) != len(proof.get('source_records', []))
+                    or not {proof['function_id'], proof['producer_api'], proof['cleanup_api'],
+                            proof['callback_dispatch']['via_function_id']} <= active
+                    or prove_callback_resource_reference(context, bindings[0], snapshot, records) != proof):
+                raise PlanError('callback resource reference proof changed')
+            callback_references[key] = proof
         for binding in contracts["input_contract"]["bindings"]:
             if binding["source"] != "context" or binding["via_function_id"] is None:
                 continue
             consumers = [row for row in resources if row["function_id"] == binding["function_id"]
                          and row["subject_parameter"] == binding["parameter"]]
             if len(consumers) != 1:
+                if not consumers and (binding['function_id'], binding['parameter']) in callback_references:
+                    continue
                 raise PlanError("context input path needs one explicit consumer resource")
             consumer = consumers[0]
             origins = {row["resource_id"] for row in resources if row["function_id"] == binding["via_function_id"]
@@ -152,7 +199,15 @@ class HarnessPlanBuilder:
                     candidates = [row["resource_id"] for row in resources if row["function_id"] == fid and row["subject_parameter"] == name]
                     if rid and (cleanup or fid in initialized_resources):
                         type_match = parameter["base_type"] == by_resource[rid]["type"] and parameter.get("is_pointer")
-                        if type_match:
+                        if cleanup:
+                            # An equal type does not identify the object to
+                            # destroy. Consume the canonical existing resource;
+                            # other cleanup arguments keep their own recipes.
+                            if recipe.get('resource_id') == rid:
+                                if not type_match or recipe['kind'] != 'resource_reference':
+                                    raise PlanError('cleanup argument needs an exact existing resource reference')
+                                candidates.append(rid)
+                        elif type_match:
                             candidates.append(rid)
                     candidates = sorted(set(candidates + ([value["resource_id"]] if value["resource_id"] else [])))
                     if len(candidates) > 1 or candidates and candidates[0] not in by_resource:
@@ -170,6 +225,9 @@ class HarnessPlanBuilder:
                     if value["construction"] == "derived" and not (value["resource_id"] or relevant or size_for or recipe['kind'] in {'derived_scalar', 'out_parameter_storage'}):
                         raise PlanError("derived argument lacks an explicit input, length or resource relation")
                     args.append(value)
+                if cleanup and not any(a['canonical_recipe']['kind'] == 'resource_reference'
+                        and a['resource_id'] == rid for a in args):
+                    raise PlanError('cleanup invocation lacks its exact resource binding')
                 return_resources = sorted({row["resource_id"] for row in resources if row["function_id"] == fid and row["return_value"]}
                     | (set(created_resources.get(fid, [])) if function.get("return_pointer_depth", 0) else set()))
                 if len(return_resources) > 1:
@@ -186,6 +244,50 @@ class HarnessPlanBuilder:
                     if p["function_id"] == fid and (rid is None or p["resource_id"] in {None, rid})]
                 invocation["invocation_id"] = "call_" + digest(invocation)[:24]
                 invocations.append(invocation)
+        dispatches = context['argument_graph'].get('callback_dispatches', [])
+        mediated = {a['api'] for a in context['argument_contract']['arguments']
+            if a['function_id'] in active and a['construction'] == 'callback' and a.get('api') in active}
+        for invocation in invocations:
+            matches = [d for d in dispatches if d['function_id'] == invocation['function_id'] and d['via_function_id'] in active
+                and any(a['function_id'] == d['via_function_id'] and a['parameter'] == d['callback_parameter']
+                    and a.get('api') == d['function_id'] for a in context['argument_contract']['arguments'])]
+            unique = {digest({k:v for k,v in d.items() if k != 'evidence_ids'}):d for d in matches}
+            if not unique:
+                if invocation['function_id'] in mediated:
+                    raise PlanError('bound callback needs a source-proven synchronous forwarding schedule')
+                continue
+            if len(unique) != 1 or invocation['return_resource'] or invocation['out_resources'] or invocation['role'] == 'cleanup':
+                raise PlanError('callback invocation needs one synchronous forwarding schedule')
+            dispatch = next(iter(unique.values()))
+            invocation.update(invocation_kind='callback', via_function_id=dispatch['via_function_id'],
+                callback_parameter=dispatch['callback_parameter'], parameter_forwarding=deepcopy(dispatch['parameter_forwarding']))
+            invocation['invocation_id'] = 'call_' + digest({k:v for k,v in invocation.items() if k != 'invocation_id'})[:24]
+        internal = context['argument_graph'].get('internal_invocations', [])
+        from ..harness_context.internal_invocations import repeated_invocations
+        for invocation in invocations:
+            matches = [d for d in internal if d['function_id'] == invocation['function_id']
+                and d['via_function_id'] in active]
+            if not matches:
+                continue
+            if (len(matches) != 1 or invocation.get('invocation_kind') or invocation['return_resource']
+                    or invocation['out_resources'] or invocation['role'] == 'cleanup'):
+                raise PlanError('internal invocation needs one source-owned schedule')
+            descriptor = matches[0]
+            # Independently reconstruct the narrow call/array/forwarding proof
+            # from authenticated Phase 1 source rather than trusting a label.
+            bodies = {fid: set(descriptor['evidence_ids']) for fid in
+                (descriptor['function_id'], descriptor['via_function_id'])}
+            rebuilt = repeated_invocations(snapshot.functions[descriptor['via_function_id']],
+                snapshot, bodies, minimal_ft['excluded_functions'])
+            if descriptor not in rebuilt:
+                raise PlanError('internal invocation source proof changed')
+            invocation.update(invocation_kind='internal', via_function_id=descriptor['via_function_id'],
+                parameter_forwarding=deepcopy(descriptor['parameter_forwarding']),
+                local_arguments=deepcopy(descriptor['local_arguments']),
+                calls_per_input=None, calls_per_invocation=deepcopy(descriptor['calls_per_invocation']),
+                multiplicity=descriptor['multiplicity'], storage_lifetime=descriptor['storage_lifetime'],
+                invocation_proof_id=descriptor['invocation_proof_id'])
+            invocation['invocation_id'] = 'call_' + digest({k:v for k,v in invocation.items() if k != 'invocation_id'})[:24]
         if any(row["role"] != "cleanup" for row in invocations[ next((i for i, row in enumerate(invocations) if row["role"] == "cleanup"), len(invocations)): ]):
             raise PlanError("cleanup interleaved with active API use needs an explicit lifetime schedule")
         transforms = [{"function_id": b["function_id"], "parameter": b["parameter"], "kind": "nul_terminate",
@@ -193,10 +295,15 @@ class HarnessPlanBuilder:
             "max_source_bytes": max_input_bytes, "extra_bytes": 1, "max_allocation_bytes": max_input_bytes + 1,
             "allocation": "heap", "unbounded_stack_allowed": False, "length_parameter": b["size_parameter"]}
             for b in contracts["input_contract"]["bindings"] if b["transform"] == "nul_terminate"]
+        if any(obligations["input_digests"].get(k) != digest(v) for k, v in {
+                "minimal_ft": minimal_ft, "harness_context": {k: v for k, v in context.items() if k != "frozen"},
+                "api_closure": closure}.items()):
+            raise PlanError("semantic obligation proofs are bound to different frozen inputs")
         plan = {"schema_version": 2, "artifact_kind": "context_harness_plan", "policy_version": PLAN_POLICY,
             "ft_id": ft_id, "entrypoint": "LLVMFuzzerTestOneInput", "language": language,
             "input_digests": {"minimal_ft": digest(minimal_ft), "harness_context": digest(context),
-                             "api_closure": digest(closure), "completeness": digest(completeness)},
+                             "api_closure": digest(closure), "completeness": digest(completeness),
+                             "semantic_obligation_graph": obligations["graph_digest"]},
             "core_apis": core, "required_support_apis": sorted(active - set(core)),
             "api_declarations": declarations, "type_declarations": sorted(typedef_declarations) + sorted(structs), "headers": list(headers),
             "contracts": contracts, "resources": [by_resource[rid] for rid in sorted(by_resource)],
@@ -205,16 +312,19 @@ class HarnessPlanBuilder:
                 "transitions": [deepcopy(t) for t in context["invocation_contract"]["transitions"] if t["before"] in active and t["after"] in active]},
             "input_policy": {"max_bytes": max_input_bytes, "allocation_scope": "per_input", "preserve_binary_zero": True},
             "input_transforms": transforms,
-            "callback_policy": {"implementation": "ABI-matching deterministic zero-return stub", "external_effects": False},
+            "callback_policy": {"implementation": "Use canonical bound project APIs; use ABI-matching deterministic stubs only for certified public callback objects", "external_effects": False},
             "call_sequence": [row for row in invocations if row["role"] != "cleanup"],
             "cleanup_sequence": [row for row in invocations if row["role"] == "cleanup"],
             "ordering_edges": [list(edge) for edge in sorted(edges)],
             "ordering_provenance": deepcopy(graph),
             "resource_identity": deepcopy(context["resource_identity"]),
+            "callback_resource_references": [{key: deepcopy(value) for key, value in proof.items()
+                if key != 'source_records'} for proof in callback_references.values()],
             "construction_sources": deepcopy(context["construction_contract"]),
             "canonical_construction_digest":digest(context['canonical_construction']),
             "construction_recipe_version":context['canonical_construction']['recipe_version'],
             "construction_recipes":recipes,
+            "source_internal_invocations": deepcopy(internal),
             "failure_policy": "skip dependent calls on failure; release all acquired owned resources on every exit",
             "frozen": True}
         plan["plan_id"] = "plan_" + digest(plan)[:24]

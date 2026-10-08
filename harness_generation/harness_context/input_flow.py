@@ -6,13 +6,13 @@ from .argument_graph import parameter_id
 from .value_flow import body_tree
 from ..semantic_discovery.tools import _walk, _text
 
-VERSION = "external-input-flow-v2"
+VERSION = "external-input-flow-v3"
 
 
 from ..semantic_slicing.core_proofs import returned_input_fields
 
 
-def read_fields(function, parameter):
+def read_fields(function, parameter, snapshot=None, internal=()):
     source, body = body_tree(function)
     result = set()
     if body is None or body.has_error:
@@ -24,6 +24,15 @@ def read_fields(function, parameter):
         if parent.type == "assignment_expression" and parent.child_by_field_name("left") == n and _text(parent.child_by_field_name("operator"), source) == "=":
             continue
         result.add(_text(n.child_by_field_name("field"), source))
+    if snapshot is not None:
+        for invocation in internal:
+            if invocation.get('proof_status') != 'proven' or invocation['via_function_id'] != function['id']:
+                continue
+            for mapping in invocation['parameter_forwarding']:
+                if mapping['via_parameter'] == parameter:
+                    # A single certified level, with exact same pointer. Never
+                    # expand arbitrary calls, cycles or shared-type endpoints.
+                    result |= read_fields(snapshot.functions[invocation['function_id']], mapping['parameter'])
     return result
 
 
@@ -86,10 +95,21 @@ def project_input_flow(context, snapshot):
             consumers = [r for r in resources if r["function_id"] == fid and r["subject_parameter"] == binding["parameter"]]
             returned = [r for r in resources if r["function_id"] == via and r["return_value"]]
             input_parameters = {s["parameter"] for s in sinks if s["function_id"] == via and s["resolved"]}
-            fields = returned_input_fields(snapshot.functions[via], input_parameters) & read_fields(snapshot.functions[fid], binding["parameter"])
+            fields = returned_input_fields(snapshot.functions[via], input_parameters) & read_fields(snapshot.functions[fid], binding["parameter"], snapshot,
+                                                                                                      graph.get('internal_invocations', []))
             if fields and any(a["resource_id"] == b["resource_id"] for a in returned for b in consumers):
                 proof.append({"reason": "input_dependent_returned_fields", "fields": sorted(fields),
                     "evidence_ids": sorted({e for r in returned + consumers for e in r["evidence_ids"]})})
+            for invocation in graph.get('internal_invocations', []):
+                if invocation.get('proof_status') != 'proven' or invocation['function_id'] != fid or invocation['via_function_id'] != via:
+                    continue
+                for mapping in invocation['parameter_forwarding']:
+                    parents = [r for r in resources if r['function_id'] == via and r['subject_parameter'] == mapping['via_parameter']]
+                    input_parent = any(b['function_id'] == via and b['parameter'] == mapping['via_parameter']
+                                       and b['source'] in {'context','derived'} for b in context['input_contract']['bindings'])
+                    if mapping['parameter'] == binding['parameter'] and input_parent and any(
+                            p['resource_id'] == c['resource_id'] for p in parents for c in consumers):
+                        proof.append({'reason':'source_internal_parameter_forwarding', 'evidence_ids': invocation['evidence_ids']})
             if proof:
                 functions.add(fid)
                 indirect.append({"function_id": fid, "via_function_id": via, "kind": "invocation_input_dependency",

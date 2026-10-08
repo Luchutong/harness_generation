@@ -4,11 +4,11 @@ import json
 
 import pytest
 
-from harness_generation.harness_context import HarnessContextMiningLoop
+from harness_generation.harness_context import HarnessContextMiningLoop, ContextBudget
 from harness_generation.harness_context.agent import parse_group_resolution
 from harness_generation.harness_context.persistence import run_configuration
-from harness_generation.semantic_discovery.models import AgentModelResponse, AgentToolCall, canonical
-from test_harness_context import setup, direct_specs, assert_gate, ScriptedModel, CONTEXT
+from harness_generation.semantic_discovery.models import AgentModelResponse, AgentToolCall, canonical, FakeAgentModel
+from test_harness_context import setup, direct_specs, assert_gate, ScriptedModel, CONTEXT, context_specs
 
 
 class GroupedFixtureModel(ScriptedModel):
@@ -68,7 +68,7 @@ def test_group_unknown_ownership_stays_a_hard_gap(tmp_path):
     assert any(row["status"] == "resolved" for row in run.requirements["requirements"])
 
 
-def test_group_semantic_failure_rejects_only_its_item_without_repair(tmp_path):
+def test_group_semantic_failure_keeps_valid_items_after_bounded_correction(tmp_path):
     prepared = setup(tmp_path)
     def mutate(req, value):
             if req["kind"] == "ownership":
@@ -78,8 +78,85 @@ def test_group_semantic_failure_rejects_only_its_item_without_repair(tmp_path):
     assert_gate(run, "incomplete")
     assert {row["kind"] for row in run.requirements["requirements"] if row["status"] == "resolved"} == {
         "input_binding", "argument_construction", "buffer_length", "return_semantics"}
-    assert prepared[4].model_calls == 2
+    # The two investigated groups may each spend one remaining ordinary round
+    # on explicit correction. The invalid evidence never becomes a fact.
+    assert prepared[4].model_calls == 4
+    assert prepared[4].model_calls <= prepared[4].budget.max_total_model_calls
     assert run.metadata["unchanged_investigation_skips"]
+
+
+def test_unchanged_malformed_terminal_stops_without_extra_completeness_attempts(tmp_path):
+    prepared = setup(tmp_path, budget=ContextBudget(max_completeness_rounds=7, max_total_model_calls=80))
+    model = FakeAgentModel([AgentModelResponse(tool_calls=(
+        AgentToolCall(f"malformed_{i}", "submit_requirement_resolutions", "{"),)) for i in range(40)])
+    configuration = run_configuration(prepared[1], prepared[2], prepared[3], prepared[4].budget,
+        model, requirement_mode="grouped")
+    run = HarnessContextMiningLoop(model, prepared[4], group_requirements=True).run(
+        prepared[1], prepared[3], prepared[5], store=prepared[0][0], configuration=configuration)
+    assert_gate(run, "incomplete")
+    assert run.context["facts"] == []
+    assert run.metadata["termination"] == "execution_failure"
+    assert run.metadata["metrics"]["completeness_rounds"] == 1
+    # Ordinary correction and protocol/schema recovery are bounded within the
+    # one investigation; unchanged source cannot purchase another attempt.
+    assert len(model.calls) <= prepared[4].budget.max_rounds_per_requirement + 2
+    root = prepared[0][0].root / "harness_contexts" / prepared[1]["ft_id"] / "agent_runs"
+    assert all(len(list(directory.glob("attempt_*"))) == 1 for directory in root.iterdir())
+
+
+def test_provider_failure_without_new_source_never_retries_completeness_rounds(tmp_path):
+    prepared = setup(tmp_path, budget=ContextBudget(max_completeness_rounds=7, max_total_model_calls=80))
+    model = FakeAgentModel([])
+    configuration = run_configuration(prepared[1], prepared[2], prepared[3], prepared[4].budget,
+        model, requirement_mode="grouped")
+    run = HarnessContextMiningLoop(model, prepared[4], group_requirements=True).run(
+        prepared[1], prepared[3], prepared[5], store=prepared[0][0], configuration=configuration)
+    assert_gate(run, "incomplete")
+    assert run.context["facts"] == []
+    assert run.metadata["termination"] == "execution_failure"
+    assert run.metadata["metrics"]["completeness_rounds"] == 1
+    assert 1 <= len(model.calls) <= 2
+    assert run.metadata["metrics"]["model_calls"] == len(model.calls)
+    root = prepared[0][0].root / "harness_contexts" / prepared[1]["ft_id"] / "agent_runs"
+    assert all(len(list(directory.glob("attempt_*"))) == 1 for directory in root.iterdir())
+    assert all(json.loads((directory / "metadata.json").read_text())["resolution_attempt_failed"]
+        == "provider_error" for directory in root.iterdir())
+
+
+def test_newly_issued_cleanup_scope_retries_order_and_preserves_billed_attempts(tmp_path):
+    prepared = setup(tmp_path, CONTEXT, roles={"parse": ("core", "accepted_anchor"),
+        "create": ("support", "resource_creation")}, extras={"create": ["required_initialization"]})
+
+    class UsageFixtureModel(ScriptedModel):
+        def complete(self, messages, schemas):
+            response = super().complete(messages, schemas)
+            return AgentModelResponse(response.content, response.tool_calls, response.reasoning_content,
+                {"response_id": f"offline_scope_{len(self.calls)}",
+                 "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}})
+
+    model = UsageFixtureModel(context_specs(prepared[0][-1]), query_type="Context",
+        initial_ids=prepared[5].initial_ids)
+    configuration = run_configuration(prepared[1], prepared[2], prepared[3], prepared[4].budget, model)
+    run = HarnessContextMiningLoop(model, prepared[4]).run(prepared[1], prepared[3], prepared[5],
+        store=prepared[0][0], configuration=configuration)
+    assert_gate(run)
+    assert not run.completeness["execution_failed_requirements"]
+    order = next(r for r in run.requirements["requirements"] if r["kind"] == "call_order"
+        and r["subject_function_id"] == prepared[0][-1]["parse"])
+    root = prepared[0][0].root / "harness_contexts" / prepared[1]["ft_id"] / "agent_runs"
+    attempts = sorted((root / order["requirement_id"]).glob("attempt_*"))
+    assert len(attempts) == 2
+    first, second = [json.loads((attempt / "metadata.json").read_text()) for attempt in attempts]
+    assert first["resolution_attempt_failed"] == "protocol_error"
+    assert not second.get("resolution_attempt_failed")
+    rejected = json.loads((attempts[0] / "trace.json").read_text())
+    assert any(e.get("detail") == "fact_api_outside_discovered_scope" for e in rejected["events"])
+    responses = [e for path in root.glob("*/attempt_*/trace.json")
+        for e in json.loads(path.read_text())["events"] if e["kind"] == "model_response"]
+    assert len(responses) == len(model.calls) == run.metadata["metrics"]["model_calls"]
+    assert len({e["metadata"]["response_id"] for e in responses}) == len(responses)
+    assert sum(e["metadata"]["usage"]["total_tokens"] for e in responses) == (
+        run.metadata["metrics"]["tokens"]["total_tokens"]) == 12 * len(model.calls)
 
 
 def test_body_evidence_reused_with_scope_and_bounded_source_charge(tmp_path):
@@ -89,7 +166,8 @@ def test_body_evidence_reused_with_scope_and_bounded_source_charge(tmp_path):
     tools.activate(rows[0]); first = tools.bootstrap(); chars = prepared[4].source_chars
     tools.activate(rows[1]); second = tools.bootstrap()
     assert first["evidence_ids"] == second["evidence_ids"]
-    assert prepared[4].source_chars == chars and prepared[4].evidence_cache_hits == 1
+    assert prepared[4].source_chars == chars and tools.bootstrap_reuses == 1
+    assert prepared[4].tool_calls == 1
     assert set(second["evidence_ids"]) <= tools.visible_ids
     assert tools.execute("get_function", {"function": "foreign.c:1:parse"})["error"].startswith("outside_requirement_scope")
 

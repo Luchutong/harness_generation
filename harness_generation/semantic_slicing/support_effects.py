@@ -6,7 +6,7 @@ Only supplied complete bodies participate; signatures alone issue no effects.
 from ..semantic_discovery.tools import _walk, _text
 from .core_proofs import tree, accesses
 
-VERSION = "subject-support-effects-v1"
+VERSION = "subject-support-effects-v3"
 
 
 def releases(function, parameter, functions, issued, depth=0):
@@ -36,7 +36,7 @@ def releases(function, parameter, functions, issued, depth=0):
     return False
 
 
-def bindings(parent, api, functions, issued):
+def bindings(parent, api, functions, issued, *, release_summary=None):
     if parent['id'] not in issued or api['id'] not in issued:
         return {}
     source, body = tree(api)
@@ -62,20 +62,31 @@ def bindings(parent, api, functions, issued):
         return depth == subject['pointer_depth'] and (subject['type'] == base or subject['type'] == 'void' and depth == 1)
     has_return = any(n.type == 'return_statement' and n.named_children for n in _walk(body))
     for subject in subjects:
-        if has_return and api.get('return_pointer_depth') and compatible(subject, api.get('return_base_type'), api['return_pointer_depth']):
+        if (subject['subject_kind'] != 'PointerReturn' and has_return
+                and api.get('return_pointer_depth')
+                and compatible(subject, api.get('return_base_type'), api['return_pointer_depth'])):
             # Returned storage is an actual construction mechanism. Necessity,
             # aliasing, ownership and invocation identity remain Context work.
             add('creation', subject, 'pointer_return')
             add('initialization', subject, 'pointer_return')
         for p in api.get('parameters', []):
-            if p.get('pointer_depth', 0) >= 2 and compatible(subject, p['base_type'], p['pointer_depth'] - 1):
+            # The parent's return object is produced by the parent's own call.
+            # A same-type producer (including an internal delegate) cannot
+            # establish a separate harness invocation to construct that output.
+            # Creators for actual input subjects remain admissible; returned
+            # subjects still participate in cleanup effects below.
+            if (subject['subject_kind'] != 'PointerReturn' and p.get('pointer_depth', 0) >= 2
+                    and compatible(subject, p['base_type'], p['pointer_depth'] - 1)):
                 if any(n.type == 'assignment_expression' and
                     _text(n.child_by_field_name('left'), source).replace(' ', '') == '*' + p['name'] for n in _walk(body)):
                     add('creation', subject, 'out_parameter_write', p['name'])
                     add('initialization', subject, 'out_parameter_write', p['name'])
             if not compatible(subject, p['base_type'], p.get('pointer_depth', 0)):
                 continue
-            if releases(api, p['name'], functions, issued):
+            grounded_release = (release_summary and release_summary['paths']
+                and all(not path['uncertain'] and path['release_counts'].get('parameter:' + p['name']) == (1, 1)
+                    for path in release_summary['paths']))
+            if releases(api, p['name'], functions, issued) or grounded_release:
                 add('cleanup', subject, 'parameter_release', p['name'])
             fields = set(writes.get(p['name'], {})) & set(reads.get(subject['parameter'], ()))
             if fields:

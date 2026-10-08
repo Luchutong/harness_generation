@@ -9,7 +9,7 @@ from copy import deepcopy
 from ..semantic_discovery.models import canonical, digest
 from .argument_graph import parameter_id
 
-VERSION = 'graph-contract-reconciliation-v3'
+VERSION = 'graph-contract-reconciliation-v7'
 RECIPE_VERSION = 'canonical-construction-recipe-v1'
 
 
@@ -82,11 +82,24 @@ class GraphContractReconciler:
                 origin = origins.get(rid)
                 if not origin:
                     return None
+                planned = next((s for s in context.get('construction_contract', {}).get('sources', [])
+                    if s['kind'] == 'cleanup_consumption' and s.get('binding_scope') == 'single_harness_invocation'
+                    and s['function_id'] == parameter['function_id'] and s['parameter'] == parameter['name']), None)
+                if planned:
+                    if origin['function_id'] != planned['creator_api'] or origin['kind'] != 'return':
+                        return None  # Another source caller's API is not this planned invocation.
+                    producer = snapshot.functions[planned['creator_api']]
+                    return {'kind': 'resource_reference', 'resource_id': planned['resource_id'],
+                        'producer_api': producer['id'], 'dependencies': sorted(
+                            parameter_id(producer['id'], i) for i in range(len(producer['parameters'])))}
                 recipe = {'kind':'out_parameter_call' if origin['kind']=='out_parameter' else 'creator_call',
                     'resource_id':rid, 'producer_api':origin['function_id'],
                     'dependencies':candidate['dependencies']}
                 if origin['kind']=='out_parameter':
                     recipe['out_parameter']=origin['parameter']
+                if cleanup_source(parameter, rid):
+                    recipe['kind'] = 'resource_reference'
+                    recipe.pop('out_parameter', None)
                 return recipe
             if candidate.get('basis')=='out_parameter_storage':
                 matches=[(rid,origin) for rid,origin in origins.items() if origin['kind']=='out_parameter'
@@ -96,13 +109,21 @@ class GraphContractReconciler:
                 return {'kind':'out_parameter_storage','resource_id':matches[0][0], 'initialization':'null', 'dependencies':[]}
             if kind in {'fuzz_bytes','fuzz_size','constant','callback_object'}:
                 return {'kind':kind, 'dependencies':candidate['dependencies'],
-                    **({'value':candidate.get('constant')} if kind=='constant' else {})}
+                    **({'value':candidate.get('constant')} if kind=='constant' else {}),
+                    **({'producer_api':candidate['api']} if kind=='callback_object' and candidate.get('api') else {})}
             if kind=='zero_initialized_object':
                 return {'kind':'stack_zero_init', 'dependencies':[]}
             if kind=='local_stack_object':
                 recipe=candidate.get('recipe',{})
                 if recipe.get('initialization')=='aggregate_untranslated' or not parameter['pointer_depth']:
                     return None
+                if recipe.get('array_elements'):
+                    if (type(recipe['array_elements']) is not int or not 1 <= recipe['array_elements'] <= 4096
+                            or recipe.get('element_type') not in {'char','unsigned char','signed char'}
+                            or parameter['pointer_depth'] != 1 or parameter['base_type'] != recipe['element_type']):
+                        return None
+                    return {'kind':'stack_array_storage','dependencies':[],
+                            **{k:recipe[k] for k in ('array_elements','element_type','initialization','storage_scope','via_function_id') if k in recipe}}
                 return {'kind':'stack_storage','dependencies':[]}
             if kind=='derived_scalar':
                 expression=candidate.get('expression'); bounds=scalar_bounds(expression)
@@ -113,6 +134,15 @@ class GraphContractReconciler:
             if kind=='existing_resource' and candidate['dependencies']:
                 return {'kind':'parameter_reference','dependencies':candidate['dependencies']}
             return None
+
+        def cleanup_source(parameter, rid):
+            source = next((s for s in context.get('construction_contract', {}).get('sources', [])
+                if s.get('verified') is True and s['kind'] == 'cleanup_consumption'
+                and s['function_id'] == parameter['function_id'] and s['parameter'] == parameter['name']
+                and s['resource_id'] == rid), None)
+            return source or next((edge for edge in graph.get('edges', []) if edge['kind'] == 'released_by'
+                and edge['target'] == parameter['node_id'] and edge.get('resource_id') == rid
+                and edge['proof_status'] == 'proven'), None)
 
         def semantic_recipe(argument, parameter):
             kind=argument['construction']; fid=parameter['function_id']; name=parameter['name']
@@ -126,6 +156,18 @@ class GraphContractReconciler:
                     derived=any(link['function_id']==fid and link.get('length_parameter')==name and link.get('relation')=='derived'
                         for link in context['buffer_length_contract']['links'])
                     return {'kind':'length_relation' if derived else 'fuzz_size','dependencies':[]}
+                # A synchronous callback receives its dispatcher's actual
+                # argument. Reuse that proved input recipe, without requiring
+                # the callback to claim a second independent fuzz root.
+                for candidate in candidates[parameter['node_id']]:
+                    if candidate.get('basis') != 'callback_parameter_forwarding' or len(candidate['dependencies']) != 1:
+                        continue
+                    parent = resolved.get(candidate['dependencies'][0], {})
+                    recipe = parent.get('recipe') or {}
+                    if parent.get('status') == 'resolved' and recipe.get('kind') in {'fuzz_bytes','fuzz_size'}:
+                        return {k:v for k,v in recipe.items() if k not in {'recipe_id','version'}}
+                    if parent.get('status') == 'resolved' and recipe.get('kind') == 'derived_scalar':
+                        return {'kind':'length_relation','dependencies':[]}
                 return None
             if kind=='constant' and type(argument.get('constant')) in {int,bool}:
                 return {'kind':'constant','value':int(argument['constant']),'dependencies':[]}
@@ -148,6 +190,9 @@ class GraphContractReconciler:
                     producer=snapshot.functions[origin['function_id']]
                     dependencies=[parameter_id(producer['id'],i) for i,p in enumerate(producer['parameters'])
                         if origin['kind']!='out_parameter' or p['name']!=origin['parameter']]
+                    if cleanup_source(parameter, rid):
+                        return {'kind':'resource_reference', 'resource_id':rid,
+                            'producer_api':origin['function_id'], 'dependencies':sorted(dependencies)}
                     return {'kind':'out_parameter_call' if origin['kind']=='out_parameter' else 'creator_call',
                         'resource_id':rid,'producer_api':origin['function_id'],'dependencies':dependencies,
                         **({'out_parameter':origin['parameter']} if origin['kind']=='out_parameter' else {})}
@@ -173,6 +218,10 @@ class GraphContractReconciler:
             if source==semantic:
                 return True
             if source['kind']=='stack_zero_init' and semantic['kind']=='stack_storage':
+                return True
+            if source['kind']=='stack_array_storage' and semantic['kind']=='stack_storage':
+                return True
+            if source['kind']=='stack_array_storage' and source.get('initialization')=='all_zero' and semantic['kind']=='stack_zero_init':
                 return True
             if semantic['kind']=='length_relation' and source['kind'] in {'fuzz_size','derived_scalar'}:
                 return True
@@ -217,6 +266,17 @@ class GraphContractReconciler:
                 recipe=semantic_recipe(argument,parameter)
                 if recipe:
                     semantic.append((recipe,argument))
+                    # Existing construction sources are independently recomputed;
+                    # a semantic label alone cannot certify stack/field storage.
+                    source=next((s for s in context.get('construction_contract',{}).get('sources',[])
+                        if s['construction_id']==argument.get('construction_source') and s.get('verified') is True
+                        and s['function_id']==parameter['function_id'] and s['parameter']==parameter['name']
+                        and s['kind']=='public_callback_object'),None)
+                    if source and recipe['kind'] in {'stack_storage','stack_zero_init'}:
+                        certified={k:v for k,v in recipe.items() if k not in {'certified_fields','source_certificate'}}
+                        proof=dict(candidate_id=source['construction_id'], evidence_ids=source['evidence_ids'])
+                        mechanical.append((certified,proof))
+                        grouped[canonical(certified)].append(proof)
             for key,members in sorted(grouped.items()):
                 classes.append({'parameter_id':pid,'equivalence_id':'equivalence_'+digest([pid,key])[:24],
                     'recipe':mechanical[next(i for i,(r,_) in enumerate(mechanical) if canonical(r)==key)][0],
@@ -263,9 +323,7 @@ class GraphContractReconciler:
             elif len(source_options)>1:
                 row['reason']='runtime_origin_ambiguous'
             elif len(semantic_options)==1:
-                chosen=next(iter(semantic_options.values()));row['reason']='semantic_only_not_reproduced'
-                if chosen['kind'] in {'length_relation','null_pointer_initializer'}:
-                    chosen=None
+                row['reason']='semantic_only_requires_source_proof'
                 diagnostics.append({'code':'semantic_recipe_not_reproduced','parameter_id':pid,
                     'semantic_fact_ids':row['semantic_fact_ids'],'reason':'no_mechanical_origin_proof'})
             if chosen:
@@ -308,7 +366,7 @@ def project_canonical_construction(context, contract, requirements, snapshot):
             continue
         recipe=row['recipe']; kind=recipe['kind']
         construction={'fuzz_bytes':'input','fuzz_size':'input','constant':'constant','stack_zero_init':'zero_init',
-            'stack_storage':'stack','creator_call':'creator_api','out_parameter_call':'creator_api',
+            'stack_storage':'stack','stack_array_storage':'stack','creator_call':'creator_api','out_parameter_call':'creator_api',
             'out_parameter_storage':'derived','derived_scalar':'derived','resource_reference':'derived',
             'parameter_reference':'derived','callback_object':'callback'}[kind]
         argument={'function_id':key[0],'parameter':key[1],'construction':construction,

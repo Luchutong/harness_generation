@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from .artifacts import ArtifactStore
 from .validation import VALIDATION_SCHEMA_VERSION, ValidationResult
 
 
@@ -307,103 +306,6 @@ class CompilerValidator:
         result.save(validation_path)
         return result
 
-    def validate_triplet(
-        self,
-        source: str | Path,
-        *,
-        artifacts: str | Path,
-        ft_id: str,
-        output: str | Path | None = None,
-        stage: str = "compiler",
-        preserve_existing_linker: bool = True,
-    ) -> ValidationResult:
-        """Validate and persist isolated compiler/linker artifacts."""
-
-        layout = ArtifactStore(Path(artifacts)).for_triplet(ft_id)
-        result = self.validate(
-            source,
-            validation_path=layout.compiler_validation,
-            output=output,
-            stage=stage,
-        )
-        metadata = result.metadata
-        syntax = metadata["syntax"]
-        syntax_valid = bool(metadata["syntax_valid"])
-        compiler_status = (
-            "passed" if syntax_valid else
-            "unavailable" if syntax["status"] == "unavailable" else
-            "failed"
-        )
-        compiler_errors = list(result.errors) if compiler_status == "failed" else []
-        compiler_warnings = (
-            list(result.warnings) if compiler_status == "unavailable" else []
-        )
-        layout.write_validation("compiler", {
-            "validator": "compiler",
-            "status": compiler_status,
-            "errors": compiler_errors,
-            "warnings": compiler_warnings,
-            "command": list(syntax["command"]),
-            "return_code": syntax["return_code"],
-            "stdout": syntax["stdout"],
-            "stderr": syntax["stderr"],
-            "metadata": {
-                "schema_version": VALIDATION_SCHEMA_VERSION,
-                "stage": stage,
-                "source": metadata["source"],
-                "syntax_valid": syntax_valid,
-                "execution_status": syntax["status"],
-            },
-        })
-
-        link_status = metadata["link_validation"]
-        link = metadata["link"]
-        if compiler_status != "passed":
-            persisted_link_status = "skipped"
-            link_errors: list[str] = []
-            link_warnings = [
-                "link validation skipped because compiler validation did not pass"
-            ]
-        elif link_status == LINK_VALID:
-            persisted_link_status = "passed"
-            link_errors = []
-            link_warnings = []
-        elif link_status == LINK_INVALID:
-            persisted_link_status = "failed"
-            link_errors = list(result.errors)
-            link_warnings = []
-        else:
-            persisted_link_status = "unavailable"
-            link_errors = []
-            link_warnings = list(result.warnings)
-        linker_document = {
-            "validator": "linker",
-            "status": persisted_link_status,
-            "errors": link_errors,
-            "warnings": link_warnings,
-            "command": [] if link is None else list(link["command"]),
-            "return_code": None if link is None else link["return_code"],
-            "stdout": "" if link is None else link["stdout"],
-            "stderr": "" if link is None else link["stderr"],
-            "metadata": {
-                "schema_version": VALIDATION_SCHEMA_VERSION,
-                "stage": stage,
-                "source": metadata["source"],
-                "output": metadata["output"],
-                "link_validation": link_status,
-                "execution_status": None if link is None else link["status"],
-            },
-        }
-        # A syntax-only compiler rerun must not overwrite an independently
-        # persisted linker result. Create the initial unavailable record, but
-        # only replace it when a link command actually ran.
-        if (
-            link is not None
-            or not preserve_existing_linker
-            or not layout.linker_validation.is_file()
-        ):
-            layout.write_validation("linker", linker_document)
-        return result
 
     def _run(self, command: Sequence[str]) -> CommandResult:
         canonical = tuple(command)

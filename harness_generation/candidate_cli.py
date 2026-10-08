@@ -14,8 +14,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="harness-generation candidates",
                                      description="Record possible fuzz entries without semantic elimination")
     parser.add_argument("--artifacts", required=True, type=Path)
-    parser.add_argument("--policy", choices=("broad", "legacy"), default="broad",
-                        help="Processing selection policy; both retain every parsed function")
+    parser.add_argument("--policy", choices=("broad",), default="broad",
+                        help="Broad discovery retains every parsed function")
     parser.add_argument("--max-candidates", type=_non_negative_integer,
                         help="Limit the processing selection, retaining deferred candidates")
     args = parser.parse_args(argv)

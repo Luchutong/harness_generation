@@ -86,7 +86,8 @@ class ProjectSnapshot:
         return cls(artifacts, artifact_fingerprint(artifacts), digest({
             "schema_version": artifacts.source_schema_versions.get("functions", 1),
             "files": sorted(artifacts.files), "functions": list(artifacts.functions), "structs": list(artifacts.structs),
-            **({"callback_typedefs": list(artifacts.callback_typedefs)} if artifacts.callback_typedefs else {})}))
+            **({"callback_typedefs": list(artifacts.callback_typedefs)} if artifacts.callback_typedefs else {}),
+            **({"source_hashes": dict(artifacts.source_hashes)} if artifacts.source_hashes else {})}))
 
     @property
     def functions(self):

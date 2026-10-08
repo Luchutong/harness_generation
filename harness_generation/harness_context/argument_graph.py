@@ -13,7 +13,7 @@ from ..semantic_discovery.tools import _walk, _text
 from .value_flow import body_tree, complete_bodies, unique_callee
 from .resource_identity import releases_parameter
 
-VERSION = "argument-construction-graph-v3"
+VERSION = "argument-construction-graph-v6"
 DEPENDENCY_VERSION = "harness-dependency-graph-v1"
 NODE_TYPES = ("Function", "Parameter", "ReturnValue", "OutParameter", "LocalValue",
               "StructField", "Resource", "FuzzInput", "Constant", "CallbackObject", "Allocator")
@@ -53,6 +53,40 @@ def _straight(body):
     return body is not None and not body.has_error and not any(n.type in NONLINEAR for n in _walk(body))
 
 
+def _nonnull_guard_name(statement, source):
+    from .internal_invocations import unwrap
+    if statement.type != 'if_statement' or statement.child_by_field_name('alternative') is not None:
+        return None
+    condition = unwrap(statement.child_by_field_name('condition'))
+    if condition is not None and condition.type == 'identifier':
+        return _text(condition, source)
+    if condition is not None and condition.type == 'binary_expression' and _text(condition.child_by_field_name('operator'), source) == '!=':
+        left, right = condition.child_by_field_name('left'), condition.child_by_field_name('right')
+        if left.type == 'identifier' and right.type == 'number_literal' and _text(right, source) == '0':
+            return _text(left, source)
+    return None
+
+
+def _nullable_call_guards(body, source):
+    """Only exact nonnull guards around a straight sequence of direct calls."""
+    if body is None or body.has_error:
+        return False
+    guards = [n for n in _walk(body) if n.type in NONLINEAR]
+    if not guards:
+        return False
+    for guard in guards:
+        if guard.parent != body or _nonnull_guard_name(guard, source) is None:
+            return False
+        consequence = guard.child_by_field_name('consequence')
+        statements = consequence.named_children if consequence.type == 'compound_statement' else [consequence]
+        statements = [n for n in statements if n.type != 'comment']
+        if not statements or any(n.type != 'expression_statement' or len(n.named_children) != 1
+                or n.named_children[0].type != 'call_expression'
+                or n.named_children[0].child_by_field_name('function').type != 'identifier' for n in statements):
+            return False
+    return True
+
+
 class GraphBuilder:
     def __init__(self, context, ft, requirements, snapshot, records):
         self.context, self.ft, self.requirements = context, ft, requirements
@@ -61,8 +95,11 @@ class GraphBuilder:
             eid == 'ev_' + digest({'snapshot': snapshot.source_fingerprint,
                 'record': {k:v for k,v in record.items() if k != 'evidence_id'}})[:32]}
         self.bodies = complete_bodies(snapshot, self.records)
+        self.release_bodies = {fid: eids for fid, eids in self.bodies.items() if fid not in ft['excluded_functions']}
         self.nodes, self.edges, self.candidates, self.calls = {}, {}, {}, []
         self.diagnostics, self.state_edges, self.wrappers = [], [], []
+        self.dispatches = []
+        self.internal_invocations = []
         self.params, self.endpoints = {}, defaultdict(list)
         self.functions = {r['function_id'] for r in ft['core_functions'] + ft['support_candidates']}
         self.functions |= set(self.bodies)
@@ -117,6 +154,9 @@ class GraphBuilder:
                 (value['kind']=='fuzz_bytes' and not parameter['pointer_depth']) or
                 (value['kind']=='constant' and parameter['pointer_depth'] and value.get('constant') != 0)):
             entry.update(proof_status='rejected', rejection_reason='value_flow_type_mismatch')
+        if value.get('recipe', {}).get('array_elements') and (parameter['pointer_depth'] != 1
+                or parameter['base_type'] != value['recipe']['element_type']):
+            entry.update(proof_status='rejected', rejection_reason='value_flow_type_mismatch')
         cid = _id('candidate', entry)
         self.candidates[cid] = {'candidate_id': cid, **entry}
         self.edge('passed_as', source, target, entry['evidence_ids'], proof_status=entry['proof_status'])
@@ -125,7 +165,7 @@ class GraphBuilder:
         values = {}
         for binding in self.context['input_contract']['bindings']:
             fid, name = binding['function_id'], binding['parameter']
-            if (fid, name) not in self.params or binding['source'] != 'fuzz_data' or binding['transform'] != 'direct':
+            if (fid, name) not in self.params or binding['source'] != 'fuzz_data' or binding['transform'] not in {'direct', 'copy', 'nul_terminate'}:
                 continue
             if fid not in self.bodies or not set(binding['evidence_ids']) <= self.records.keys():
                 continue
@@ -206,6 +246,66 @@ class GraphBuilder:
                     result[caller_id, name] = entry
         return result
 
+    def callback_value(self, fid, parameter, argument, caller, source):
+        """Resolve a passed function value by exact declaration, never by name role."""
+        from .callbacks import callback_declarations
+        from .evidence import callback_abis
+        if fid not in self.bodies or argument.type != 'identifier' or any(p['name'] == _text(argument, source) for p in caller['parameters']):
+            return None
+        declarations = [d for d in callback_declarations(self.snapshot.functions[fid], self.snapshot)
+            if d['parameter'] == parameter['name'] and d['field'] is None]
+        target = unique_callee(self.snapshot, _text(argument, source), caller)
+        if len(declarations) != 1 or not target or target['id'] not in self.bodies or target['id'] in self.ft['excluded_functions']:
+            return None
+        if callback_abis(declarations[0]['signature']) != callback_abis(target['signature']):
+            return None
+        node = self.node('CallbackObject', [fid, parameter['name'], target['id']],
+            source_kind='callback_object', function_id=target['id'], callback_id=declarations[0]['callback_id'])
+        return dict(node=node, kind='callback_object', api=target['id'],
+            evidence_ids=sorted(self.bodies[fid] | self.bodies[target['id']]))
+
+    def callback_dispatch(self, callee, call):
+        """Reproduce one synchronous indirect call and its exact parameter forwarding."""
+        source, body = body_tree(callee)
+        if callee['id'] not in self.bodies or not _straight(body):
+            return
+        # This schedule certifies a thin synchronous dispatcher. Storage,
+        # additional calls and early returns need a richer lifetime schedule.
+        if len([n for n in body.named_children if n.type != 'comment']) != 1:
+            return
+        for name, value in call['arguments'].items():
+            if value.get('kind') != 'callback_object' or not value.get('api'):
+                continue
+            indirect = [n for n in _walk(body) if n.type == 'call_expression'
+                and _text(n.child_by_field_name('function'), source) == name]
+            if len(indirect) != 1:
+                continue
+            if indirect[0].parent.type not in {'return_statement', 'expression_statement'}:
+                continue
+            parameters = {p['name'] for p in callee['parameters']}
+            if any(n.type in {'assignment_expression', 'update_expression'} and
+                   _text(n.child_by_field_name('left') if n.type == 'assignment_expression' else n.named_children[0], source) in parameters
+                   for n in _walk(body)):
+                continue
+            target = self.snapshot.functions[value['api']]
+            self.function(target['id'])
+            args = indirect[0].child_by_field_name('arguments').named_children
+            if len(args) != len(target['parameters']) or any(a.type != 'identifier'
+                    or (callee['id'], _text(a, source)) not in self.params for a in args):
+                continue
+            eids = sorted(set(call['evidence_ids']) | self.bodies[callee['id']] | self.bodies[target['id']])
+            forwarding = []
+            for parameter, argument in zip(target['parameters'], args):
+                parent_name = _text(argument, source)
+                parent = self.params[callee['id'], parent_name]
+                self.candidate(self.params[target['id'], parameter['name']],
+                    dict(node=parent, kind='existing_resource', dependencies=[parent]), eids,
+                    basis='callback_parameter_forwarding', caller_id=callee['id'])
+                forwarding.append(dict(parameter=parameter['name'], via_parameter=parent_name))
+            self.dispatches.append(dict(function_id=target['id'], via_function_id=callee['id'],
+                callback_parameter=name, parameter_forwarding=forwarding, calls_per_invocation=1,
+                evidence_ids=eids, proof_status='proven'))
+
     def semantic_candidates(self):
         # Existing validated propositions remain distinct from mechanical proof.
         # They supply candidate mechanisms but cannot invent graph identities.
@@ -231,8 +331,56 @@ class GraphBuilder:
             node_kind = 'CallbackObject' if kind == 'callback_object' else 'Constant' if kind == 'constant' else 'LocalValue'
             node = self.node(node_kind, [fid, name, kind, argument.get('constant')], source_kind=kind)
             self.candidate(self.params[fid, name], {'node': node, 'kind': kind,
+                'proof_status': 'candidate',
                 **({'constant': argument['constant']} if kind == 'constant' else {})}, eids,
                 basis='validated_semantic_fact', fact_id=argument['fact_id'])
+
+    def construction_strategies(self):
+        """Reproduce a planned creator call when no caller origin was observed.
+
+        This proves a construction mechanism, not an observed runtime alias or
+        ownership. Existing resource bindings and cleanup proofs fix the slot;
+        every producer argument still has to close recursively.
+        """
+        from .models import resource_id
+        from ..semantic_slicing.support_effects import bindings
+        resources = self.context['lifecycle_contract']['resources']
+        for argument in self.context['argument_contract']['arguments']:
+            fid, name, rid = argument['function_id'], argument['parameter'], argument.get('resource_id')
+            if fid not in self.bodies or not rid or (fid, name) not in self.params:
+                continue
+            source = next((s for s in self.context.get('construction_contract', {}).get('sources', [])
+                if s.get('verified') is True and s['function_id'] == fid and s['parameter'] == name
+                and s['kind'] == 'cleanup_consumption' and s['resource_id'] == rid), None)
+            api = argument.get('api') if argument['construction'] == 'creator_api' else source.get('creator_api') if source else None
+            if api not in self.bodies or api in self.ft['excluded_functions']:
+                continue
+            # A declaration recipe cannot replace or collapse observed instances.
+            if not (source and source.get('binding_scope') == 'single_harness_invocation') and any(n['node_type'] == 'Resource' and n['origin']['function_id'] == api
+                   and 'caller_id' in n['origin'] for n in self.nodes.values()):
+                continue
+            parent, producer = self.snapshot.functions[fid], self.snapshot.functions[api]
+            effects = bindings(parent, producer, self.snapshot.functions, set(self.bodies)).get('creation', [])
+            if not any(e['parameter'] == name and e['effect'] == 'pointer_return' for e in effects):
+                continue
+            origin = dict(function_id=api, kind='return', parameter=None,
+                type=producer.get('return_base_type'), pointer_depth=producer.get('return_pointer_depth'))
+            declared = {resource_id(api), 'resource_' + digest(origin)[:24]}
+            constructed = any(b['function_id'] == api and b.get('return_value') and b['resource_id'] == rid
+                and b['reason'] == 'unique_harness_creator_binding'
+                for b in self.context.get('resource_identity', {}).get('bindings', []))
+            if rid not in declared and not constructed and not source:
+                continue
+            # The independently projected cleanup proof carries the same slot.
+            if source and source['creator_api'] != api:
+                continue
+            eids = sorted(self.bodies[fid] | self.bodies[api] | (set(source['evidence_ids']) if source else set()))
+            node = self.node('Resource', rid, resource_id=rid, origin=origin,
+                ownership='unresolved', proof_basis='planned_creator_strategy', evidence_ids=eids)
+            deps = [self.params[api, p['name']] for p in producer['parameters']]
+            self.candidate(self.params[fid, name], dict(node=node, kind='creator_return', api=api,
+                resource_id=rid, dependencies=deps), eids, basis='source_checked_creator_strategy')
+            self.edge('produces', self.function(api), node, eids)
 
     def flow(self, caller_id, seeds):
         caller = self.snapshot.functions[caller_id]
@@ -242,7 +390,7 @@ class GraphBuilder:
             self.diagnostics.append({'code':'resource_alias_ambiguous', 'function_id':caller_id,
                 'reason':'cpp_construction_unmodelled', 'evidence_ids':eids})
             return
-        if not _straight(body):
+        if not _straight(body) and not _nullable_call_guards(body, source):
             self.diagnostics.append({'code': 'resource_alias_ambiguous', 'function_id': caller_id,
                 'reason': 'branch_loop_or_unparsed_body', 'evidence_ids': eids})
             return
@@ -274,6 +422,13 @@ class GraphBuilder:
                              'rejection_reason': 'unproved_expression'}
 
         def scalar(node):
+            from .internal_invocations import sizeof_array
+            arrays = {name: value['recipe'] for name, value in env.items() if value.get('recipe', {}).get('array_elements')}
+            array = sizeof_array(node, source, arrays)
+            if array:
+                number = array['array_elements']
+                return {'node': self.node('Constant', [number], value=number), 'kind': 'constant',
+                        'constant': number, 'expression': {'op': 'constant', 'value': number}, 'lower': number, 'upper': number}
             if node.type == 'number_literal':
                 spelling = _text(node, source)
                 try:
@@ -361,6 +516,8 @@ class GraphBuilder:
             for parameter, argument in zip(callee['parameters'], args):
                 pid = self.params[fid, parameter['name']]
                 value = evaluate(argument)
+                if value is None and _text(argument, source) not in env:
+                    value = self.callback_value(fid, parameter, argument, caller, source)
                 if value is None:
                     value = {'node':self.node('LocalValue',[caller_id,argument.start_byte,'unknown']),
                         'kind':'unknown', 'proof_status':'candidate', 'rejection_reason':'unproved_expression'}
@@ -391,9 +548,10 @@ class GraphBuilder:
                             env[local_name] = {'node': self.node('LocalValue', [caller_id, local_name]), 'kind': 'out_parameter',
                                 'proof_status': 'candidate', 'rejection_reason': 'out_parameter_origin_unknown', 'dependencies': [pid]}
             self.calls.append(call)
+            self.callback_dispatch(callee, call)
             for parameter in callee['parameters']:
                 value = call['arguments'][parameter['name']]
-                if value and value.get('resource_id') and releases_parameter(callee,parameter['name'],self.snapshot,self.bodies):
+                if value and value.get('resource_id') and releases_parameter(callee,parameter['name'],self.snapshot,self.release_bodies):
                     for name, stored in list(env.items()):
                         if stored.get('resource_id') == value['resource_id']:
                             env[name] = {'node':stored['node'], 'kind':'unknown', 'proof_status':'rejected',
@@ -426,6 +584,13 @@ class GraphBuilder:
 
         for statement in body.named_children:
             if statement.type == 'declaration':
+                from .internal_invocations import byte_array
+                array = byte_array(statement, source)
+                if array:
+                    local(array['name'], {'node': self.node('LocalValue', [caller_id, array['name'], 'array_storage']),
+                        'kind': 'local_stack_object', 'recipe': {'array_elements': array['elements'],
+                            'element_type': array['element_type'], 'initialization': array['initialization']}}, statement, declaration=True)
+                    continue
                 for declarator in statement.named_children:
                     target = declarator.child_by_field_name('declarator') if declarator.type == 'init_declarator' else declarator
                     names = [n for n in _walk(target) if n.type == 'identifier']
@@ -459,6 +624,17 @@ class GraphBuilder:
                 if statement.named_children:
                     evaluate(statement.named_children[0])
                 break
+            elif statement.type == 'if_statement':
+                name = _nonnull_guard_name(statement, source)
+                value = env.get(name) or {}
+                if not value.get('resource_id') or value.get('proof_status', 'proven') != 'proven':
+                    env.clear()
+                    break
+                consequence = statement.child_by_field_name('consequence')
+                children = consequence.named_children if consequence.type == 'compound_statement' else [consequence]
+                for child in children:
+                    if child.type != 'comment':
+                        evaluate(child.named_children[0])
             elif statement.type != 'comment':
                 env.clear()
                 break
@@ -471,6 +647,32 @@ class GraphBuilder:
                 if [_text(arg, source) for arg in args] == [p['name'] for p in caller.get('parameters', [])]:
                     self.wrappers.append({'function_id': caller_id, 'role': 'delegation_wrapper',
                         'changes_core_classification': False, 'evidence_ids': eids})
+
+    def internal_calls(self):
+        from .internal_invocations import repeated_invocations
+        for fid in sorted(self.context['core_apis']):
+            for descriptor in repeated_invocations(self.snapshot.functions[fid], self.snapshot, self.bodies, self.ft['excluded_functions']):
+                target = descriptor['function_id']
+                self.function(target)
+                for row in descriptor['parameter_forwarding']:
+                    parent = self.params[fid, row['via_parameter']]
+                    self.candidate(self.params[target, row['parameter']],
+                        dict(node=parent, kind='existing_resource', dependencies=[parent]), descriptor['evidence_ids'],
+                        basis='internal_parameter_forwarding', caller_id=fid, call_offset=descriptor['call_offset'],
+                        invocation_proof_id=descriptor['invocation_proof_id'])
+                for row in descriptor['local_arguments']:
+                    pid = self.params[target, row['parameter']]
+                    if row['kind'] == 'array_capacity':
+                        number = row['value']
+                        value = dict(node=self.node('Constant', [number], value=number), kind='constant', constant=number,
+                                     expression={'op':'constant', 'value':number})
+                    else:
+                        value = dict(node=self.node('LocalValue', [fid, row['name'], 'internal_array']), kind='local_stack_object',
+                            recipe={'array_elements':row['elements'], 'element_type':row['element_type'],
+                                    'initialization':row['initialization'], 'storage_scope':'internal_invocation', 'via_function_id':fid})
+                    self.candidate(pid, value, descriptor['evidence_ids'], basis='source_internal_argument', caller_id=fid,
+                        call_offset=descriptor['call_offset'], invocation_proof_id=descriptor['invocation_proof_id'])
+                self.internal_invocations.append(descriptor)
 
     def dependencies(self):
         by_target = defaultdict(list)
@@ -551,7 +753,7 @@ class GraphBuilder:
             for call, name in uses:
                 fid = call['function_id']
                 source, body = body_tree(self.snapshot.functions[fid])
-                if _straight(body) and releases_parameter(self.snapshot.functions[fid], name, self.snapshot, self.bodies):
+                if _straight(body) and releases_parameter(self.snapshot.functions[fid], name, self.snapshot, self.release_bodies):
                     cleanup.append(call)
                     self.edge('released_by', node['node_id'], self.params[fid,name],
                         call['evidence_ids'] + sorted(self.bodies[fid]), resource_id=rid)
@@ -598,6 +800,8 @@ class GraphBuilder:
         self.semantic_candidates()
         for caller in sorted(self.bodies):
             self.flow(caller, seeds)
+        self.construction_strategies()
+        self.internal_calls()
         for wrapper in self.wrappers:
             fn = self.nodes[self.function(wrapper['function_id'])]
             fn['slice_role'] = fn['role']
@@ -625,6 +829,8 @@ class GraphBuilder:
             'unresolved_ownership': sorted(n['node_id'] for n in self.nodes.values() if n['node_type']=='Resource' and n['ownership']=='unresolved'),
             'state_dependencies': sorted({canonical(e):e for e in self.state_edges if e['before']!=e['after']}.values(), key=canonical),
             'wrapper_diagnostics': sorted(self.wrappers, key=canonical),
+            'callback_dispatches': sorted({canonical(d): d for d in self.dispatches}.values(), key=canonical),
+            'internal_invocations': sorted(self.internal_invocations, key=canonical),
             'diagnostics': sorted(self.diagnostics, key=canonical)}
 
 

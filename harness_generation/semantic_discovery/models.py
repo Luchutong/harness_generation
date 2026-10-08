@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 SCHEMA_VERSION = 1
-POLICY_VERSION = "recall-first-entry-validation-v3"
+POLICY_VERSION = "recall-first-entry-validation-v8"
 INPUT_MODES = ("direct_buffer", "structured_input", "context_feed", "callback_stream",
                "wrapper", "processor_api", "none", "unknown")
 POSITIVE_REASONS = ("external_input_sink", "buffer_length_relation", "structured_input",
@@ -68,6 +68,14 @@ class DecisionSchemaError(ValueError):
     def to_dict(self):
         return {"error": "schema_validation_failed", "field": self.field,
                 "received": self.received, "allowed_values": self.allowed_values}
+
+
+class TerminalSelectionError(ValueError):
+    """Trusted decoder rejection of a precise currently issued identifier.
+
+    Subclasses register a terminal_repair_category. Error strings, diagnostic
+    dictionaries, and attributes on unrelated exceptions grant no extra call.
+    """
 
 
 @dataclass(frozen=True)

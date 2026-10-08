@@ -82,7 +82,7 @@ def build_api_closure(ft, requirements, resolutions, snapshot, state):
             decisions = [fact["value"]["decision"] for result in resolutions.values() for fact in result["facts"]
                          if fact["function_id"] == fid and fact["predicate"] == "support_decision"]
             # A rejection may be explicit without making the candidate callable.
-            if decisions == ["rejected"]:
+            if decisions and set(decisions) == {"rejected"}:
                 matching = [result for result in resolutions.values() if any(f["function_id"] == fid for f in result["facts"])]
                 rejected.append({"function_id": fid, "required_by": [], "requirement_ids": sorted(r["requirement_id"] for r in matching),
                     "reasons": sorted({f["value"]["reason"] for r in matching for f in r["facts"] if f["predicate"] == "support_decision"}),

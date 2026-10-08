@@ -4,10 +4,10 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 
-from ..semantic_discovery.models import canonical
+from ..semantic_discovery.models import canonical, DecisionSchemaError
 from ..semantic_discovery.tools import _schema
 
-SLICE_POLICY_VERSION = "source-choice-semantic-slice-v3"
+SLICE_POLICY_VERSION = "source-choice-semantic-slice-v12"
 ROLE_REASONS = {
     "core": ("accepted_anchor", "external_input_injection", "input_consumption", "target_state_progression",
              "core_processing", "core_data_dependency", "core_state_dependency"),
@@ -42,6 +42,51 @@ for _role, _reasons in ROLE_REASONS.items():
 SLICE_TOOL_SCHEMA["function"]["parameters"]["properties"]["classification"]["items"] = {"anyOf": _role_rows}
 
 
+class ClassificationSchemaError(DecisionSchemaError):
+    """All repairable row-shape failures from one strict terminal submission."""
+
+    def __init__(self, errors):
+        first = errors[0]
+        super().__init__(first["field"], first["received"], first["allowed_values"])
+        self.errors = errors
+
+    def to_dict(self):
+        return {**super().to_dict(), "errors": deepcopy(self.errors),
+                "repair_instruction": "Correct every reported row. Select at most one issued choice per function; "
+                    "unresolved rows need concrete missing-proof questions. Do not invent roles or evidence."}
+
+
+def _classification_shape(rows, tools):
+    """Inspect the entire list before semantics, without accepting a partial list."""
+    errors, seen = [], {}
+    fields = {"function_id", "role", "reason_codes", "evidence_ids", "open_questions"}
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict) or set(row) != fields:
+            raise ValueError("invalid classification fields")
+        fid, role = row["function_id"], row["role"]
+        if not isinstance(fid, str) or not fid or len(fid) > 512 or fid not in tools.authorized_ids:
+            raise ValueError("unknown or duplicate function identity")
+        if not isinstance(role, str) or role not in ROLE_REASONS:
+            raise ValueError("unknown role")
+        if fid in seen:
+            errors.append({"error": "duplicate_function_identity", "field": f"classification[{index}].function_id",
+                "function_id": fid, "received": fid, "first_row": seen[fid], "duplicate_row": index,
+                "allowed_values": "one classified row per function; select exactly one issued alternative"})
+        else:
+            seen[fid] = index
+        for key in ("reason_codes", "evidence_ids", "open_questions"):
+            values = row[key]
+            if (not isinstance(values, list) or len(values) > 64
+                    or any(not isinstance(v, str) or not v.strip() or len(v) > 1024 for v in values)):
+                raise ValueError("invalid classification string array")
+        if role == "unresolved" and not row["open_questions"]:
+            errors.append({"error": "unresolved_question_missing", "field": f"classification[{index}].open_questions",
+                "function_id": fid, "received": [],
+                "allowed_values": "at least one concrete missing-proof question for this unresolved function"})
+    if errors:
+        raise ClassificationSchemaError(errors)
+
+
 def validate_submission(content, tools):
     if not isinstance(content, str) or len(content) > 64000:
         raise ValueError("invalid slice submission")
@@ -54,6 +99,9 @@ def validate_submission(content, tools):
     if any(isinstance(row, dict) and 'choice_id' in row for row in rows):
         from .proposals import expand
         rows = expand(rows, tools)
+    _classification_shape(rows, tools)
+    from .source_exclusions import validate_exclusions
+    validate_exclusions(rows, tools)
     seen = set()
     canonical_rows = []
     anchor = tools.frontier.candidate.function_id
@@ -88,14 +136,14 @@ def validate_submission(content, tools):
             records = [tools.evidence[eid] for eid in eids if fid in tools.evidence_functions.get(eid, set())]
             if fid != anchor and role == "core" and not any(semantic_source_record(r, fid, tools.index) for r in records):
                 raise ValueError("weak structural evidence cannot establish CORE")
-            if role == "exclude" and not any(semantic_source_record(r, fid, tools.index, complete=True) for r in records):
+            from .core_proofs import source_evidence
+            if role == "exclude" and not source_evidence(fid, tools.index.functions,
+                    {eid: tools.evidence[eid] for eid in eids}):
                 raise ValueError("EXCLUDE requires affirmative complete function source")
             if role == "support" and not any(semantic_source_record(r, fid, tools.index) or
                     (r["tool"] == "get_semantic_frontier" and r.get("frontier_kind") == "strong_relation"
                      and not r.get("truncated")) for r in records):
                 raise ValueError("SUPPORT requires source or an explicit strong relation")
-        elif not row["open_questions"]:
-            raise ValueError("UNRESOLVED requires an open question")
         from .core_proofs import inclusion_proofs
         proofs = inclusion_proofs(anchor, fid, tools.index.functions, tools.evidence, eids) if role == "core" else []
         if role == "core" and not proofs:

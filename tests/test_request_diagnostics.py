@@ -85,7 +85,8 @@ def test_context_provider_failure_persists_execution_state_without_facts(tmp_pat
     assert run.context['facts']==[]
     assert run.completeness['status']=='incomplete' and not run.completeness['generation_allowed']
     assert run.metadata['execution_failures']
-    assert len(model.calls)==1  # Another completeness pass is not a request retry.
+    transient = category in {'http_429', 'timeout'}
+    assert len(model.calls)==(2 if transient else 1)
     assert all(row['resolution_attempt_failed']=='provider_error' for row in run.requirements['requirements'])
     assert run.completeness['execution_failed_requirements']
     event=next(e for e in run.metadata['execution_failures'][0]['errors'] if e['kind']=='model_error')
@@ -94,6 +95,14 @@ def test_context_provider_failure_persists_execution_state_without_facts(tmp_pat
     root=prepared[0][0].root/'harness_contexts'/run.context['ft_id']
     for path in root.glob('agent_runs/*/metadata.json'):
         assert json.loads(path.read_text())['execution_status']=='provider_error'
+    traces = [json.loads(path.read_text()) for path in root.glob('agent_runs/*/attempt_*/trace.json')]
+    recoveries = [event for trace in traces for event in trace['events']
+                  if event['kind']=='provider_recovery']
+    # Grouped requirement traces repeat the same bounded investigation. Recovery
+    # consumes an existing round; completeness never opens a new retry attempt.
+    assert bool(recoveries) is transient
+    assert all(event['within_existing_budget'] and event['error_category']==category for event in recoveries)
+    assert all(int(path.parent.name.split('_')[-1])==1 for path in root.glob('agent_runs/*/attempt_*/trace.json'))
 
 
 class Tools:
@@ -106,7 +115,9 @@ TERMINAL={'type':'function','function':{'name':'terminal','parameters':{'type':'
 
 
 def test_malformed_terminal_and_repair_failure_remain_execution_errors():
-    first=AgentModelResponse(tool_calls=(AgentToolCall('bad','terminal','{'),))
+    # A syntactically valid payload reaches the schema validator. Malformed
+    # transport JSON has its own explicit parse-repair category below.
+    first=AgentModelResponse(tool_calls=(AgentToolCall('bad','terminal','{}'),))
     error=AgentModelError('HTTP rejected');error.http_status=400
     class Model:
         model='recorded'
@@ -187,18 +198,20 @@ def test_recorded_malformed_history_repair_is_bounded_and_trace_remains_original
     def validate(text):
         try:return json.loads(text)
         except ValueError:raise DecisionSchemaError('$','malformed',['object'])
-    result=BoundedAgentLoop(model,ValidationBudget(max_rounds=2),TERMINAL,validate,
-        max_terminal_repairs=1,stage='harness_context').run([],Tools())
-    assert len(requests)==2 and result.schema_repair_attempted
+    result=BoundedAgentLoop(model,ValidationBudget(max_rounds=1),TERMINAL,validate,
+        max_terminal_repairs=1,stage='harness_context',
+        terminal_repair_categories=('terminal_schema_error','terminal_json_parse_error')).run([],Tools())
+    assert len(requests)==2 and result.extra_terminal_repair_attempts==1
+    assert not result.schema_repair_attempted and result.rounds==1
     assert result.messages[0]['tool_calls'][0]['function']['arguments']=='{'
     assert requests[1]['messages'][0]['tool_calls'][0]['function']['arguments']=='{}'
     event=[e for e in result.events if e['kind']=='model_response'][-1]
     assert event['metadata']['request_diagnostics']['normalized_tool_history_count']==1
     assert not any(e['kind']=='tool_call' for e in result.events)
     if repair_arguments.startswith('{"'):
-        assert result.decision=={'resolved':True} and result.schema_repair_success
+        assert result.decision=={'resolved':True} and result.extra_terminal_repair_success
     else:
-        assert result.decision is None and not result.schema_repair_success
+        assert result.decision is None and not result.extra_terminal_repair_success
         assert result.termination=='invalid_output'
 
 

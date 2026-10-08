@@ -7,13 +7,25 @@ from ..semantic_discovery.models import digest
 from ..semantic_discovery.tools import _walk, _text
 from .value_flow import body_tree
 
-VERSION = "callback-declarations-v1"
+VERSION = "callback-declarations-v3"
 
 
 def parse_declaration(declaration):
     source = (declaration.rstrip().rstrip(";") + ";").encode()
     root = Parser(Language(tree_sitter_c.language())).parse(source).root_node
     return source, root
+
+
+def function_callback_abi(signature):
+    """Storage/linkage specifiers are not part of a function pointer ABI."""
+    from .evidence import callback_abis
+    source, root = parse_declaration(signature)
+    if root.has_error:
+        return frozenset()
+    for node in sorted((n for n in _walk(root) if n.type == "storage_class_specifier"),
+                       key=lambda n: n.start_byte, reverse=True):
+        source = source[:node.start_byte] + source[node.end_byte:]
+    return callback_abis(source.decode())
 
 
 def exact_signature(declaration, typedefs):
@@ -162,7 +174,10 @@ def enrich_callbacks(context, snapshot):
             "lifetime": row["lifetime"], "until": "context_cleanup" if row["lifetime"] == "per_context" else "call_return"}
         if userdata_target:
             row["userdata_binding"]["source_verified"] = True
-        row["registration"] = {"api": row["setup_api"], "kind": "api" if row["setup_api"] else "harness_field_initialization",
+        from .evidence import callback_abis
+        implementation = snapshot.functions.get(row['setup_api'])
+        function_binding = declared['field'] is None and implementation is not None and callback_abis(implementation['signature']) == callback_abis(declared['signature'])
+        row["registration"] = {"api": row["setup_api"], "kind": "function_binding" if function_binding else "api" if row["setup_api"] else "harness_field_initialization",
             "before": row["function_id"], "callback_lifetime": row["lifetime"], "userdata_lifetime": row["lifetime"]}
 
 

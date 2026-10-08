@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import re
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
@@ -134,11 +135,17 @@ class SFGArtifacts:
     ownership: tuple[Mapping[str, Any], ...] = ()
     usage_patterns: tuple[Mapping[str, Any], ...] = ()
     callback_typedefs: tuple[Mapping[str, Any], ...] = ()
+    source_hashes: Mapping[str, str] = field(default_factory=dict)
     functions_by_id: Mapping[str, Mapping[str, Any]] = field(init=False, repr=False)
     annotations_by_id: Mapping[str, Mapping[str, Any]] = field(init=False, repr=False)
     flows_by_id: Mapping[str, Mapping[str, Any]] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.source_hashes, Mapping) or any(
+                filename not in self.files or not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha)
+                for filename, sha in self.source_hashes.items()):
+            raise SFGLoadError("invalid functions.json source_hashes")
+        object.__setattr__(self, "source_hashes", MappingProxyType(dict(sorted(self.source_hashes.items()))))
         functions = _sorted_records(self.functions, "id")
         structs = _sorted_records(self.structs, "name")
         annotations = _sorted_records(self.annotations, "function_id")
@@ -224,6 +231,7 @@ class SFGLoader:
             ownership=tuple(load_ownership_json(artifacts / "ownership.json")),
             usage_patterns=tuple(load_usage_json(artifacts / "usage_patterns.json")),
             source_schema_versions=versions,
+            source_hashes=documents["functions"].get("source_hashes", {}),
         )
 
     def load_graph(self, path: Path) -> SFGGraphView:

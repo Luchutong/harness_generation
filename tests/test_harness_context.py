@@ -412,7 +412,10 @@ def test_followup_is_targeted_and_bounded(tmp_path):
     tasks = missing_requirement_tasks(run.completeness)
     assert all(task["kind"] == "buffer_length" for task in tasks)
     requests = [json.loads(next(m["content"] for m in call["messages"] if m["role"] == "user")) for call in model.calls]
-    assert all(request["requirement"]["kind"] == "buffer_length" for request in requests if request["missing_tasks"])
+    from collections import Counter
+    counts = Counter(request["requirement"]["kind"] for request in requests)
+    assert counts['buffer_length'] >= 2
+    assert all(count == 1 for kind, count in counts.items() if kind != 'buffer_length')
 
 
 def test_provider_error_is_audited_incomplete_not_fake_success(tmp_path):
@@ -523,13 +526,27 @@ def test_shared_resource_identity_can_bind_creator_return_and_core_parameter(tmp
     assert_gate(run)
 
 
-def test_conflicting_argument_construction_is_invalid(tmp_path):
+def test_source_verified_recipe_disambiguates_argument_construction(tmp_path):
     prepared = setup(tmp_path)
     fid = prepared[0][-1]["parse"]
     specs = direct_specs(fid)
     specs[(fid, "argument_construction")]["value"]["arguments"].append(argument("size", "constant"))
     run, _ = mine(prepared, specs)
+    assert_gate(run)
+    assert run.metadata["subject_repair_history"]
+    assert all(e["replacement_proof"]["status"] == "proved" for e in run.metadata["subject_repair_history"])
+
+
+def test_conflicting_arguments_without_source_supported_choice_are_invalid(tmp_path):
+    prepared = setup(tmp_path)
+    fid = prepared[0][-1]["parse"]
+    specs = direct_specs(fid)
+    values = specs[(fid, "argument_construction")]["value"]["arguments"]
+    values[:] = [argument("data", "input"), {**argument("size", "constant"), "constant": 0},
+        {**argument("size", "constant"), "constant": 1}]
+    run, _ = mine(prepared, specs)
     assert_gate(run, "invalid")
+    assert not run.metadata["subject_repair_history"]
     assert "conflicting_argument_contract" in {e["code"] for e in run.completeness["validation_errors"]}
 
 

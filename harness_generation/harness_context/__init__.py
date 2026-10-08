@@ -6,6 +6,8 @@ from .evidence import HarnessContextValidator
 from .loop import HarnessContextMiningLoop
 from .models import ContextBudget, ContextRun, MiningState
 from .requirements import HarnessRequirementBuilder
+from .obligations import SemanticObligationGraphBuilder
 
 __all__ = ["HarnessContextAgent", "APIClosureValidator", "HarnessContextCompletenessValidator", "CompletenessValidator",
-           "HarnessContextValidator", "HarnessContextMiningLoop", "ContextBudget", "ContextRun", "MiningState", "HarnessRequirementBuilder"]
+           "HarnessContextValidator", "HarnessContextMiningLoop", "ContextBudget", "ContextRun", "MiningState", "HarnessRequirementBuilder",
+           "SemanticObligationGraphBuilder"]

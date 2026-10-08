@@ -4,10 +4,10 @@ from copy import deepcopy
 
 from ..semantic_discovery.models import canonical, digest
 
-VERSION = "resource-invocation-contract-v1"
+VERSION = "resource-invocation-contract-v2"
 
 
-def project_invocations(context):
+def project_invocations(context, snapshot=None, records=None):
     groups = defaultdict(list)
     preconditions, initializations, diagnostics = [], [], []
     for row in context["lifecycle_contract"]["resources"]:
@@ -22,12 +22,20 @@ def project_invocations(context):
                 "phase": "after_call" if row["return_value"] else "before_call",
                 "source": "lifecycle_initialization", "fact_id": row["fact_id"], "evidence_ids": row["evidence_ids"]})
     resources = []
+    from .value_flow import complete_bodies
+    from .invocation_scope import prove_finite_resource_scope
+    bodies = complete_bodies(snapshot, records or {}) if snapshot is not None else {}
     for rid, rows in sorted(groups.items()):
         definitions = {canonical({k: r[k] for k in ("type", "creation", "cleanup", "reuse")}) for r in rows}
-        if len(definitions) != 1:
+        proof = prove_finite_resource_scope(context, rid, rows, snapshot, bodies) if len(definitions) != 1 else None
+        if len(definitions) != 1 and proof is None:
             diagnostics.append({"code": "conflicting_resource_identity", "resource_id": rid})
-        # All proposals are retained above; conflicting definitions never pass Gate.
+        # Facts and lifecycle proposals stay intact. Only this derived execution
+        # definition can reconcile finite per-context/per-input labels.
         definition = {k: deepcopy(rows[0][k]) for k in ("type", "creation", "cleanup", "reuse")}
+        if proof is not None:
+            definition.update(reuse=proof['effective_reuse'], observed_reuse=deepcopy(proof['observed_reuse']),
+                              invocation_scope_proof=proof)
         resources.append({"resource_id": rid, **definition,
             "bindings": sorted([{ "function_id": r["function_id"], "parameter": r["subject_parameter"],
                 "return_value": r["return_value"]} for r in rows], key=canonical),

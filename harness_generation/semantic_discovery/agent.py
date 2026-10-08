@@ -6,7 +6,7 @@ import json
 
 from ..entry_candidates import EntryCandidate
 from .models import (AgentModel, AgentModelResponse, DECISION_SCHEMA, DECISION_TOOL_SCHEMA,
-                     DECISION_TOOL_NAME, NEGATIVE_REASONS, POSITIVE_REASONS, POLICY_VERSION,
+                     DECISION_TOOL_NAME, DecisionSchemaError, TerminalSelectionError, NEGATIVE_REASONS, POSITIVE_REASONS, POLICY_VERSION,
                      SCHEMA_VERSION, ValidationBudget, candidate_id, canonical, parse_decision)
 from .tools import RepositoryTools
 from .loop import BoundedAgentLoop
@@ -42,6 +42,9 @@ For rejection you must inspect the candidate's complete body. Do not assume feed
 unavailable merely because you have not queried get_function with its spelling or exact ID yet.
 A framework schema_validation_failed tool result permits at most one terminal-only repair.
 Correct your own submission; never request repository tools during repair.
+A terminal_validation_failed result may permit one explicit terminal-only correction inside the existing
+ordinary-round budget. Use the exact issued evidence IDs and candidate source IDs in its diagnostics.
+Choose your own verdict again; the framework does not repair IDs or supply a decision.
 """
 
 
@@ -53,18 +56,78 @@ class ValidationRun:
     metadata: dict
 
 
+class CandidateDecisionValidationError(TerminalSelectionError):
+    """Strict failure diagnostics; suggestions never become issued evidence."""
+    def __init__(self, detail, candidate, tools, content):
+        super().__init__(detail)
+        try:
+            submitted = json.loads(content).get('evidence_ids', [])
+        except (ValueError, TypeError, AttributeError):
+            submitted = []
+        self.terminal_repair_category = ('candidate_unknown_evidence_reference'
+            if detail == 'unknown evidence reference' and any(isinstance(eid, str) and eid not in tools.evidence for eid in submitted) else None)
+        self.diagnostics = {
+            'error': 'candidate_decision_validation_failed',
+            'detail': detail,
+            'candidate_function_id': candidate.function_id,
+            'unknown_evidence_ids': sorted({eid for eid in submitted if isinstance(eid, str) and eid not in tools.evidence}),
+            **candidate_terminal_guidance(candidate, tools),
+        }
+
+    def to_dict(self):
+        return self.diagnostics
+
+
+def candidate_terminal_guidance(candidate, tools):
+    source = {eid: row for eid, row in tools.evidence.items()
+        if row.get('function_id') == candidate.function_id and row['tool'] == 'get_function'
+        and row.get('defined') and row.get('content')}
+    return {
+        'candidate_function_id': candidate.function_id,
+        'issued_evidence_ids': sorted(tools.evidence),
+        'candidate_source_evidence_ids': sorted(source),
+        'complete_candidate_source_evidence_ids': sorted(eid for eid, row in source.items() if not row.get('truncated')),
+        'submission_rules': [
+            'Copy exact evidence IDs; unissued or altered IDs remain invalid.',
+            'A decisive verdict must cite get_function evidence for this exact candidate.',
+            'A rejected verdict must cite its complete candidate source.',
+            'Submit your own complete decision as the sole terminal call; no repository queries during correction.',
+        ],
+    }
+
+
 class CandidateValidationAgent:
-    def __init__(self, model: AgentModel, budget: ValidationBudget | None = None, *, max_terminal_repairs: int = 1):
+    def __init__(self, model: AgentModel, budget: ValidationBudget | None = None, *, max_terminal_repairs: int = 1,
+                 max_semantic_recoveries: int = 0, max_provider_recoveries: int = 0,
+                 max_protocol_recoveries: int = 0):
         self.model = model
         self.budget = budget or ValidationBudget()
         if type(max_terminal_repairs) is not int or max_terminal_repairs not in {0, 1}:
             raise ValueError("max_terminal_repairs must be 0 or 1")
         self.max_terminal_repairs = max_terminal_repairs
+        for name, value in {'max_semantic_recoveries': max_semantic_recoveries,
+                'max_provider_recoveries': max_provider_recoveries,
+                'max_protocol_recoveries': max_protocol_recoveries}.items():
+            if type(value) is not int or value not in {0, 1}:
+                raise ValueError(name + ' must be 0 or 1')
+            setattr(self, name, value)
+
+    def recovery_limits(self):
+        return {name: getattr(self, name) for name in
+            ('max_semantic_recoveries', 'max_provider_recoveries', 'max_protocol_recoveries')}
 
     def validate(self, candidate: EntryCandidate, tools: RepositoryTools) -> ValidationRun:
         if tools.budget != self.budget:
             raise ValueError("agent and repository tool budgets must match")
         def validate_terminal(content):
+            try:
+                return validate_grounded_terminal(content)
+            except DecisionSchemaError:
+                raise
+            except ValueError as error:
+                raise CandidateDecisionValidationError(str(error), candidate, tools, content) from None
+
+        def validate_grounded_terminal(content):
             decision = parse_decision(content, tools.evidence)
             if decision["verdict"] in {"accepted", "rejected"}:
                 if not any(tools.evidence[eid].get("function_id") == candidate.function_id
@@ -81,10 +144,14 @@ class CandidateValidationAgent:
             {"role": "user", "content": canonical({"task": "validate_candidate",
                 "candidate_id": candidate_id(candidate.function_id), "function_id": candidate.function_id,
                 "data_class": "untrusted_candidate_identity", "budget_limits": self.budget.to_dict(),
-                "max_terminal_repairs": self.max_terminal_repairs})},
+                "max_terminal_repairs": self.max_terminal_repairs, **self.recovery_limits()})},
         ]
         outcome = BoundedAgentLoop(self.model, self.budget, DECISION_TOOL_SCHEMA, validate_terminal,
-                                  max_terminal_repairs=self.max_terminal_repairs, allow_text_terminal=True).run(messages, tools)
+                                  max_terminal_repairs=self.max_terminal_repairs, allow_text_terminal=True,
+                                  reserve_terminal_round=True,
+                                  terminal_repair_categories=('terminal_schema_error', 'terminal_json_parse_error', 'candidate_unknown_evidence_reference', 'terminal_native_submission_missing'),
+                                  terminal_guidance_factory=lambda: candidate_terminal_guidance(candidate, tools),
+                                  **self.recovery_limits()).run(messages, tools)
         decision = outcome.decision or {
             "verdict": "unresolved", "input_mode": "unknown",
             "reason_codes": ["budget_exhausted" if outcome.exhausted else outcome.termination],
@@ -99,7 +166,7 @@ class CandidateValidationAgent:
                              "model_calls": outcome.model_calls, "source_chars": tools.source_chars,
                              "exhausted": outcome.exhausted, "limits": self.budget.to_dict(),
                              "max_terminal_repairs": self.max_terminal_repairs,
-                             "terminal_repairs": int(outcome.schema_repair_attempted)},
+                             "terminal_repairs": outcome.extra_terminal_repair_attempts, **self.recovery_limits()},
                   "model": {"provider": self.model.provider, "model": self.model.model},
                   "run_status": "invalid" if outcome.termination == "invalid_output" else
                                 "error" if outcome.termination == "provider_error" else "completed"}
@@ -113,5 +180,5 @@ class CandidateValidationAgent:
                       "source_fingerprint": tools.index.catalog.source_fingerprint,
                       "live_sources": tools.live_sources, "termination": outcome.termination,
                       "model": result["model"], "budget_limits": self.budget.to_dict(),
-                      "max_terminal_repairs": self.max_terminal_repairs, **audit},
+                      "max_terminal_repairs": self.max_terminal_repairs, **self.recovery_limits(), **audit},
         )

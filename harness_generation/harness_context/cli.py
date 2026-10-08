@@ -1,5 +1,6 @@
 """Standalone context mining through the completeness gate; no generation."""
 import argparse
+import faulthandler
 from dataclasses import replace
 from pathlib import Path
 import sys
@@ -18,6 +19,8 @@ from .loop import HarnessContextMiningLoop
 from .models import ContextBudget, MiningState
 from .persistence import load_minimal_ft, run_configuration, load_context_documents
 from .tools import HarnessContextTools
+from .native_diagnostics import native_diagnostics
+from .persistence import context_directory
 
 
 class LazyDeepSeekModel:
@@ -33,12 +36,20 @@ class LazyDeepSeekModel:
 
 
 def main(argv=None, *, model=None):
+    if not faulthandler.is_enabled():
+        faulthandler.enable(file=2, all_threads=True)
     parser = argparse.ArgumentParser(prog="harness-generation harness-context", description="FT-guided bounded Harness Context mining and deterministic completeness")
     parser.add_argument("--artifacts", type=Path, required=True)
     parser.add_argument("--provider", choices=("deepseek", "openai-compatible"), default="deepseek")
+    parser.add_argument("--agent-backend", choices=("native", "deepseek-harness"), default="native",
+                        help="Context investigation runner; the optional DeepSeek Harness backend preserves the same proof and budget gates")
+    parser.add_argument("--dsh-profile", type=Path,
+                        help="Versioned JSON bridge profile for --agent-backend deepseek-harness")
     parser.add_argument("--env-file", type=Path)
     parser.add_argument("--model")
     parser.add_argument("--thinking", choices=("disabled", "enabled"))
+    parser.add_argument("--agent-timeout", type=float, choices=(60.0, 120.0), default=60.0,
+                        help="Per-request transport timeout; no additional calls or SDK retries")
     parser.add_argument("--requirement-mode", choices=("single", "grouped"),
                         help="Default: grouped for real providers, single for injected test clients")
     parser.add_argument("--ft", action="append", default=[])
@@ -46,12 +57,20 @@ def main(argv=None, *, model=None):
     parser.add_argument("--resume", action="store_true")
     for name, value in ContextBudget().to_dict().items():
         parser.add_argument("--" + name.replace("_", "-"), type=_nonnegative if name in {
-            "max_discovered_functions", "max_dependency_depth", "max_terminal_repairs"} else _positive, default=value)
+            "max_discovered_functions", "max_dependency_depth", "max_terminal_repairs",
+            "repair_reserve_model_calls", "repair_reserve_tool_calls",
+            "max_preparation_tool_calls"} else _positive, default=value)
     args = parser.parse_args(argv)
     failed, processed, resumed = 0, 0, 0
     try:
+        if args.dsh_profile is not None and args.agent_backend != "deepseek-harness":
+            raise ValueError("--dsh-profile requires --agent-backend deepseek-harness")
+        if model is not None and args.agent_backend != "native":
+            raise ValueError("cannot combine an injected agent model with --agent-backend deepseek-harness")
         if model is not None and args.model:
             raise ValueError("cannot combine injected model with --model")
+        if model is not None and args.agent_timeout != 60.0:
+            raise ValueError("cannot override transport timeout of an injected agent model")
         if args.env_file:
             load_environment_file(args.env_file)
         budget = ContextBudget(**{name: getattr(args, name) for name in ContextBudget().to_dict()})
@@ -61,12 +80,19 @@ def main(argv=None, *, model=None):
         index = RepositoryIndex(snapshot.artifacts, catalog, functions_path=store.functions)
         requirement_mode = args.requirement_mode or ("single" if model is not None else "grouped")
         if model is None:
-            config = agent_configuration(args.provider, model=args.model, thinking=args.thinking)
+            config = agent_configuration(args.provider, model=args.model, thinking=args.thinking, timeout=args.agent_timeout)
             if requirement_mode == "grouped":
                 config = replace(config, max_tokens=8192)
             active_model = LazyAgentModel(config)
         else:
             active_model = model
+        investigation_backend = None
+        if args.agent_backend == "deepseek-harness":
+            # Import only after argument validation. Native runs and --help do
+            # not need the optional SDK or start a DSH runtime.
+            from .dsh_backend import create_context_backend
+            investigation_backend = create_context_backend(config, budget=budget,
+                profile_path=args.dsh_profile)
         if not store.minimal_fts_directory.is_dir():
             raise ValueError("missing Minimal FT artifacts; run the upstream minimal-ft stage first")
         selected = []
@@ -86,7 +112,8 @@ def main(argv=None, *, model=None):
             raise ValueError("selectors must identify existing Minimal FT artifacts by exact ID")
         for ft_id in selected:
             ft, ft_metadata = load_minimal_ft(store, ft_id, snapshot)
-            configuration = run_configuration(ft, ft_metadata, snapshot, budget, active_model, requirement_mode=requirement_mode)
+            configuration = run_configuration(ft, ft_metadata, snapshot, budget, active_model,
+                requirement_mode=requirement_mode, investigation_backend=investigation_backend)
             prior = load_context_documents(store, ft_id, configuration, index) if args.resume else None
             if prior and prior["completeness"]["status"] == "complete":
                 cached_state = MiningState(budget)
@@ -103,8 +130,12 @@ def main(argv=None, *, model=None):
             def progress(requirement, result, reused, current):
                 print(f"[REQUIREMENT] {requirement['subject_function_id']} {requirement['kind']}: "
                       f"{result['status']} {'resumed' if reused else 'investigated'} model_calls={current.model_calls}", flush=True)
-            run = HarnessContextMiningLoop(active_model, state, group_requirements=requirement_mode == "grouped").run(ft, snapshot, tools, store=store,
-                configuration=configuration, resume=args.resume, on_requirement=progress)
+            diagnostic_directory = _owned(context_directory(store, ft_id), store.root)
+            with native_diagnostics(diagnostic_directory) as checkpoint:
+                run = HarnessContextMiningLoop(active_model, state, group_requirements=requirement_mode == "grouped",
+                    investigation_backend=investigation_backend).run(ft, snapshot, tools, store=store,
+                    configuration=configuration, resume=args.resume, on_requirement=progress, on_checkpoint=checkpoint)
+                checkpoint('completed', status=run.completeness['status'], termination=run.metadata['termination'])
             processed += 1
             failed += run.completeness["status"] != "complete"
             print(f"[CONTEXT] {ft_id}: {run.completeness['status']} hard_missing={len(run.completeness['hard_missing'])} "

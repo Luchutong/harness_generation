@@ -13,7 +13,7 @@ dist/
 # minimal demo source tree.
 artifacts/
 
-# Worktree metadata.  A git worktree living at .claude/worktrees/<name> is a
-# checkout of its own branch; tracking it here would nest one repository's
-# bookkeeping inside another.
-.claude/worktrees/
+# Local editor and worktree metadata.
+.claude/
+.codex/
+.vscode/

@@ -18,7 +18,7 @@ from .sfg_adapter import SFGArtifacts
 CANDIDATE_SCHEMA_VERSION = 1
 CANDIDATE_POLICY_VERSION = "entry-discovery-v1"
 CANDIDATE_ARTIFACT_KIND = "entry_candidate_catalog"
-_POLICIES = {"broad", "legacy", "explicit"}
+_POLICIES = {"broad", "explicit"}
 _BYTE_TYPES = {"char", "signed char", "unsigned char", "int8_t", "uint8_t", "void"}
 _LENGTH_NAMES = {
     "size", "len", "length", "n", "count", "cb", "sz", "nbytes", "byte_count",
@@ -137,6 +137,7 @@ def artifact_fingerprint(artifacts: SFGArtifacts) -> str:
         "edges": [e.to_dict() for e in artifacts.graph.edges],
         "ownership": sorted(artifacts.ownership, key=lambda r: str(r.get("id", ""))),
         "usage_patterns": sorted(artifacts.usage_patterns, key=lambda r: str(r.get("id", ""))),
+        **({"source_hashes": dict(artifacts.source_hashes)} if artifacts.source_hashes else {}),
     }
     digest = hashlib.sha256()
     encoder = json.JSONEncoder(sort_keys=True, separators=(",", ":"), allow_nan=False)
@@ -206,34 +207,6 @@ class CandidateCatalog:
                        deferred_reasons={c.function_id: "not_requested" for c in self.candidates
                                          if c.function_id not in ids})
 
-    def with_construction_results(self, triplets, exclusions) -> "CandidateCatalog":
-        """Keep failed/oversized hypotheses visible, without semantic promotion."""
-        built: dict[str, list[str]] = {}
-        failed: dict[str, list[dict[str, Any]]] = {}
-        for triplet in triplets:
-            built.setdefault(triplet.isf.function_id, []).append(triplet.id)
-        for exclusion in exclusions:
-            failed.setdefault(exclusion["anchor_function_id"], []).append(dict(exclusion))
-        candidates = []
-        for candidate in self.candidates:
-            metadata = dict(candidate.metadata)
-            identifier = candidate.function_id
-            if identifier in self.selected_function_ids:
-                status = ("partial" if identifier in built and identifier in failed else
-                          "constructed" if identifier in built else
-                          "oversized" if identifier in failed else "no_triplet")
-                metadata["construction"] = {"status": status,
-                                            "triplet_ids": sorted(built.get(identifier, [])),
-                                            "diagnostics": failed.get(identifier, [])}
-            elif ("construction" not in metadata
-                  or metadata["construction"].get("status") == "deferred"):
-                metadata["construction"] = {"status": "deferred",
-                                            "reason": self.deferred_reasons[identifier]}
-            # Unrequested anchors retain their last construction frontier. A
-            # later request for another anchor must not erase an oversized
-            # diagnostic. Selection/deferred_reasons describe this run.
-            candidates.append(replace(candidate, metadata=metadata))
-        return replace(self, candidates=tuple(candidates))
 
     def to_dict(self) -> dict[str, Any]:
         return {"schema_version": CANDIDATE_SCHEMA_VERSION, "artifact_kind": CANDIDATE_ARTIFACT_KIND,
@@ -327,9 +300,9 @@ def _signals(record: Mapping[str, Any], annotation: Mapping[str, Any], patterns)
 
 def discover_candidates(artifacts: SFGArtifacts, *, policy: str = "broad",
                         max_candidates: int | None = None) -> CandidateCatalog:
-    """Produce all hypotheses; legacy ISF rules only select the next work set."""
-    if not isinstance(policy, str) or policy not in {"broad", "legacy"}:
-        raise ValueError("discovery policy must be broad or legacy")
+    """Produce all hypotheses and select defined entries within the work budget."""
+    if not isinstance(policy, str) or policy != "broad":
+        raise ValueError("discovery policy must be broad")
     if max_candidates is not None and (type(max_candidates) is not int or max_candidates < 0):
         raise ValueError("max_candidates must be a non-negative integer")
     patterns_by_id: dict[str, list] = {}
@@ -354,9 +327,7 @@ def discover_candidates(artifacts: SFGArtifacts, *, policy: str = "broad",
     selected = []
     deferred = {}
     for candidate in ordered:
-        if policy == "legacy" and not candidate.metadata["legacy_isf_annotation"]:
-            deferred[candidate.function_id] = "not_selected_by_legacy_isf_policy"
-        elif policy == "broad" and not candidate.metadata["definition_available"]:
+        if not candidate.metadata["definition_available"]:
             deferred[candidate.function_id] = "declaration_only"
         elif max_candidates is not None and len(selected) >= max_candidates:
             deferred[candidate.function_id] = "candidate_budget"
@@ -364,8 +335,3 @@ def discover_candidates(artifacts: SFGArtifacts, *, policy: str = "broad",
             selected.append(candidate.function_id)
     return CandidateCatalog(tuple(ordered), artifact_fingerprint(artifacts), policy,
                             tuple(selected), deferred, max_candidates)
-
-
-def discover_candidates_legacy(artifacts: SFGArtifacts) -> CandidateCatalog:
-    """Compatibility strategy: annotations define the old processing set only."""
-    return discover_candidates(artifacts, policy="legacy")

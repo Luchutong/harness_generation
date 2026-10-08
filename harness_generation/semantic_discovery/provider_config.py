@@ -55,6 +55,9 @@ def native_agent_model(config):
     return adapter(config)
 
 
-def agent_configuration(provider, *, model=None, thinking=None):
+def agent_configuration(provider, *, model=None, thinking=None, timeout=None):
     cls = CompatibleAgentConfig if provider == "openai-compatible" else DeepSeekConfig
-    return cls.from_environment(model=model, **({"thinking": thinking} if thinking is not None else {}))
+    overrides = {"thinking": thinking} if thinking is not None else {}
+    if timeout is not None:
+        overrides["timeout"] = timeout
+    return cls.from_environment(model=model, **overrides)
