@@ -43,16 +43,20 @@ def _sanitized_run(*args, **kwargs):
     return subprocess.run(*args, **kwargs)
 
 
-def build_and_run(harness, directory, plan, recipe, *, runtime=False):
+def build_and_run(harness, directory, plan, recipe, *, runtime=False, inherit_target_flags=False):
     recipe.validate_inputs()
     directory = Path(directory).resolve()
     directory.mkdir(parents=True, exist_ok=True)
     adapter = BuildAdapter()
     commands, objects = [], []
     target_config = replace(recipe.compiler_config, compiler_flags=recipe.compiler_flags + SANITIZERS)
-    harness_compiler = "clang++" if plan["language"] == "c++" else "clang"
+    harness_compiler = "clang++" if plan["language"] == "c++" else recipe.compiler if inherit_target_flags else "clang"
+    inherited_flags = tuple(flag for flag in recipe.compiler_flags
+        if plan["language"] == "c" or not flag.startswith("-std=")) if inherit_target_flags else ()
+    language_flags = (("-std=c++17",) if plan["language"] == "c++" else
+        () if any(flag.startswith("-std=") for flag in inherited_flags) else ("-std=c11",))
     harness_config = CompilerConfig(compiler=harness_compiler, include_paths=(recipe.project_root, *recipe.include_paths),
-        compiler_flags=(("-std=c++17",) if plan["language"] == "c++" else ("-std=c11",)) + SANITIZERS,
+        compiler_flags=inherited_flags + language_flags + SANITIZERS,
         working_directory=recipe.project_root, timeout=recipe.timeout)
     driver = directory / "smoke_driver.c"
     driver.write_text(DRIVER, encoding="utf-8")

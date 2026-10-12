@@ -1,6 +1,4 @@
-"""Pure Semantic Slice -> Minimal FT projection. SUPPORT is not API closure."""
-from .builder import MinimalFTBuilder
+"""Types for authenticated existing Minimal FT compatibility inputs."""
 from .models import MinimalFTBuild, ProjectSnapshot, SliceInput, stable_ft_id
-from .validation import MinimalFTValidator
 
-__all__ = ["MinimalFTBuilder", "MinimalFTBuild", "ProjectSnapshot", "SliceInput", "stable_ft_id", "MinimalFTValidator"]
+__all__ = ["MinimalFTBuild", "ProjectSnapshot", "SliceInput", "stable_ft_id"]

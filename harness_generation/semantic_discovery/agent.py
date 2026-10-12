@@ -47,6 +47,15 @@ ordinary-round budget. Use the exact issued evidence IDs and candidate source ID
 Choose your own verdict again; the framework does not repair IDs or supply a decision.
 """
 
+BUILD_AWARE_PROMPT = """Optional build_aware siblings contain independently replayed compiler source information for the current build.
+Use their current-TU callability, canonical ABI, macro definitions and field layouts alongside the raw source.
+Compiler field signatures do not resolve callback targets. They do not prove ownership, lifecycle effects,
+link success or an executable injection path. source_effect_compatible=false requires interpreting the
+reported macro expansions rather than assuming the unexpanded body has the same behavior.
+Only evidence_ids issued for the raw source can ground this task's verdict or role. clang_ev_ identifiers
+and model interpretations are metadata, not new repository evidence or semantic certificates.
+"""
+
 
 @dataclass
 class ValidationRun:
@@ -119,6 +128,11 @@ class CandidateValidationAgent:
     def validate(self, candidate: EntryCandidate, tools: RepositoryTools) -> ValidationRun:
         if tools.budget != self.budget:
             raise ValueError("agent and repository tool budgets must match")
+        build_prompt = ""
+        if tools.repository_build_analysis is not None:
+            from ..minimal_ft.models import ProjectSnapshot
+            tools.repository_build_analysis.validate_snapshot(ProjectSnapshot.from_artifacts(tools.index.artifacts))
+            build_prompt = "\n" + BUILD_AWARE_PROMPT
         def validate_terminal(content):
             try:
                 return validate_grounded_terminal(content)
@@ -138,7 +152,7 @@ class CandidateValidationAgent:
                     raise ValueError("decisive verdict lacks candidate source evidence")
             return decision
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT + "\nDecision schema:\n" + canonical(DECISION_SCHEMA)
+            {"role": "system", "content": SYSTEM_PROMPT + build_prompt + "\nDecision schema:\n" + canonical(DECISION_SCHEMA)
              + "\nAccepted reason codes ONLY: " + canonical(POSITIVE_REASONS)
              + "\nRejected reason codes ONLY: " + canonical(NEGATIVE_REASONS)},
             {"role": "user", "content": canonical({"task": "validate_candidate",

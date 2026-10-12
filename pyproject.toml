@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "harness-generation"
-version = "0.3.0"
-description = "Source-grounded Candidate, Slice, Context and frozen-Plan harness generation"
+version = "0.5.0"
+description = "Generation-first C/C++ fuzz harness planning, preflight, compilation and runtime observation"
 requires-python = ">=3.10"
 dependencies = [
   "openai>=1.0,<3",
@@ -16,14 +16,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10"]
-dsh = [
-  "deepseek-harness-sdk==0.1.5rc1",
-  "deepseek-harness-runtime-bin==0.1.5rc1",
-]
 
 [project.scripts]
 harness-generation = "harness_generation.cli:main"
-sfg-builder = "sfg_builder.cli:main"
 
 [tool.setuptools]
 py-modules = ["project_catalog"]
@@ -31,17 +26,7 @@ py-modules = ["project_catalog"]
 [tool.setuptools.packages.find]
 include = ["harness_generation*", "sfg_builder*"]
 
-[tool.setuptools.package-data]
-"harness_generation.harness_context" = ["dsh_bridge.mjs", "dsh_kernel.json"]
-
 [tool.pytest.ini_options]
-# Archived frozen revisions under artifacts/ contain their own test copies.
-# Collect the current suite without importing those immutable historical trees.
 testpaths = ["tests"]
-# `tests/` is not a package, so pytest's "prepend" import mode puts `tests/`
-# on sys.path instead of the repository root.  The console script `pytest`
-# additionally does not prepend the CWD (unlike `python -m pytest`), which
-# leaves the sibling top-level package `sfg_builder` unimportable and makes
-# every test module fail at collection.  Declaring the root here makes both
-# entry points import the working tree, regardless of what is installed.
+# Both pytest entry points import the current working tree.
 pythonpath = ["."]

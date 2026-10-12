@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+.pytest_cache/
 .venv/
 .env
 .env.*
@@ -9,8 +10,7 @@ runs/
 build/
 dist/
 
-# Generated pipeline output is reproducible run data and is not part of the
-# minimal demo source tree.
+# Locally generated execution output.
 artifacts/
 
 # Local editor and worktree metadata.

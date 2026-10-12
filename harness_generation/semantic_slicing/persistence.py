@@ -5,7 +5,7 @@ import json
 
 from ..semantic_discovery.models import candidate_id, canonical, digest
 from ..semantic_discovery.persistence import (load_compatible_run, load_run_documents,
-                                              save_run_documents)
+                                              save_run_documents, replay_build_analysis, replay_repository_responses)
 from .models import SLICE_POLICY_VERSION, group_classification, validate_submission
 from .tools import SemanticSliceTools
 
@@ -66,17 +66,19 @@ def effect_question_policy_versions():
             "effect_question_source_interpreter_version": INTERPRETER_VERSION}
 
 
-def run_configuration(catalog, frontier, budget, model, max_discovered_functions):
+def run_configuration(catalog, frontier, budget, model, max_discovered_functions, *, feedback=None,
+                      build_analysis=None, build_analysis_directory=None):
     from .agent import SYSTEM_PROMPT
     from .models import SLICE_SCHEMA, ROLE_REASONS
     from .core_proofs import VERSION as CORE_PROOF_VERSION
     from .proposals import VERSION as PROPOSAL_VERSION
     from .support_effects import VERSION as EFFECT_VERSION
     from .source_exclusions import VERSION as EXCLUSION_PROOF_VERSION
-    config = model.config.to_dict() if hasattr(model, "config") else {
+    descriptor = getattr(model, "config", None)
+    config = descriptor.to_dict() if callable(getattr(descriptor, "to_dict", None)) else {
         "provider": model.provider, "model": model.model}
     from ..semantic_discovery.loop import TERMINAL_REPAIR_POLICY_VERSION
-    return {"terminal_repair_policy_version": TERMINAL_REPAIR_POLICY_VERSION,
+    configuration = {"terminal_repair_policy_version": TERMINAL_REPAIR_POLICY_VERSION,
             **effect_question_policy_versions(),
             "terminal_repair_allowed_categories": ["terminal_schema_error", "terminal_json_parse_error", "slice_role_choice_not_issued", "terminal_native_submission_missing"],
             "extra_terminal_repair_last_round_only": True,
@@ -91,6 +93,17 @@ def run_configuration(catalog, frontier, budget, model, max_discovered_functions
             "task_fingerprint": digest({"prompt": SYSTEM_PROMPT, "schema": SLICE_SCHEMA, "reasons": ROLE_REASONS}),
             "validation_fingerprint": digest(frontier.validation), "budget": budget.to_dict(),
             "max_discovered_functions": max_discovered_functions, "model": config}
+    if feedback is not None:
+        if not isinstance(feedback, dict) or len(canonical(feedback)) > 24000:
+            raise ValueError("invalid bounded slice recovery feedback")
+        configuration["recovery_feedback"] = feedback
+    from ..harness_strategy.build_analysis import analysis_configuration
+    analysis = analysis_configuration(build_analysis, build_analysis_directory)
+    if analysis is not None:
+        from ..semantic_discovery.agent import BUILD_AWARE_PROMPT
+        configuration["build_aware_analysis"] = analysis
+        configuration["build_aware_prompt_fingerprint"] = digest(BUILD_AWARE_PROMPT)
+    return configuration
 
 
 def save_run(store, run, configuration):
@@ -118,8 +131,11 @@ def load_compatible_slice(store, frontier, configuration, index, budget):
                 or metadata["frontier_fingerprint"] != frontier.fingerprint
                 or metadata["initial_frontier_ids"] != sorted(frontier.function_ids)):
             return None
+        analysis = replay_build_analysis(configuration, index)
         tools = SemanticSliceTools(index.artifacts, index.catalog, frontier, budget, index=index,
-                                  max_discovered_functions=configuration["max_discovered_functions"])
+            max_discovered_functions=configuration["max_discovered_functions"], build_analysis=analysis)
+        if analysis is not None:
+            replay_repository_responses(documents, tools, canonical_name="slice")
         tools.evidence = {r["evidence_id"]: r for r in documents["evidence"]["records"]}
         for event in documents["trace"]["events"]:
             if event["kind"] != "tool_call":

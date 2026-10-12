@@ -149,9 +149,18 @@ class RepositoryIndex:
 class RepositoryTools:
     def __init__(self, artifacts: SFGArtifacts, catalog: CandidateCatalog,
                  budget: ValidationBudget | None = None, *, index: RepositoryIndex | None = None,
-                 functions_path: Path | None = None):
+                 functions_path: Path | None = None, build_analysis=None):
         self.index = index or RepositoryIndex(artifacts, catalog, functions_path=functions_path)
         self.budget = budget or ValidationBudget()
+        # Keep this explicit base-layer input separate from StrategyTools'
+        # existing projection so its response and charging remain unchanged.
+        self.repository_build_analysis = build_analysis
+        if build_analysis is not None:
+            from ..source_analysis import BuildAwareIndex
+            from ..minimal_ft.models import ProjectSnapshot
+            if not isinstance(build_analysis, BuildAwareIndex):
+                raise ValueError("compiler metadata requires authenticated BuildAwareIndex")
+            build_analysis.validate_snapshot(ProjectSnapshot.from_artifacts(artifacts))
         self.evidence: dict[str, dict] = {}
         self.source_chars = 0
         self.live_sources: dict[str, str] = {}
@@ -176,6 +185,7 @@ class RepositoryTools:
                 return {"error": "invalid_tool_arguments", "evidence_ids": []}
         if self.source_chars >= self.budget.max_source_chars:
             raise ToolBudgetExceeded("max_source_chars")
+        previous_live_sources = dict(self.live_sources)
         try:
             records, total = getattr(self, "_" + name)(arguments)
         except (OSError, UnicodeError):
@@ -185,15 +195,32 @@ class RepositoryTools:
         previous_chars, previous_evidence = self.source_chars, dict(self.evidence)
         try:
             issued = [self._emit(name, arguments, record) for record in records]
-        except ToolBudgetExceeded:
-            # A failed query issues no evidence; no hidden IDs can enter a verdict.
-            self.source_chars, self.evidence = previous_chars, previous_evidence
-            raise
-        return {"data_class": "untrusted_repository_evidence", "evidence": issued,
+            output = {"data_class": "untrusted_repository_evidence", "evidence": issued,
                 "evidence_ids": [record["evidence_id"] for record in issued],
                 "total_matches": total, "query_truncated": total > len(records),
                 "resolution": "syntactic_only" if name.startswith("find_") else
                               "owned_live_source" if name == "read_source_range" else "phase1_snapshot"}
+            if self.repository_build_analysis is not None and issued and name in {"get_function", "get_type_definition"}:
+                from ..source_analysis import agent_projection
+                projected = arguments
+                if name == "get_function" and len(issued) == 1:
+                    projected = {"function": issued[0]["function_id"]}
+                metadata = {"build_aware": agent_projection(name, projected, self.repository_build_analysis,
+                    max_chars=max(1024, min(16384, self.budget.max_chars_per_record)))}
+                cost = len(canonical(metadata))
+                if cost > self.budget.max_chars_per_record:
+                    raise ToolBudgetExceeded("max_chars_per_record")
+                if self.source_chars + cost > self.budget.max_source_chars:
+                    raise ToolBudgetExceeded("max_source_chars")
+                self.source_chars += cost
+                output.update(metadata)
+            return output
+        except Exception:
+            # A failed query issues no evidence; no hidden IDs can enter a verdict.
+            self.source_chars, self.evidence = previous_chars, previous_evidence
+            if self.repository_build_analysis is not None:
+                self.live_sources = previous_live_sources
+            raise
 
     def _emit(self, tool: str, arguments: dict, record: dict) -> dict:
         record = {"tool": tool, "arguments": arguments, "origin": "phase1_snapshot", **record}

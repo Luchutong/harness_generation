@@ -1,7 +1,7 @@
 """Semantic task over the existing provider, loop, budgets and evidence store."""
 from __future__ import annotations
 
-from ..semantic_discovery.agent import ValidationRun
+from ..semantic_discovery.agent import BUILD_AWARE_PROMPT, ValidationRun
 from ..semantic_discovery.loop import BoundedAgentLoop
 from ..semantic_discovery.models import ValidationBudget, candidate_id, canonical
 from ..semantic_discovery.tools import ToolBudgetExceeded
@@ -78,9 +78,16 @@ class SemanticSliceAgent:
     def __init__(self, model, budget=None):
         self.model, self.budget = model, budget or ValidationBudget()
 
-    def slice(self, tools):
+    def slice(self, tools, *, feedback=None):
         if tools.budget != self.budget:
             raise ValueError("agent and repository tool budgets must match")
+        build_prompt = ""
+        if tools.repository_build_analysis is not None:
+            from ..minimal_ft.models import ProjectSnapshot
+            tools.repository_build_analysis.validate_snapshot(ProjectSnapshot.from_artifacts(tools.index.artifacts))
+            build_prompt = "\n" + BUILD_AWARE_PROMPT
+        if feedback is not None and (not isinstance(feedback, dict) or len(canonical(feedback)) > 24000):
+            raise ValueError("invalid bounded slice recovery feedback")
         candidate = tools.frontier.candidate
         cid = candidate_id(candidate.function_id)
         validation = tools.frontier.validation
@@ -104,7 +111,7 @@ class SemanticSliceAgent:
                       "result_evidence_ids": seed["evidence_ids"], "query_truncated": seed["query_truncated"],
                       "framework_bootstrap": True}
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT + "\nSelect choice_id from slice_role_choices. The framework supplies exact roles, reasons and proof evidence. Read source to obtain new choices. Pure usage wrappers can be EXCLUDE while remaining source evidence; no wrapper_delegation support choice is issued. Never invent choices."},
+            {"role": "system", "content": SYSTEM_PROMPT + build_prompt + "\nSelect choice_id from slice_role_choices. The framework supplies exact roles, reasons and proof evidence. Read source to obtain new choices. Pure usage wrappers can be EXCLUDE while remaining source evidence; no wrapper_delegation support choice is issued. Never invent choices."},
             {"role": "user", "content": canonical({"task": "semantic_slice", "candidate_id": cid,
                 "anchor_function_id": candidate.function_id, "data_class": "untrusted_candidate_identity",
                 "budget_limits": self.budget.to_dict(), "max_discovered_functions": tools.max_discovered_functions})},
@@ -113,6 +120,10 @@ class SemanticSliceAgent:
              "reasoning_content": ""},
             {"role": "tool", "tool_call_id": "framework_frontier_seed", "content": canonical(seed)},
         ]
+        if feedback is not None:
+            messages.insert(2, {"role": "user", "content": canonical({"data_class": "untrusted_recovery_feedback",
+                "feedback": feedback, "task": "reconsider_scope_from_new_source_evidence",
+                "preserve_accepted_anchor": True})})
         validation_errors = []
         def validate_terminal(text):
             try:

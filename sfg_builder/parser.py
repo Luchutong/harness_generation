@@ -62,9 +62,11 @@ class CProjectParser:
         ignored_directories: Iterable[str] = DEFAULT_IGNORES,
         *,
         source_globs: Iterable[str] = (),
+        explicit_sources: Iterable[str | Path] = (),
     ):
         self.ignored_directories = tuple(ignored_directories)
         self.source_globs = tuple(str(pattern) for pattern in source_globs)
+        self.explicit_sources = tuple(explicit_sources)
         if any(not pattern for pattern in self.source_globs):
             raise ValueError("source_globs must contain non-empty patterns")
 
@@ -96,10 +98,11 @@ class CProjectParser:
                 for node in _walk(tree.root_node):
                     if node.type == "type_definition":
                         declarator = node.child_by_field_name("declarator")
-                        names = [n for n in _walk(declarator) if n.type == "type_identifier"] if declarator else []
-                        if len(names) == 1 and any(n.type == "function_declarator" for n in _walk(declarator)):
-                            callback_typedefs.append({"name": source[names[0].start_byte:names[0].end_byte].decode(),
+                        alias = _declarator_leaf_identifier(declarator)
+                        if alias is not None and any(n.type == "function_declarator" for n in _walk(declarator)):
+                            callback_typedefs.append({"name": _text(source, alias),
                                 "declaration": source[node.start_byte:node.end_byte].decode(), "file": relative,
+                                "pointer_depth": _declarator_pointer_depth(declarator),
                                 "start_line": source[:node.start_byte].count(b"\n") + 1,
                                 "end_line": source[:node.end_byte].count(b"\n") + 1})
                 opaque_handles.extend(
@@ -113,7 +116,7 @@ class CProjectParser:
             except OSError as exc:
                 warnings.append(f"{relative}: could not read source ({type(exc).__name__})")
         handles = _deduplicate_opaque_handles(opaque_handles)
-        resolver = TypeResolver(structs, handles, type_aliases=type_aliases)
+        resolver = TypeResolver(structs, handles, type_aliases=type_aliases, callback_typedefs=callback_typedefs)
         functions = tuple(_resolve_function(item.function, resolver) for item in raw_functions)
         functions = _apply_documented_family_ownership(
             _deduplicate_functions(functions)
@@ -134,20 +137,24 @@ class CProjectParser:
             ignored_directories=self.ignored_directories,
             source_suffixes=SOURCE_SUFFIXES,
             header_suffixes=(),
+            explicit_sources=self.explicit_sources,
         )
         if not self.source_globs:
             yield from catalog.sources
             return
+        explicit = {(Path(path) if Path(path).is_absolute() else project / path).resolve()
+                    for path in self.explicit_sources}
         for source in catalog.sources:
             relative = source.relative_to(project).as_posix()
-            if any(fnmatch.fnmatch(relative, pattern) for pattern in self.source_globs):
+            if source in explicit or any(fnmatch.fnmatch(relative, pattern) for pattern in self.source_globs):
                 yield source
 
 
 class TypeResolver:
     def __init__(self, structs: Iterable[StructInfo],
                  opaque_handles: Iterable[OpaqueHandleInfo] = (),
-                 type_aliases: Mapping[str, tuple[str, int, bool]] | None = None):
+                 type_aliases: Mapping[str, tuple[str, int, bool]] | None = None,
+                 callback_typedefs: Iterable[Mapping[str, Any]] = ()):
         groups: list[list[StructInfo]] = []
         group_aliases: list[set[str]] = []
         for info in structs:
@@ -192,6 +199,8 @@ class TypeResolver:
             if _normalize_base(alias) not in aliases
             and _normalize_base(alias) not in self._opaque_handles
         }
+        self._callback_types = {_normalize_base(row["name"]): row.get("pointer_depth", 0)
+                                for row in callback_typedefs if row.get("pointer_depth", 0) > 0}
 
     def resolve(self, base_type: str) -> str | None:
         return self._aliases.get(_normalize_base(base_type))
@@ -216,6 +225,10 @@ class TypeResolver:
             is_const = is_const or hidden_const
             current = target
         handle = self._opaque_handles.get(current)
+        if current in self._callback_types:
+            # A function pointer is not an object pointer or its return type.
+            # This representation fact creates no callback ABI authority.
+            return current, depth + self._callback_types[current], False, False, is_const
         if handle is not None:
             return (
                 self._aliases.get(current, handle.name),
@@ -720,7 +733,12 @@ def _return_pointer_depth(declarator, function_declarator) -> int:
     while current is not None and current != function_declarator:
         if current.type in {"pointer_declarator", "abstract_pointer_declarator"}:
             depth += 1
-        current = current.child_by_field_name("declarator")
+        nested = current.child_by_field_name("declarator")
+        # Tree-sitter's parenthesized declarator has no declarator field.
+        # Follow only that wrapper, never the function's parameter list.
+        if nested is None and current.type in {"parenthesized_declarator", "abstract_parenthesized_declarator"}:
+            nested = current.named_children[0] if len(current.named_children) == 1 else None
+        current = nested
     return depth
 
 

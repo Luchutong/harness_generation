@@ -1,0 +1,516 @@
+{
+  "schema_version": 1,
+  "policy": "v05-clean-source-manifest-v1",
+  "recorded_at": "2026-10-12T08:57:11.883795+08:00",
+  "branch": "v0.5-generation-first",
+  "inventory": "all package Python sources plus project_catalog.py and pyproject.toml; no tests, docs, secrets, environments or run data",
+  "file_count": 126,
+  "fingerprint": "f1116a7db91c9a5496274d1b31ae10fe2885405bb5889e28de73ac0be11dcae5",
+  "fingerprint_algorithm": "sha256 of UTF-8 JSON files array, sorted paths, sort_keys=true, separators=(comma,colon), ensure_ascii=false",
+  "files": [
+    {
+      "path": "harness_generation/__init__.py",
+      "sha256": "959e563aea067633ac94cb4c259d3eec358ed0ce8052d860425b1a6c995296bf"
+    },
+    {
+      "path": "harness_generation/__main__.py",
+      "sha256": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d"
+    },
+    {
+      "path": "harness_generation/api_contracts/__init__.py",
+      "sha256": "4947b42fe2a6a8a5d3092158086f5684342332136e30131d72216abf03fb0742"
+    },
+    {
+      "path": "harness_generation/api_contracts/extraction.py",
+      "sha256": "fbce27a6851670f6ac81e1ee4e3feaa13fce431837abd3cfbd6783a145467954"
+    },
+    {
+      "path": "harness_generation/api_contracts/models.py",
+      "sha256": "22b989ff58743c7806f8d4c6d9aca3c1c58014ce55caeda923d3d983abd78be7"
+    },
+    {
+      "path": "harness_generation/api_contracts/validation.py",
+      "sha256": "d646a1603eba497a133255d745d59fb4488b1e390a47f0c14da9b1f5c4d8947c"
+    },
+    {
+      "path": "harness_generation/artifacts.py",
+      "sha256": "093a2413111da86f6d7b03fdaa5d66d748c9395a310dfa6614132e73b4e388e7"
+    },
+    {
+      "path": "harness_generation/cli.py",
+      "sha256": "faaaff94076733f5eeea5110176711388754fb163beb71e8094ad0df7a0742b7"
+    },
+    {
+      "path": "harness_generation/compiler_validation.py",
+      "sha256": "ebfa0fd14839a1b6cb23ad0783aa0bb6107a068467aa4ab5c4b123f72c5dee25"
+    },
+    {
+      "path": "harness_generation/context_generation/__init__.py",
+      "sha256": "e840a71058cc3144c04fcff0dcdbfc01013623c6f9652587af135854ec58d5e8"
+    },
+    {
+      "path": "harness_generation/context_generation/build.py",
+      "sha256": "a034186b53fdae2e87491405b7eec4d85be34df1424b91df65767d00ce91d134"
+    },
+    {
+      "path": "harness_generation/context_generation/executable_helpers.py",
+      "sha256": "4f2d5f7bf8d0914c106c417cd22ea45a7816ca4f437319d2cfe125b54c640c50"
+    },
+    {
+      "path": "harness_generation/context_generation/executable_plan.py",
+      "sha256": "55a5047ac2f4424abafb1b67e6b7345ac42d1f3ce7b8c454ed08382dc98c1da3"
+    },
+    {
+      "path": "harness_generation/context_generation/strategy_generation.py",
+      "sha256": "8fafabcfc30637616890e31a6d11966030807756a213f9bb9c65527019a659bc"
+    },
+    {
+      "path": "harness_generation/context_generation/strategy_validation.py",
+      "sha256": "285e1a2aee71f0818857b0985e9b95b91a2b23445504f5009803870665cced7f"
+    },
+    {
+      "path": "harness_generation/effectiveness/__init__.py",
+      "sha256": "63dcc6f494567e1b756a74a73c95698108ab0d6c9ed49944aff3db2add9c9a52"
+    },
+    {
+      "path": "harness_generation/effectiveness/contracts.py",
+      "sha256": "10fe0421030f88571ac6e0f463ef433b6739818b5026d2b038cb84c21707f7e6"
+    },
+    {
+      "path": "harness_generation/effectiveness/validation.py",
+      "sha256": "49399d1c0c7e0e5e10b4b8f0e56debe203c2317258b57eec58186e6b1007b07d"
+    },
+    {
+      "path": "harness_generation/entry_candidates.py",
+      "sha256": "81e0c79ec9f5fdacdb804deb81042c4317daf05be275f30989967b2335fb6953"
+    },
+    {
+      "path": "harness_generation/execution_preflight/__init__.py",
+      "sha256": "93fbbe849ee4183cbb6444a03a38a6deafaa435a641c9609b6c59edd6a99d354"
+    },
+    {
+      "path": "harness_generation/execution_preflight/diagnostics.py",
+      "sha256": "102e055b1ce7bdd87c752fe9192348997a423293971891550429af9295e4dc88"
+    },
+    {
+      "path": "harness_generation/execution_preflight/gate.py",
+      "sha256": "7feecdcd762be885767d8a2a9164ef03cfb7faa8b24676548ca06cce6a283246"
+    },
+    {
+      "path": "harness_generation/ft_relations.py",
+      "sha256": "3d6009a606010265e3ebcb61b58bf3ab71dc25f41729e7e3644796dd3e5b8a7a"
+    },
+    {
+      "path": "harness_generation/harness_context/__init__.py",
+      "sha256": "daa60015c2c9a90e78be4abd762324b438fc8da20ea4eec07dcf896d21e01820"
+    },
+    {
+      "path": "harness_generation/harness_context/api_closure.py",
+      "sha256": "832a110cd2675609009918767a3ab89fc9694fbbbf63ab165654dcb2e3a3689d"
+    },
+    {
+      "path": "harness_generation/harness_context/argument_graph.py",
+      "sha256": "701e523d2273e1b6c14c286ba25dcb1efcc2a13d805f675a4c7427075b09c84b"
+    },
+    {
+      "path": "harness_generation/harness_context/callback_resources.py",
+      "sha256": "7b448a9cec987b47ea3bd4247afba4ba40f963ba6dbb9fc18b9d5029e5010d3a"
+    },
+    {
+      "path": "harness_generation/harness_context/callbacks.py",
+      "sha256": "bc1609a804ac7337ce09a96784de168c139c9d0c9f471051dbd948399ba6fcd6"
+    },
+    {
+      "path": "harness_generation/harness_context/construction.py",
+      "sha256": "21eca9034eabf714adab30d97cb80a1cd2954b4413e137cb03583ba5b8f4d6b9"
+    },
+    {
+      "path": "harness_generation/harness_context/evidence.py",
+      "sha256": "ec4e98c3a13115375d14dc9c9c0190978e12f082dedd281221bdcf5bd119630c"
+    },
+    {
+      "path": "harness_generation/harness_context/input_contracts.py",
+      "sha256": "25b17357b77b47c8e21f477f104c46be63253ecc3c0886900c737639fd3aafdb"
+    },
+    {
+      "path": "harness_generation/harness_context/input_flow.py",
+      "sha256": "6c93c38311c371b3c9a2f69aa1808136624ba1ab097c4af907ad5d296922368b"
+    },
+    {
+      "path": "harness_generation/harness_context/input_pairs.py",
+      "sha256": "20c2186975b14c2118e3934ea2630127fb72dd0d9b9c33853ec9b860f8548606"
+    },
+    {
+      "path": "harness_generation/harness_context/internal_invocations.py",
+      "sha256": "9e5138d29be94286f094eff5fc1d59b54885bc793cad3be5ded9209685d139eb"
+    },
+    {
+      "path": "harness_generation/harness_context/investigation.py",
+      "sha256": "5be751f9185a945630fae3e59c23b3b3177832b03bd333f03485a166c779c34f"
+    },
+    {
+      "path": "harness_generation/harness_context/invocation_scope.py",
+      "sha256": "9ab9aba09617dfc972d4a71495310847dc8f8950d550364a66b43719f42a48f8"
+    },
+    {
+      "path": "harness_generation/harness_context/invocations.py",
+      "sha256": "242b6c9be9df730dda305c4ccbd7ecd1259d3b7fa31438532e22066cdbb75ac0"
+    },
+    {
+      "path": "harness_generation/harness_context/models.py",
+      "sha256": "71d3bdfbe520b1409668714b862d3c3b40e9a993f992156df69ed1fff9eebb3e"
+    },
+    {
+      "path": "harness_generation/harness_context/ordering.py",
+      "sha256": "2d40242ccfee8ad771f5974bc0a82734109171695aa0f26d601dfc80d089bc34"
+    },
+    {
+      "path": "harness_generation/harness_context/parameter_semantics.py",
+      "sha256": "f4160075e4038aa6be55174b6ceeb1c8e683ea3cc8ffc94d5d260dddfb41ab88"
+    },
+    {
+      "path": "harness_generation/harness_context/prompt_projection.py",
+      "sha256": "9abc0ee4ce27025f01ef80dd8c4b3008b3ee83d2ac9c20d368602897893f2079"
+    },
+    {
+      "path": "harness_generation/harness_context/proof_grounding.py",
+      "sha256": "f2731e8fe99d4b770b0a1a2a048617ee35987704910c99890a1af9a3e0141ce4"
+    },
+    {
+      "path": "harness_generation/harness_context/proposals.py",
+      "sha256": "6454c0d0c2a7879ab9aa795af8d47403157d2f4b3c6ed8e802f08eccf34f1b8b"
+    },
+    {
+      "path": "harness_generation/harness_context/reconciliation.py",
+      "sha256": "020b7a1d276999449863bb583696fa078294d0802235b1d5dcabde16b1bc2c05"
+    },
+    {
+      "path": "harness_generation/harness_context/resource_identity.py",
+      "sha256": "fda2828c89740ad41e72f31e552c7694a7f212a2d16bfb1871f7723d6081ba2e"
+    },
+    {
+      "path": "harness_generation/harness_context/source_queries.py",
+      "sha256": "2999ac32d500a2a70aa5742f404b007bc92b5063b08ef0b7d227b6496ed7dee5"
+    },
+    {
+      "path": "harness_generation/harness_context/terminal.py",
+      "sha256": "ecc83fb44631868d477477dfb6c5f7bc45da02ba82fefbdf495e9b8846aae164"
+    },
+    {
+      "path": "harness_generation/harness_context/value_flow.py",
+      "sha256": "f12a231d72d87f31631cbf61d7e8e54a4b5b1a22cce50f6052e6b16b7b2ab403"
+    },
+    {
+      "path": "harness_generation/harness_context/value_roles.py",
+      "sha256": "9573f4568d25d5a569dedbe415e19488027852ed1696cf7aef7c51233b0711c3"
+    },
+    {
+      "path": "harness_generation/harness_strategy/__init__.py",
+      "sha256": "173eb49b11e9a30959817f6754c24e5b81266df4e90c23b286c4c7e138f20624"
+    },
+    {
+      "path": "harness_generation/harness_strategy/build_analysis.py",
+      "sha256": "e07bb8f5d958ea9d1f6a66d7fd5adddc753ed8d8f188592244af5935e82227de"
+    },
+    {
+      "path": "harness_generation/harness_strategy/models.py",
+      "sha256": "61818eeb694b84154f33180af60a1adbd1b8692abf4e8b23b5e3c6d1e742f347"
+    },
+    {
+      "path": "harness_generation/harness_strategy/normalization.py",
+      "sha256": "ec194d80c2775440fa26c2898237367ed216a3e4284fc3999d76d5287435f97d"
+    },
+    {
+      "path": "harness_generation/harness_strategy/persistence.py",
+      "sha256": "3ba413dbc46b5c063fb1dd996194a89804d1aecaed1fc968be868d331e3c0855"
+    },
+    {
+      "path": "harness_generation/harness_strategy/planner.py",
+      "sha256": "266f3a47c88515dc8efc524bea9dfe834de4aa1679aaec31159bad1ea787ca74"
+    },
+    {
+      "path": "harness_generation/harness_strategy/ranking.py",
+      "sha256": "7e8dcbddf09d12d8da63323f8e6e394307b40a48f60aa84fd026c66e15e85511"
+    },
+    {
+      "path": "harness_generation/harness_strategy/tools.py",
+      "sha256": "0d1afd825deac190ae4bed71c128b451eaadbcb8e8d8860b164f2722ffc2d761"
+    },
+    {
+      "path": "harness_generation/harness_strategy/validation.py",
+      "sha256": "50ebc5c46c63dc2483cdc69671b7ba1c5d938d9e16ee66d76971a1e97c854aa1"
+    },
+    {
+      "path": "harness_generation/lightweight_context/__init__.py",
+      "sha256": "51ba318c219c55103d3ece38ff9727bb4b7bb4017f01e1d7b7c28abc4ca9907f"
+    },
+    {
+      "path": "harness_generation/lightweight_context/builder.py",
+      "sha256": "5bc0bd4723eef1a0d8680bdc8bdf19594de95aba509b83da1c6d4237e02e5add"
+    },
+    {
+      "path": "harness_generation/lightweight_context/models.py",
+      "sha256": "902b18685341910443d51fb36542c3cfeb52e1e2e84be37c6d5d71a8ef33ed77"
+    },
+    {
+      "path": "harness_generation/lightweight_context/persistence.py",
+      "sha256": "07161d8b63701dd9033a99f790ccbf39f5d166e71d744fd25004f61c5eaafcd7"
+    },
+    {
+      "path": "harness_generation/lightweight_context/tools.py",
+      "sha256": "58631910986dcf22267544d48014a9f36b861fb87a2e783964b48e4dab3805e7"
+    },
+    {
+      "path": "harness_generation/minimal_ft/__init__.py",
+      "sha256": "5b149691ada63b3c4228cfd7bb285145a86b6b38edde511d5944a91b083ee1a6"
+    },
+    {
+      "path": "harness_generation/minimal_ft/models.py",
+      "sha256": "6fe755024442da615bc70dd9545820b108ffcba99d643e10eaf5cdd458f1d137"
+    },
+    {
+      "path": "harness_generation/minimal_ft/persistence.py",
+      "sha256": "40d762a2bcbaa326789f7e106e94a28fd2cc803d083f6d156e54b90202994b67"
+    },
+    {
+      "path": "harness_generation/minimal_ft/relations.py",
+      "sha256": "2a32aa2d3e7c99b8ddeee89efb30ebb0e585fa01c84cb9b1ffb62c721b321b60"
+    },
+    {
+      "path": "harness_generation/minimal_ft/validation.py",
+      "sha256": "be2b673e96f60611bf7f79c2d4e699d48fcc7d3d01935473ac578f0d5fd9263f"
+    },
+    {
+      "path": "harness_generation/orchestration/__init__.py",
+      "sha256": "152eda091cf594cb0a5272d484a41622bc5d75635427e3169bf92b5dc0c0e1dc"
+    },
+    {
+      "path": "harness_generation/orchestration/checkpoint.py",
+      "sha256": "836bf641c976f6a87c65bea79bec1463403041e520b30eb6453a251e5bf35887"
+    },
+    {
+      "path": "harness_generation/orchestration/cli.py",
+      "sha256": "9d860000201f461a39bb384061ea7c7a3b94e311a37a02532b18a9c1835b7b2e"
+    },
+    {
+      "path": "harness_generation/orchestration/execution_controller.py",
+      "sha256": "fc5acf0dcbfc5e16250caa7ffa1b06266ec279f23e57307c37c59df935e5d73c"
+    },
+    {
+      "path": "harness_generation/orchestration/generation_base.py",
+      "sha256": "810bdf986a251571b2439fc8a9a24c8305a04f8ff74e4dd5d8575f7127e69d4d"
+    },
+    {
+      "path": "harness_generation/orchestration/generation_services.py",
+      "sha256": "5f84ac637cd20d21554ffea5151e8d40d782515582d9b018b6b62979c66c6aa5"
+    },
+    {
+      "path": "harness_generation/orchestration/model_budget.py",
+      "sha256": "e0e253313ab1e9b64f87c69d6bc542cda61b3efb432f0981b05d7e581955afb3"
+    },
+    {
+      "path": "harness_generation/orchestration/models.py",
+      "sha256": "dc85180d7282a645e87642f3f12dfe65d23405089bd5cdab36d2172e38e39e8a"
+    },
+    {
+      "path": "harness_generation/orchestration/quality.py",
+      "sha256": "aa38b5198553cd6606082efb677579860ca9c91f9ec3309589020bdd311c799e"
+    },
+    {
+      "path": "harness_generation/orchestration/single_generation.py",
+      "sha256": "a2f4a1b8f771a8a931fd65255619cdebe09758d526c5ef7f1e2a392d46cc6979"
+    },
+    {
+      "path": "harness_generation/orchestration/source_feedback.py",
+      "sha256": "3d122aa358d2c082a8feb60168cf4272562120d825c873ca11526e86dabc0793"
+    },
+    {
+      "path": "harness_generation/orchestration/trial_ledger.py",
+      "sha256": "85029f8b31840265af32bd49bb9be65ac8663ca39a48ae5fb3b7788b5ba99258"
+    },
+    {
+      "path": "harness_generation/records.py",
+      "sha256": "bb4359228fde24964532a5e4edce1ab55b995c692d217af94a801f87d32587a4"
+    },
+    {
+      "path": "harness_generation/runtime_validation.py",
+      "sha256": "cafba923bc6070508ac506c004e9dcd6562d54a56c31e1d3f4f525ee1abe929c"
+    },
+    {
+      "path": "harness_generation/semantic_discovery/__init__.py",
+      "sha256": "55d8a04b99d3bc7d007eb1c767b89ecfd01b04c2ffef19a7f2466993df9f67eb"
+    },
+    {
+      "path": "harness_generation/semantic_discovery/agent.py",
+      "sha256": "5d8fbce32a424ef8e9b6879dac45666d0f28f73aebb967818c41c0252ee85dbd"
+    },
+    {
+      "path": "harness_generation/semantic_discovery/deepseek_client.py",
+      "sha256": "a365c26088d425a8e9255d6ddddbf24beab310664635d3d29ef99f3e37870e28"
+    },
+    {
+      "path": "harness_generation/semantic_discovery/loop.py",
+      "sha256": "d4275a57b1e4c7301048b040e20cc89f1cfb6cfae47a22394dbb2bdc39e0c91d"
+    },
+    {
+      "path": "harness_generation/semantic_discovery/models.py",
+      "sha256": "1af75849b0b1bb0a49c90dd7111e289797c4ac1cd49e85b90fc7b2c2b9592459"
+    },
+    {
+      "path": "harness_generation/semantic_discovery/persistence.py",
+      "sha256": "db48d261a2d1a8eb9d831e504021d25ca029801743ff0f63f222d72f5b717df7"
+    },
+    {
+      "path": "harness_generation/semantic_discovery/provider_config.py",
+      "sha256": "2c9e86112b3375b223619d915da6d4f1c496f2b91f39327c2c4977f102f79011"
+    },
+    {
+      "path": "harness_generation/semantic_discovery/request_diagnostics.py",
+      "sha256": "d9cc36bb7bdb9e99819261665b741e5a9fa7593239be2a7345caf3ae45debec4"
+    },
+    {
+      "path": "harness_generation/semantic_discovery/tools.py",
+      "sha256": "3ef1f779d5be4b2cb8d2698e22cc1929b54a0aa20e5bd5e75ddad5a88bf3742a"
+    },
+    {
+      "path": "harness_generation/semantic_effects/__init__.py",
+      "sha256": "5147cf150844130a3c014be5a530bffbac31e3583eaf84115cf16bc196911940"
+    },
+    {
+      "path": "harness_generation/semantic_effects/call_resolution.py",
+      "sha256": "3ffd805d87569919ab6a7cc499e8919c0831c221fda1a2fcbf7e41c4eb3ca5b3"
+    },
+    {
+      "path": "harness_generation/semantic_effects/conditions.py",
+      "sha256": "bc66b3d8d57259a765c5ee4a298fde994aa5b81f927f3995499f877de041b3e6"
+    },
+    {
+      "path": "harness_generation/semantic_slicing/__init__.py",
+      "sha256": "bc5e0898c39dad97a51aee9401086fb603409c7cb19af4630f133aa650ababb7"
+    },
+    {
+      "path": "harness_generation/semantic_slicing/agent.py",
+      "sha256": "90ae3bc9b86d25feab540df114238652cf151437945fbe91631bd16e9345f4ef"
+    },
+    {
+      "path": "harness_generation/semantic_slicing/core_proofs.py",
+      "sha256": "c1efb4c437ff06588b6fb339279e06610b1557bc484728d2b13a7e129712e795"
+    },
+    {
+      "path": "harness_generation/semantic_slicing/effect_questions.py",
+      "sha256": "c9e9bc26b3adab2cf20247148c7442883aba2523fe04951567b0671739ddab45"
+    },
+    {
+      "path": "harness_generation/semantic_slicing/frontier.py",
+      "sha256": "410098c9f3f65e64d69d4cfeecac53e1b66f8317b037d3392c42c96c202dd0fd"
+    },
+    {
+      "path": "harness_generation/semantic_slicing/models.py",
+      "sha256": "c5ba3499183ee3cf495cab930ba807a6c03ae7247c2aa82919ff9c5e88f94981"
+    },
+    {
+      "path": "harness_generation/semantic_slicing/persistence.py",
+      "sha256": "952fc728017a8e0534102b4c3856d5fd56feca7e59adf8a8905e3d2a7f17ecef"
+    },
+    {
+      "path": "harness_generation/semantic_slicing/proposals.py",
+      "sha256": "5d18375a26311de38a1868d67b4601afafbabb44329a44fe422db6376504f762"
+    },
+    {
+      "path": "harness_generation/semantic_slicing/source_exclusions.py",
+      "sha256": "8a4e18a1c9109e3eae4f8aaf36889a66b5d7cc6950dbbf20573f8bde263cecbd"
+    },
+    {
+      "path": "harness_generation/semantic_slicing/support_effects.py",
+      "sha256": "85737f908d65a3f885f4ac25922f6b7c3562b4b800eba6a113492ca6847cff72"
+    },
+    {
+      "path": "harness_generation/semantic_slicing/tools.py",
+      "sha256": "2492ff9328c9e9f6e72dad74b4ad19c50104e0c448f705ac1fd294da5c433b82"
+    },
+    {
+      "path": "harness_generation/sfg_adapter.py",
+      "sha256": "8a577ae15b597f84a79543ce498c58ba49909e5b6fb91eb916b2efd4f46d1e11"
+    },
+    {
+      "path": "harness_generation/source_analysis/__init__.py",
+      "sha256": "e3be6a6f992f4d0219cafc98fa6b31475f62c7d7e0f72a9cb97646df69e6bebe"
+    },
+    {
+      "path": "harness_generation/source_analysis/analyzer.py",
+      "sha256": "c07252070a3e5d6878a189e61a5b39dc09060cfe35a8634680ea0b35f3d6d305"
+    },
+    {
+      "path": "harness_generation/source_analysis/callback_compatibility.py",
+      "sha256": "207b856d895ac1cb9a15955b5a37061f8bfdfa61ffa42967183ce009e7687e65"
+    },
+    {
+      "path": "harness_generation/source_analysis/clang_index.py",
+      "sha256": "6e77721fdad98be27443288401dc03aa96bdb52018c7bb17fe7b3d7cdf0f7cde"
+    },
+    {
+      "path": "harness_generation/source_analysis/index.py",
+      "sha256": "d8fc99697c225b16272d450d62df952f42b6a357203396ccd6cdce4726ba8005"
+    },
+    {
+      "path": "harness_generation/source_analysis/type_identity.py",
+      "sha256": "6ac3ed10c879eef5d033383de78695e133bf071f98d2bd6125be88e79c831b3b"
+    },
+    {
+      "path": "harness_generation/source_evidence.py",
+      "sha256": "e6240cc6907fb37236a61ee2577c367631bfa80c9c0b50ce91014b8a56072a91"
+    },
+    {
+      "path": "harness_generation/source_paths.py",
+      "sha256": "09799b3bda7d211155ba13e80fee56e4b0e412cf9d478c9f694376fa2b6f153c"
+    },
+    {
+      "path": "harness_generation/source_snapshot.py",
+      "sha256": "c348982b019489bd9f1078e33b943befe29ace022dcff7772ba88d055ff590f1"
+    },
+    {
+      "path": "harness_generation/target_build.py",
+      "sha256": "3a4e3f69dcfdb49054ce9e7d034197cb322fbf5456a8a3fd65db0db685efc7d3"
+    },
+    {
+      "path": "harness_generation/validation.py",
+      "sha256": "bb99f557c7ef9057647327819e2ceeb3e514fd55b0f5bcf536d0ac1e98a05de0"
+    },
+    {
+      "path": "project_catalog.py",
+      "sha256": "f82cee11dfd70b5a008c81a8e8435394261da229f2baacb55f5d1c7c2887e32b"
+    },
+    {
+      "path": "pyproject.toml",
+      "sha256": "5a1f80229927a7fd1cebf8802af4a8e84b8da07b0204371255dec577dd7f9d1f"
+    },
+    {
+      "path": "sfg_builder/__init__.py",
+      "sha256": "5487cafef5be3dd7cda7efcfdd0ac65bcdde57b2394cf588067eb081a3164b62"
+    },
+    {
+      "path": "sfg_builder/__main__.py",
+      "sha256": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d"
+    },
+    {
+      "path": "sfg_builder/cli.py",
+      "sha256": "d178b72914eaa2c9f545a17d465230df73119014321d19e13106ed2f08573aff"
+    },
+    {
+      "path": "sfg_builder/models.py",
+      "sha256": "dbabb9356defaaa7cef964f084c3c9b4a090c31bcbe4e4d740bcf1bc812cd7c2"
+    },
+    {
+      "path": "sfg_builder/ownership.py",
+      "sha256": "306cdacc12f5d97ebcbd6b9575a68db60ebcfc7a4479c9932c0c87a1027a6f59"
+    },
+    {
+      "path": "sfg_builder/parser.py",
+      "sha256": "ad2c74b9c639f0bae7b044bba0b87a6e3a84ca43f4ce2cbd7d5b0ffc19f42b8f"
+    },
+    {
+      "path": "sfg_builder/usage.py",
+      "sha256": "2a1f04872a622930ae00fa15e8b419245af1a02db9c600fbc52f3ad570a8877a"
+    }
+  ]
+}

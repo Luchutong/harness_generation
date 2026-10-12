@@ -89,6 +89,7 @@ class ProjectCatalog:
         ignored_directories: Iterable[str] = DEFAULT_IGNORED_DIRECTORIES,
         source_suffixes: Iterable[str] = DEFAULT_SOURCE_SUFFIXES,
         header_suffixes: Iterable[str] = DEFAULT_HEADER_SUFFIXES,
+        explicit_sources: Iterable[str | Path] = (),
     ) -> "ProjectCatalog":
         root = Path(project_root).resolve()
         if not root.is_dir():
@@ -100,10 +101,13 @@ class ProjectCatalog:
             path for path in sorted(root.rglob("*"), key=lambda item: item.as_posix())
             if path.is_file() and not _inside_ignored(path, root, ignored)
         )
-        sources = tuple(
+        explicit = _owned_paths(root, explicit_sources, "explicit_sources")
+        if any(not path.is_file() or path.suffix.lower() not in source_exts for path in explicit):
+            raise ValueError("explicit_sources must contain existing supported source files")
+        sources = tuple(sorted(set(explicit).union(
             path for path in files
             if path.suffix.lower() in source_exts and path.name != "harness.c"
-        )
+        ), key=lambda path: path.as_posix()))
         headers = tuple(path for path in files if path.suffix.lower() in header_exts)
         include_paths: list[Path] = []
         include = root / "include"
@@ -114,6 +118,7 @@ class ProjectCatalog:
         return cls(
             root, sources, headers, tuple(include_paths), ignored,
             source_exts, header_exts,
+            provenance="directory_scan_with_explicit_sources" if explicit else "directory_scan",
         )
 
     @property

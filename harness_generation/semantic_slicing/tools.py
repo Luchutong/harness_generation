@@ -15,8 +15,9 @@ FRONTIER_SCHEMA = _schema("get_semantic_frontier",
 
 
 class SemanticSliceTools(RepositoryTools):
-    def __init__(self, artifacts, catalog, frontier, budget=None, *, index=None, max_discovered_functions=32):
-        super().__init__(artifacts, catalog, budget, index=index)
+    def __init__(self, artifacts, catalog, frontier, budget=None, *, index=None, max_discovered_functions=32,
+                 build_analysis=None):
+        super().__init__(artifacts, catalog, budget, index=index, build_analysis=build_analysis)
         if type(max_discovered_functions) is not int or max_discovered_functions < 0:
             raise ValueError("max_discovered_functions must be nonnegative")
         self.frontier = frontier
